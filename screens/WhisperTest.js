@@ -1,4 +1,4 @@
-import { useRef, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import {
   ActivityIndicator,
   Button,
@@ -9,6 +9,8 @@ import {
   View,
 } from 'react-native';
 import { Audio } from 'expo-av';
+import { normalizeArabic, wordDiff } from '../lib/arabicUtils';
+import { getAyah } from '../lib/quranApi';
 
 const WHISPER_URL = 'https://api.openai.com/v1/audio/transcriptions';
 
@@ -16,13 +18,31 @@ export default function WhisperTest() {
   const recordingRef = useRef(null);
   const [isRecording, setIsRecording] = useState(false);
   const [isTranscribing, setIsTranscribing] = useState(false);
+  const [isLoadingAyah, setIsLoadingAyah] = useState(true);
+  const [expectedText, setExpectedText] = useState('');
   const [transcription, setTranscription] = useState('');
+  const [wordResults, setWordResults] = useState(null);
   const [error, setError] = useState('');
+
+  useEffect(() => {
+    (async () => {
+      try {
+        setIsLoadingAyah(true);
+        const { text } = await getAyah(1, 1);
+        setExpectedText(text);
+      } catch (err) {
+        setError(err.message ?? 'Failed to load expected ayah text.');
+      } finally {
+        setIsLoadingAyah(false);
+      }
+    })();
+  }, []);
 
   async function startRecording() {
     try {
       setError('');
       setTranscription('');
+      setWordResults(null);
 
       const permission = await Audio.requestPermissionsAsync();
       if (!permission.granted) {
@@ -55,6 +75,7 @@ export default function WhisperTest() {
     try {
       setIsTranscribing(true);
       setError('');
+      setWordResults(null);
 
       await recording.stopAndUnloadAsync();
       const uri = recording.getURI();
@@ -100,7 +121,16 @@ export default function WhisperTest() {
         );
       }
 
-      setTranscription(data.text ?? '');
+      const whisperText = data.text ?? '';
+      setTranscription(whisperText);
+
+      if (expectedText) {
+        const diff = wordDiff(
+          normalizeArabic(expectedText),
+          normalizeArabic(whisperText)
+        );
+        setWordResults(diff);
+      }
     } catch (err) {
       setError(err.message ?? 'Transcription failed.');
     } finally {
@@ -113,11 +143,20 @@ export default function WhisperTest() {
       <Text style={styles.title}>Whisper Test</Text>
       <Text style={styles.subtitle}>Record Arabic audio and transcribe with OpenAI</Text>
 
+      <View style={styles.expected}>
+        <Text style={styles.resultLabel}>Expected (Al-Fatiha 1:1)</Text>
+        {isLoadingAyah ? (
+          <ActivityIndicator style={styles.ayahLoader} />
+        ) : (
+          <Text style={styles.resultText}>{expectedText}</Text>
+        )}
+      </View>
+
       <View style={styles.buttons}>
         <Button
           title="Start Recording"
           onPress={startRecording}
-          disabled={isRecording || isTranscribing}
+          disabled={isRecording || isTranscribing || isLoadingAyah}
         />
         <View style={styles.spacer} />
         <Button
@@ -144,6 +183,27 @@ export default function WhisperTest() {
           <Text style={styles.resultText}>{transcription}</Text>
         </View>
       ) : null}
+
+      {wordResults ? (
+        <View style={styles.result}>
+          <Text style={styles.resultLabel}>Word comparison</Text>
+          <View style={styles.wordRow}>
+            {wordResults.map((item, index) => (
+              <View
+                key={`${item.word}-${index}`}
+                style={[
+                  styles.wordChip,
+                  item.status === 'correct'
+                    ? styles.wordCorrect
+                    : styles.wordWrong,
+                ]}
+              >
+                <Text style={styles.wordChipText}>{item.word}</Text>
+              </View>
+            ))}
+          </View>
+        </View>
+      ) : null}
     </ScrollView>
   );
 }
@@ -163,7 +223,16 @@ const styles = StyleSheet.create({
   subtitle: {
     fontSize: 14,
     color: '#666',
-    marginBottom: 32,
+    marginBottom: 24,
+  },
+  expected: {
+    marginBottom: 24,
+    padding: 16,
+    backgroundColor: '#f5f5f5',
+    borderRadius: 8,
+  },
+  ayahLoader: {
+    marginTop: 8,
   },
   buttons: {
     marginBottom: 24,
@@ -201,6 +270,27 @@ const styles = StyleSheet.create({
   resultText: {
     fontSize: 18,
     lineHeight: 28,
+    textAlign: 'right',
+    writingDirection: 'rtl',
+  },
+  wordRow: {
+    flexDirection: 'row-reverse',
+    flexWrap: 'wrap',
+    gap: 8,
+  },
+  wordChip: {
+    paddingHorizontal: 10,
+    paddingVertical: 6,
+    borderRadius: 6,
+  },
+  wordCorrect: {
+    backgroundColor: '#c8e6c9',
+  },
+  wordWrong: {
+    backgroundColor: '#ffcdd2',
+  },
+  wordChipText: {
+    fontSize: 18,
     textAlign: 'right',
     writingDirection: 'rtl',
   },
