@@ -12,14 +12,17 @@ import { Audio } from 'expo-av';
 import { normalizeArabic, wordDiff } from '../lib/arabicUtils';
 import { getAyah } from '../lib/quranApi';
 
-const WHISPER_URL = 'https://api.openai.com/v1/audio/transcriptions';
+const HF_TRANSCRIPTION_URL =
+  'https://api-inference.huggingface.co/models/tarteel-ai/whisper-base-ar-quran';
 
 export default function WhisperTest() {
   const recordingRef = useRef(null);
   const [isRecording, setIsRecording] = useState(false);
   const [isTranscribing, setIsTranscribing] = useState(false);
   const [isLoadingAyah, setIsLoadingAyah] = useState(true);
-  const [expectedText, setExpectedText] = useState('');
+  const [expectedDisplay, setExpectedDisplay] = useState('');
+  const [expectedCompare, setExpectedCompare] = useState('');
+  const [ayahWords, setAyahWords] = useState([]);
   const [transcription, setTranscription] = useState('');
   const [wordResults, setWordResults] = useState(null);
   const [error, setError] = useState('');
@@ -28,8 +31,10 @@ export default function WhisperTest() {
     (async () => {
       try {
         setIsLoadingAyah(true);
-        const { text } = await getAyah(1, 1);
-        setExpectedText(text);
+        const { textDisplay, textCompare, words } = await getAyah(2, 255);
+        setExpectedDisplay(textDisplay);
+        setExpectedCompare(textCompare);
+        setAyahWords(words);
       } catch (err) {
         setError(err.message ?? 'Failed to load expected ayah text.');
       } finally {
@@ -90,46 +95,50 @@ export default function WhisperTest() {
         throw new Error('No recording file was created.');
       }
 
-      const apiKey = process.env.EXPO_PUBLIC_OPENAI_API_KEY;
+      const apiKey = process.env.EXPO_PUBLIC_HF_API_KEY;
       if (!apiKey) {
-        throw new Error('EXPO_PUBLIC_OPENAI_API_KEY is not set in .env');
+        throw new Error('EXPO_PUBLIC_HF_API_KEY is not set in .env');
       }
 
-      const filename = uri.split('/').pop() ?? 'recording.m4a';
-      const formData = new FormData();
-      formData.append('file', {
-        uri,
-        type: Platform.OS === 'ios' ? 'audio/m4a' : 'audio/mp4',
-        name: filename,
-      });
-      formData.append('model', 'whisper-1');
-      formData.append('language', 'ar');
+      const audioResponse = await fetch(uri);
+      const audioBlob = await audioResponse.blob();
+      const audioContentType =
+        Platform.OS === 'ios' ? 'audio/m4a' : 'audio/mp4';
 
-      const response = await fetch(WHISPER_URL, {
+      const response = await fetch(HF_TRANSCRIPTION_URL, {
         method: 'POST',
         headers: {
           Authorization: `Bearer ${apiKey}`,
+          'Content-Type': audioContentType,
+          Accept: 'application/json',
         },
-        body: formData,
+        body: audioBlob,
       });
 
       const data = await response.json();
 
       if (!response.ok) {
-        throw new Error(
-          data.error?.message ?? `Transcription failed (${response.status})`
-        );
+        const errorMessage =
+          typeof data.error === 'string'
+            ? data.error
+            : data.error?.message ?? `Transcription failed (${response.status})`;
+        throw new Error(errorMessage);
       }
 
       const whisperText = data.text ?? '';
       setTranscription(whisperText);
 
-      if (expectedText) {
-        const diff = wordDiff(
-          normalizeArabic(expectedText),
-          normalizeArabic(whisperText)
+      if (expectedCompare) {
+        const normalizedExpected = normalizeArabic(expectedCompare);
+        const normalizedWhisper = normalizeArabic(whisperText);
+
+        const diff = wordDiff(normalizedExpected, normalizedWhisper);
+        setWordResults(
+          diff.map((item, index) => ({
+            status: item.status,
+            word: ayahWords[index]?.textDisplay ?? item.word,
+          }))
         );
-        setWordResults(diff);
       }
     } catch (err) {
       setError(err.message ?? 'Transcription failed.');
@@ -144,11 +153,11 @@ export default function WhisperTest() {
       <Text style={styles.subtitle}>Record Arabic audio and transcribe with OpenAI</Text>
 
       <View style={styles.expected}>
-        <Text style={styles.resultLabel}>Expected (Al-Fatiha 1:1)</Text>
+        <Text style={styles.resultLabel}>Expected (Ayat Al-Kursi 2:255)</Text>
         {isLoadingAyah ? (
           <ActivityIndicator style={styles.ayahLoader} />
         ) : (
-          <Text style={styles.resultText}>{expectedText}</Text>
+          <Text style={styles.resultText}>{expectedDisplay}</Text>
         )}
       </View>
 
