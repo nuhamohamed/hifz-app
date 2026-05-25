@@ -2,7 +2,6 @@ import { useEffect, useRef, useState } from 'react';
 import {
   ActivityIndicator,
   Button,
-  Platform,
   ScrollView,
   StyleSheet,
   Text,
@@ -12,8 +11,7 @@ import { Audio } from 'expo-av';
 import { normalizeArabic, wordDiff } from '../lib/arabicUtils';
 import { getAyah } from '../lib/quranApi';
 
-const HF_TRANSCRIPTION_URL =
-  'https://api-inference.huggingface.co/models/tarteel-ai/whisper-base-ar-quran';
+const ELEVENLABS_STT_URL = 'https://api.elevenlabs.io/v1/speech-to-text';
 
 export default function WhisperTest() {
   const recordingRef = useRef(null);
@@ -95,33 +93,35 @@ export default function WhisperTest() {
         throw new Error('No recording file was created.');
       }
 
-      const apiKey = process.env.EXPO_PUBLIC_HF_API_KEY;
+      const apiKey = process.env.EXPO_PUBLIC_ELEVENLABS_API_KEY;
       if (!apiKey) {
-        throw new Error('EXPO_PUBLIC_HF_API_KEY is not set in .env');
+        throw new Error('EXPO_PUBLIC_ELEVENLABS_API_KEY is not set in .env');
       }
 
-      const audioResponse = await fetch(uri);
-      const audioBlob = await audioResponse.blob();
-      const audioContentType =
-        Platform.OS === 'ios' ? 'audio/m4a' : 'audio/mp4';
+      const formData = new FormData();
+      formData.append('file', {
+        uri,
+        type: 'audio/m4a',
+        name: 'recording.m4a',
+      });
+      formData.append('model_id', 'scribe_v2');
+      formData.append('language_code', 'ara');
 
-      const response = await fetch(HF_TRANSCRIPTION_URL, {
+      const response = await fetch(ELEVENLABS_STT_URL, {
         method: 'POST',
         headers: {
-          Authorization: `Bearer ${apiKey}`,
-          'Content-Type': audioContentType,
-          Accept: 'application/json',
+          'xi-api-key': apiKey,
         },
-        body: audioBlob,
+        body: formData,
       });
 
       const data = await response.json();
 
       if (!response.ok) {
         const errorMessage =
-          typeof data.error === 'string'
-            ? data.error
-            : data.error?.message ?? `Transcription failed (${response.status})`;
+          typeof data.detail === 'string'
+            ? data.detail
+            : `Transcription failed (${response.status})`;
         throw new Error(errorMessage);
       }
 
@@ -150,7 +150,7 @@ export default function WhisperTest() {
   return (
     <ScrollView contentContainerStyle={styles.container}>
       <Text style={styles.title}>Whisper Test</Text>
-      <Text style={styles.subtitle}>Record Arabic audio and transcribe with OpenAI</Text>
+      <Text style={styles.subtitle}>Record Arabic audio and transcribe with ElevenLabs</Text>
 
       <View style={styles.expected}>
         <Text style={styles.resultLabel}>Expected (Ayat Al-Kursi 2:255)</Text>
