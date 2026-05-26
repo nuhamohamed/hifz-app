@@ -1,10 +1,11 @@
 import { StatusBar } from 'expo-status-bar';
-import WhisperTest from './screens/WhisperTest';
+import RecitationScreen from './screens/RecitationScreen';
+// import RecitationScreen from './screens/RecitationScreenRealtime';
 
 export default function App() {
   return (
     <>
-      <WhisperTest />
+      <RecitationScreen />
       <StatusBar style="auto" />
     </>
   );
