@@ -8,6 +8,7 @@ import {
   Text,
   View,
 } from 'react-native';
+import { Audio } from 'expo-av';
 import * as Haptics from 'expo-haptics';
 import { normalizeArabic, wordDiff } from '../lib/arabicUtils';
 import { getAyah } from '../lib/quranApi';
@@ -71,10 +72,13 @@ export default function RecitationScreen() {
   });
   const nextAyahCacheRef = useRef(null); // { index, data } — prefetched next ayah
   const mistakeStateRef = useRef('none'); // 'none' | 'awaiting_retry' | 'tier2_readback'
+  const wrongIndicesRef = useRef([]);
   const [mistakeMessage, setMistakeMessage] = useState('');
   const [tier2AyahDisplay, setTier2AyahDisplay] = useState('');
-  const [tier2HighlightWords, setTier2HighlightWords] = useState([]);
+  const [tier2TranscribedText, setTier2TranscribedText] = useState('');
+  const [tier2HighlightIndices, setTier2HighlightIndices] = useState([]);
   const currentAyahIndexRef = useRef(0);
+  const startedRef = useRef(false);
   const pulseAnim = useRef(new Animated.Value(1)).current;
 
   const onClipRecorded = useCallback(async (uri) => {
@@ -119,15 +123,29 @@ export default function RecitationScreen() {
     } catch {
       // haptics not supported on this device
     }
+    try {
+      const { sound } = await Audio.Sound.createAsync(
+        require('../assets/beep.mp3')
+      );
+      await sound.playAsync();
+      sound.setOnPlaybackStatusUpdate((status) => {
+        if (status.didJustFinish) {
+          sound.unloadAsync();
+        }
+      });
+    } catch (e) {
+      console.log('Sound error:', e);
+    }
   }, []);
 
   const onAyahComplete = useCallback(
     async (accumulatedText) => {
       if (ayahDataRef.current.isDisconnectedLetters) {
+        const capturedDisplay = ayahDataRef.current.textCompare;
         setConfirmedAyahs((prev) => [
           ...prev,
           {
-            textDisplay: ayahDataRef.current.textDisplay,
+            textDisplay: capturedDisplay,
             status: 'correct',
           },
         ]);
@@ -162,6 +180,12 @@ export default function RecitationScreen() {
         .filter((item) => item.status === 'wrong' || item.status === 'missing')
         .map((item) => item.displayWord);
 
+      const wrongIndices = diff
+        .map((item, i) =>
+          item.status === 'wrong' || item.status === 'missing' ? i : -1
+        )
+        .filter((i) => i >= 0);
+
       // --- Mistake state machine ---
 
       if (mistakeStateRef.current === 'none') {
@@ -181,6 +205,7 @@ export default function RecitationScreen() {
           setCurrentAyahIndex(nextIndex);
           await loadAyah(nextIndex);
         } else {
+          wrongIndicesRef.current = wrongIndices;
           mistakeStateRef.current = 'awaiting_retry';
           await buzzAndTone();
           setMistakeMessage(
@@ -196,7 +221,11 @@ export default function RecitationScreen() {
           setMistakeMessage('');
           setConfirmedAyahs((prev) => [
             ...prev,
-            { textDisplay, status: 'correct' },
+            {
+              textDisplay,
+              status: 'correct',
+              wrongIndices: wrongIndicesRef.current,
+            },
           ]);
           // TODO: insert into quiz_cards at Box 0 — deferred until Supabase wiring sprint
           const nextIndex = currentAyahIndexRef.current + 1;
@@ -209,10 +238,12 @@ export default function RecitationScreen() {
           setCurrentAyahIndex(nextIndex);
           await loadAyah(nextIndex);
         } else {
+          wrongIndicesRef.current = wrongIndices;
           mistakeStateRef.current = 'tier2_readback';
           setMistakeMessage('');
+          setTier2TranscribedText(accumulatedText);
           setTier2AyahDisplay(textDisplay);
-          setTier2HighlightWords(wrongForDisplay);
+          setTier2HighlightIndices(wrongIndices);
         }
         return;
       }
@@ -220,10 +251,15 @@ export default function RecitationScreen() {
       if (mistakeStateRef.current === 'tier2_readback') {
         mistakeStateRef.current = 'none';
         setTier2AyahDisplay('');
-        setTier2HighlightWords([]);
+        setTier2TranscribedText('');
+        setTier2HighlightIndices([]);
         setConfirmedAyahs((prev) => [
           ...prev,
-          { textDisplay, status: 'mistake' },
+          {
+            textDisplay,
+            status: 'mistake',
+            wrongIndices: wrongIndicesRef.current,
+          },
         ]);
         // TODO: insert into quiz_cards at Box 0, increment juz mistake count — deferred
         const nextIndex = currentAyahIndexRef.current + 1;
@@ -242,6 +278,9 @@ export default function RecitationScreen() {
   );
 
   useEffect(() => {
+    if (startedRef.current) return;
+    startedRef.current = true;
+
     let mounted = true;
 
     (async () => {
@@ -269,6 +308,7 @@ export default function RecitationScreen() {
 
     return () => {
       mounted = false;
+      startedRef.current = false;
       stopListening();
     };
   }, [loadAyah, onClipRecorded, getExpectedWordCount, onAyahComplete]);
@@ -304,6 +344,12 @@ export default function RecitationScreen() {
 
   const handleStopSession = async () => {
     await stopListening();
+    mistakeStateRef.current = 'none';
+    setMistakeMessage('');
+    setTier2AyahDisplay('');
+    setTier2TranscribedText('');
+    setTier2HighlightIndices([]);
+    setIsTranscribing(false);
     setSessionComplete(true);
   };
 
@@ -318,40 +364,67 @@ export default function RecitationScreen() {
       {error ? <Text style={styles.error}>{error}</Text> : null}
 
       <View style={styles.mushafFrame}>
-        {confirmedAyahs.map((ayah, index) => (
+        {confirmedAyahs.map((ayah, index) => {
+          const hasWrongWords =
+            ayah.wrongIndices && ayah.wrongIndices.length > 0;
+          if (!hasWrongWords) {
+            return (
+              <Text
+                key={`confirmed-${index}`}
+                style={[styles.ayahLine, styles.ayahCorrect]}
+              >
+                {ayah.textDisplay}
+              </Text>
+            );
+          }
+          const wrongSet = new Set(ayah.wrongIndices);
+          return (
             <Text
               key={`confirmed-${index}`}
-              style={[
-                styles.ayahLine,
-                ayah.status === 'mistake'
-                  ? styles.ayahMistake
-                  : styles.ayahCorrect,
-              ]}
+              style={[styles.ayahLine, styles.ayahCorrect]}
             >
-              {ayah.textDisplay}
+              {ayah.textDisplay.split(/\s+/).map((word, wi) => (
+                <Text
+                  key={wi}
+                  style={
+                    wrongSet.has(wi)
+                      ? styles.mushafWordWrong
+                      : styles.mushafWordCorrect
+                  }
+                >
+                  {word}{' '}
+                </Text>
+              ))}
             </Text>
-          ))}
+          );
+        })}
       </View>
 
-      {mistakeMessage ? (
+      {mistakeMessage && !sessionComplete ? (
         <Text style={styles.mistakeMessage}>{mistakeMessage}</Text>
       ) : null}
 
-      {tier2AyahDisplay ? (
+      {tier2AyahDisplay && !sessionComplete ? (
         <View style={styles.tier2Frame}>
+          <Text style={styles.tier2Label}>What you said:</Text>
+          <Text style={styles.tier2TranscribedText}>{tier2TranscribedText}</Text>
+          <Text style={styles.tier2Label}>Correct:</Text>
           <Text style={styles.tier2AyahText}>
-            {tier2AyahDisplay.split(/\s+/).map((word, i) => (
-              <Text
-                key={i}
-                style={
-                  tier2HighlightWords.includes(word)
-                    ? styles.tier2WordWrong
-                    : styles.tier2WordCorrect
-                }
-              >
-                {word}{' '}
-              </Text>
-            ))}
+            {(() => {
+              const wrongSet = new Set(tier2HighlightIndices);
+              return tier2AyahDisplay.split(/\s+/).map((word, i) => (
+                <Text
+                  key={i}
+                  style={
+                    wrongSet.has(i)
+                      ? styles.tier2WordWrong
+                      : styles.tier2WordCorrect
+                  }
+                >
+                  {word}{' '}
+                </Text>
+              ));
+            })()}
           </Text>
         </View>
       ) : null}
@@ -366,7 +439,7 @@ export default function RecitationScreen() {
             >
               🎤
             </Animated.Text>
-            {isTranscribing ? (
+            {isTranscribing && !sessionComplete ? (
               <Text style={styles.checkingText}>checking...</Text>
             ) : null}
           </>
@@ -428,6 +501,12 @@ const styles = StyleSheet.create({
   ayahCorrect: {
     color: '#1b5e20',
   },
+  mushafWordCorrect: {
+    color: '#1b5e20',
+  },
+  mushafWordWrong: {
+    color: '#c62828',
+  },
   ayahMistake: {
     color: '#c62828',
   },
@@ -445,6 +524,20 @@ const styles = StyleSheet.create({
     padding: 16,
     marginBottom: 16,
     backgroundColor: '#fff8f8',
+  },
+  tier2Label: {
+    fontSize: 13,
+    fontWeight: '600',
+    color: '#666',
+    marginBottom: 4,
+  },
+  tier2TranscribedText: {
+    fontSize: 18,
+    lineHeight: 32,
+    textAlign: 'right',
+    writingDirection: 'rtl',
+    color: '#757575',
+    marginBottom: 16,
   },
   tier2AyahText: {
     fontSize: 22,
