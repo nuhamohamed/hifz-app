@@ -5,6 +5,7 @@ import {
   ScrollView,
   StyleSheet,
   Text,
+  TouchableOpacity,
   View,
 } from 'react-native';
 import { useNavigation } from '@react-navigation/native';
@@ -95,6 +96,7 @@ function getStartingCue(block) {
 export default function PreSessionQuizScreen(props) {
   const navigation = useNavigation();
   const sessionParams = props.route?.params ?? {};
+  const { sessionId } = sessionParams;
 
   const [quizItems, setQuizItems] = useState([]);
   const [currentItemIndex, setCurrentItemIndex] = useState(0);
@@ -104,6 +106,7 @@ export default function PreSessionQuizScreen(props) {
   const [isLoading, setIsLoading] = useState(true);
   const [error, setError] = useState('');
   const [showTransition, setShowTransition] = useState(false);
+  const [showNextItemTransition, setShowNextItemTransition] = useState(false);
 
   const blockAyahsRef = useRef([]);
   const targetAyahIndexRef = useRef(0);
@@ -220,6 +223,10 @@ export default function PreSessionQuizScreen(props) {
         await finishAllQuizItems();
         return;
       }
+
+      setShowNextItemTransition(true);
+      await new Promise((resolve) => setTimeout(resolve, 2500));
+      setShowNextItemTransition(false);
 
       currentItemIndexRef.current = nextItemIndex;
       setCurrentItemIndex(nextItemIndex);
@@ -440,7 +447,7 @@ export default function PreSessionQuizScreen(props) {
   }, [loadBlockForItem, navigateToRecitation]);
 
   useEffect(() => {
-    if (isTranscribing || isLoading || error || showTransition) {
+    if (isTranscribing || isLoading || error || showTransition || showNextItemTransition) {
       pulseAnim.stopAnimation();
       pulseAnim.setValue(1);
       return;
@@ -462,7 +469,7 @@ export default function PreSessionQuizScreen(props) {
     );
     loop.start();
     return () => loop.stop();
-  }, [isTranscribing, isLoading, error, showTransition, pulseAnim]);
+  }, [isTranscribing, isLoading, error, showTransition, showNextItemTransition, pulseAnim]);
 
   useEffect(() => {
     currentBlockIndexRef.current = currentBlockIndex;
@@ -473,7 +480,19 @@ export default function PreSessionQuizScreen(props) {
   }, [currentItemIndex]);
 
   const displayAyahInBlock = currentBlockIndex + 1;
-  const isListening = !isLoading && !error && !showTransition;
+  const isListening =
+    !isLoading && !error && !showTransition && !showNextItemTransition;
+
+  const handlePauseSession = async () => {
+    if (sessionId) {
+      await supabase
+        .from('sessions')
+        .update({ status: 'paused' })
+        .eq('id', sessionId);
+    }
+    await stopListening();
+    navigation.navigate('Today');
+  };
 
   if (showTransition) {
     return (
@@ -482,6 +501,14 @@ export default function PreSessionQuizScreen(props) {
       >
         <Text style={styles.transitionText}>Time to revise</Text>
       </Animated.View>
+    );
+  }
+
+  if (showNextItemTransition) {
+    return (
+      <View style={styles.transitionOverlay}>
+        <Text style={styles.transitionText}>Next question</Text>
+      </View>
     );
   }
 
@@ -592,6 +619,18 @@ export default function PreSessionQuizScreen(props) {
           {`Ayah ${displayAyahInBlock} of ${blockLength} in this quiz`}
         </Text>
       ) : null}
+
+      <TouchableOpacity
+        style={[
+          styles.endSessionButton,
+          isLoading && styles.endSessionButtonDisabled,
+        ]}
+        onPress={handlePauseSession}
+        disabled={isLoading}
+        activeOpacity={0.8}
+      >
+        <Text style={styles.endSessionButtonText}>Pause Session</Text>
+      </TouchableOpacity>
     </ScrollView>
   );
 }
@@ -727,5 +766,21 @@ const styles = StyleSheet.create({
     fontWeight: '700',
     color: '#1b5e20',
     textAlign: 'center',
+  },
+  endSessionButton: {
+    backgroundColor: '#c62828',
+    borderRadius: 12,
+    paddingVertical: 16,
+    paddingHorizontal: 24,
+    alignItems: 'center',
+    marginTop: 8,
+  },
+  endSessionButtonDisabled: {
+    opacity: 0.5,
+  },
+  endSessionButtonText: {
+    color: '#fff',
+    fontSize: 18,
+    fontWeight: '700',
   },
 });

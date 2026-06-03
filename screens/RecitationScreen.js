@@ -16,6 +16,14 @@ import { getAyah } from '../lib/quranApi';
 import { supabase } from '../lib/supabase';
 import { startListening, stopListening } from '../lib/silenceDetection';
 
+function getTodayDateString() {
+  const d = new Date();
+  const y = d.getUTCFullYear();
+  const m = String(d.getUTCMonth() + 1).padStart(2, '0');
+  const day = String(d.getUTCDate()).padStart(2, '0');
+  return `${y}-${m}-${day}`;
+}
+
 const ELEVENLABS_STT_URL = 'https://api.elevenlabs.io/v1/speech-to-text';
 
 async function transcribeWithElevenLabs(uri) {
@@ -70,7 +78,6 @@ export default function RecitationScreen(props) {
   const [currentAyahIndex, setCurrentAyahIndex] = useState(initialAyahIndex);
   const [confirmedAyahs, setConfirmedAyahs] = useState([]);
   const [isTranscribing, setIsTranscribing] = useState(false);
-  const [sessionComplete, setSessionComplete] = useState(false);
   const [isLoading, setIsLoading] = useState(true);
   const [error, setError] = useState('');
 
@@ -90,6 +97,25 @@ export default function RecitationScreen(props) {
   const currentAyahIndexRef = useRef(initialAyahIndex);
   const startedRef = useRef(false);
   const pulseAnim = useRef(new Animated.Value(1)).current;
+  const finishRevisionRef = useRef(null);
+
+  const finishRevisionAndNavigate = useCallback(async () => {
+    await stopListening();
+    if (sessionId) {
+      await supabase
+        .from('sessions')
+        .update({ phase: 'post_quiz' })
+        .eq('id', sessionId);
+    }
+    navigation.replace('PostSessionQuiz', {
+      sessionId,
+      surahNumber,
+      startAyah,
+      endAyah,
+    });
+  }, [navigation, sessionId, surahNumber, startAyah, endAyah]);
+
+  finishRevisionRef.current = finishRevisionAndNavigate;
 
   const onClipRecorded = useCallback(async (uri) => {
     setIsTranscribing(true);
@@ -167,16 +193,7 @@ export default function RecitationScreen(props) {
           .eq('id', sessionId);
         const nextIndex = currentAyahIndexRef.current + 1;
         if (nextIndex >= totalAyahs) {
-          setSessionComplete(true);
-          await supabase
-            .from('sessions')
-            .update({
-              status: 'complete',
-              phase: 'complete',
-              completed_at: new Date().toISOString(),
-            })
-            .eq('id', sessionId);
-          await stopListening();
+          await finishRevisionRef.current();
           return;
         }
         currentAyahIndexRef.current = nextIndex;
@@ -227,16 +244,7 @@ export default function RecitationScreen(props) {
             .eq('id', sessionId);
           const nextIndex = currentAyahIndexRef.current + 1;
           if (nextIndex >= totalAyahs) {
-            setSessionComplete(true);
-            await supabase
-              .from('sessions')
-              .update({
-                status: 'complete',
-                phase: 'complete',
-                completed_at: new Date().toISOString(),
-              })
-              .eq('id', sessionId);
-            await stopListening();
+            await finishRevisionRef.current();
             return;
           }
           currentAyahIndexRef.current = nextIndex;
@@ -265,7 +273,29 @@ export default function RecitationScreen(props) {
               wrongIndices: wrongIndicesRef.current,
             },
           ]);
-          // TODO: insert into quiz_cards at Box 0 — deferred until Supabase wiring sprint
+          if (sessionId) {
+            const ayahNumber = startAyah + currentAyahIndexRef.current;
+            await supabase.from('mistakes').insert({
+              user_id: '87ec942f-de08-4f9b-afe4-a33e31af56c5',
+              session_id: sessionId,
+              surah_number: surahNumber,
+              ayah_number: ayahNumber,
+              tier: 1,
+              wrong_words: wrongIndicesRef.current.map(
+                (i) => ayahDataRef.current.words[i]?.textDisplay ?? ''
+              ),
+            });
+            await supabase.from('quiz_queue').upsert(
+              {
+                user_id: '87ec942f-de08-4f9b-afe4-a33e31af56c5',
+                surah_number: surahNumber,
+                ayah_number: ayahNumber,
+                box_level: 0,
+                next_review_date: getTodayDateString(),
+              },
+              { onConflict: 'user_id,surah_number,ayah_number' }
+            );
+          }
           await supabase
             .from('sessions')
             .update({
@@ -274,16 +304,7 @@ export default function RecitationScreen(props) {
             .eq('id', sessionId);
           const nextIndex = currentAyahIndexRef.current + 1;
           if (nextIndex >= totalAyahs) {
-            setSessionComplete(true);
-            await supabase
-              .from('sessions')
-              .update({
-                status: 'complete',
-                phase: 'complete',
-                completed_at: new Date().toISOString(),
-              })
-              .eq('id', sessionId);
-            await stopListening();
+            await finishRevisionRef.current();
             return;
           }
           currentAyahIndexRef.current = nextIndex;
@@ -313,19 +334,32 @@ export default function RecitationScreen(props) {
             wrongIndices: wrongIndicesRef.current,
           },
         ]);
-        // TODO: insert into quiz_cards at Box 0, increment juz mistake count — deferred
+        if (sessionId) {
+          const ayahNumber = startAyah + currentAyahIndexRef.current;
+          await supabase.from('mistakes').insert({
+            user_id: '87ec942f-de08-4f9b-afe4-a33e31af56c5',
+            session_id: sessionId,
+            surah_number: surahNumber,
+            ayah_number: ayahNumber,
+            tier: 2,
+            wrong_words: wrongIndicesRef.current.map(
+              (i) => ayahDataRef.current.words[i]?.textDisplay ?? ''
+            ),
+          });
+          await supabase.from('quiz_queue').upsert(
+            {
+              user_id: '87ec942f-de08-4f9b-afe4-a33e31af56c5',
+              surah_number: surahNumber,
+              ayah_number: ayahNumber,
+              box_level: 0,
+              next_review_date: getTodayDateString(),
+            },
+            { onConflict: 'user_id,surah_number,ayah_number' }
+          );
+        }
         const nextIndex = currentAyahIndexRef.current + 1;
         if (nextIndex >= totalAyahs) {
-          setSessionComplete(true);
-          await supabase
-            .from('sessions')
-            .update({
-              status: 'complete',
-              phase: 'complete',
-              completed_at: new Date().toISOString(),
-            })
-            .eq('id', sessionId);
-          await stopListening();
+          await finishRevisionRef.current();
           return;
         }
         currentAyahIndexRef.current = nextIndex;
@@ -334,7 +368,7 @@ export default function RecitationScreen(props) {
         return;
       }
     },
-    [loadAyah, buzzAndTone, startAyah, sessionId, totalAyahs]
+    [loadAyah, buzzAndTone, startAyah, sessionId, totalAyahs, surahNumber]
   );
 
   useEffect(() => {
@@ -404,7 +438,7 @@ export default function RecitationScreen(props) {
   }, [currentAyahIndex]);
 
   useEffect(() => {
-    if (isTranscribing || sessionComplete || isLoading || error) {
+    if (isTranscribing || isLoading || error) {
       pulseAnim.stopAnimation();
       pulseAnim.setValue(1);
       return;
@@ -426,7 +460,7 @@ export default function RecitationScreen(props) {
     );
     loop.start();
     return () => loop.stop();
-  }, [isTranscribing, sessionComplete, isLoading, error, pulseAnim]);
+  }, [isTranscribing, isLoading, error, pulseAnim]);
 
   const handlePauseSession = async () => {
     if (sessionId) {
@@ -439,12 +473,8 @@ export default function RecitationScreen(props) {
     navigation.navigate('Today');
   };
 
-  const handleBackToHome = () => {
-    navigation.navigate('Today');
-  };
-
   const displayAyahNumber = Math.min(currentAyahIndex + 1, totalAyahs);
-  const isListening = !sessionComplete && !isLoading && !error;
+  const isListening = !isLoading && !error;
 
   return (
     <ScrollView contentContainerStyle={styles.container}>
@@ -490,11 +520,11 @@ export default function RecitationScreen(props) {
         })}
       </View>
 
-      {mistakeMessage && !sessionComplete ? (
+      {mistakeMessage ? (
         <Text style={styles.mistakeMessage}>{mistakeMessage}</Text>
       ) : null}
 
-      {tier2AyahDisplay && !sessionComplete ? (
+      {tier2AyahDisplay ? (
         <View style={styles.tier2Frame}>
           <Text style={styles.tier2Label}>What you said:</Text>
           <Text style={styles.tier2TranscribedText}>{tier2TranscribedText}</Text>
@@ -520,18 +550,7 @@ export default function RecitationScreen(props) {
       ) : null}
 
       <View style={styles.micSection}>
-        {sessionComplete ? (
-          <View style={styles.sessionCompleteSection}>
-            <Text style={styles.sessionCompleteTitle}>Session Complete</Text>
-            <TouchableOpacity
-              style={styles.backToHomeButton}
-              onPress={handleBackToHome}
-              activeOpacity={0.8}
-            >
-              <Text style={styles.backToHomeButtonText}>Back to Home</Text>
-            </TouchableOpacity>
-          </View>
-        ) : isLoading ? (
+        {isLoading ? (
           <ActivityIndicator size="large" />
         ) : (
           <>
@@ -547,25 +566,21 @@ export default function RecitationScreen(props) {
         )}
       </View>
 
-      {!sessionComplete ? (
-        <Text style={styles.progress}>
-          {`Ayah ${displayAyahNumber} of ${totalAyahs}`}
-        </Text>
-      ) : null}
+      <Text style={styles.progress}>
+        {`Ayah ${displayAyahNumber} of ${totalAyahs}`}
+      </Text>
 
-      {!sessionComplete ? (
-        <TouchableOpacity
-          style={[
-            styles.endSessionButton,
-            isLoading && styles.endSessionButtonDisabled,
-          ]}
-          onPress={handlePauseSession}
-          disabled={isLoading}
-          activeOpacity={0.8}
-        >
-          <Text style={styles.endSessionButtonText}>Pause Session</Text>
-        </TouchableOpacity>
-      ) : null}
+      <TouchableOpacity
+        style={[
+          styles.endSessionButton,
+          isLoading && styles.endSessionButtonDisabled,
+        ]}
+        onPress={handlePauseSession}
+        disabled={isLoading}
+        activeOpacity={0.8}
+      >
+        <Text style={styles.endSessionButtonText}>Pause Session</Text>
+      </TouchableOpacity>
     </ScrollView>
   );
 }
@@ -664,27 +679,6 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     minHeight: 100,
     marginBottom: 24,
-  },
-  sessionCompleteSection: {
-    alignItems: 'center',
-    paddingVertical: 16,
-  },
-  sessionCompleteTitle: {
-    fontSize: 22,
-    fontWeight: '700',
-    color: '#1b5e20',
-    marginBottom: 20,
-  },
-  backToHomeButton: {
-    backgroundColor: '#2e7d32',
-    borderRadius: 12,
-    paddingVertical: 14,
-    paddingHorizontal: 32,
-  },
-  backToHomeButtonText: {
-    color: '#fff',
-    fontSize: 17,
-    fontWeight: '600',
   },
   micIcon: {
     fontSize: 48,
