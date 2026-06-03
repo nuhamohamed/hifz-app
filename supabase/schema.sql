@@ -85,10 +85,14 @@ CREATE TABLE public.sessions (
   portion_start_ayah integer NOT NULL,
   portion_end_ayah integer NOT NULL,
   last_confirmed_ayah integer,
+  phase text NOT NULL DEFAULT 'pre_quiz',
   started_at timestamptz,
   completed_at timestamptz,
   CONSTRAINT sessions_status_check CHECK (
     status IN ('in_progress', 'paused', 'complete')
+  ),
+  CONSTRAINT sessions_phase_check CHECK (
+    phase IN ('pre_quiz', 'revision', 'post_quiz', 'complete')
   )
 );
 

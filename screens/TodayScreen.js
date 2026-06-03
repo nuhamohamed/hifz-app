@@ -23,6 +23,33 @@ function getTodayDateString() {
   return `${y}-${m}-${day}`;
 }
 
+function buildSessionParams(sessionId, resumeFromAyah) {
+  return {
+    surahNumber: SURAH_NUMBER,
+    startAyah: START_AYAH,
+    endAyah: END_AYAH,
+    sessionId,
+    resumeFromAyah,
+  };
+}
+
+function getResumeHint(pausedSession) {
+  if (!pausedSession) {
+    return null;
+  }
+  const phase = pausedSession.phase ?? 'pre_quiz';
+  if (phase === 'pre_quiz') {
+    return 'Resuming pre-session quiz';
+  }
+  if (phase === 'revision') {
+    return `Resuming revision from Ayah ${(pausedSession.last_confirmed_ayah ?? 0) + 1}`;
+  }
+  if (phase === 'post_quiz') {
+    return 'Resuming post-session quiz';
+  }
+  return null;
+}
+
 export default function TodayScreen() {
   const navigation = useNavigation();
   const [pausedSession, setPausedSession] = useState(null);
@@ -35,7 +62,7 @@ export default function TodayScreen() {
 
       const { data, error: fetchError } = await supabase
         .from('sessions')
-        .select('id, last_confirmed_ayah')
+        .select('id, last_confirmed_ayah, phase')
         .eq('user_id', HARDCODED_USER_ID)
         .eq('status', 'paused')
         .eq('date', today)
@@ -47,14 +74,20 @@ export default function TodayScreen() {
     })();
   }, []);
 
-  const navigateToRecitation = (sessionId, resumeFromAyah) => {
-    navigation.navigate('Recitation', {
-      surahNumber: SURAH_NUMBER,
-      startAyah: START_AYAH,
-      endAyah: END_AYAH,
-      sessionId,
-      resumeFromAyah,
-    });
+  const navigateForPausedSession = (session) => {
+    const resumeFromAyah = (session.last_confirmed_ayah ?? 0) + 1;
+    const params = buildSessionParams(session.id, resumeFromAyah);
+    const phase = session.phase ?? 'pre_quiz';
+
+    if (phase === 'pre_quiz') {
+      navigation.navigate('PreSessionQuiz', params);
+    } else if (phase === 'revision') {
+      navigation.navigate('Recitation', params);
+    } else if (phase === 'post_quiz') {
+      navigation.navigate('PostSessionQuiz', params);
+    } else {
+      navigation.navigate('Recitation', params);
+    }
   };
 
   const handleStartSession = async () => {
@@ -66,7 +99,7 @@ export default function TodayScreen() {
 
       const { data: pausedSession, error: fetchError } = await supabase
         .from('sessions')
-        .select('id, last_confirmed_ayah')
+        .select('id, last_confirmed_ayah, phase')
         .eq('user_id', HARDCODED_USER_ID)
         .eq('status', 'paused')
         .eq('date', today)
@@ -77,8 +110,7 @@ export default function TodayScreen() {
       }
 
       if (pausedSession) {
-        const resumeFromAyah = (pausedSession.last_confirmed_ayah ?? 0) + 1;
-        navigateToRecitation(pausedSession.id, resumeFromAyah);
+        navigateForPausedSession(pausedSession);
         return;
       }
 
@@ -88,6 +120,7 @@ export default function TodayScreen() {
           user_id: HARDCODED_USER_ID,
           date: today,
           status: 'in_progress',
+          phase: 'pre_quiz',
           juz_number: 1,
           portion_start_ayah: START_AYAH,
           portion_end_ayah: END_AYAH,
@@ -101,13 +134,18 @@ export default function TodayScreen() {
         throw new Error(insertError.message);
       }
 
-      navigateToRecitation(newSession.id, START_AYAH);
+      navigation.navigate(
+        'PreSessionQuiz',
+        buildSessionParams(newSession.id, START_AYAH)
+      );
     } catch (err) {
       setError(err.message ?? 'Failed to start session.');
     } finally {
       setIsStarting(false);
     }
   };
+
+  const resumeHint = getResumeHint(pausedSession);
 
   return (
     <View style={styles.container}>
@@ -119,10 +157,8 @@ export default function TodayScreen() {
         <Text style={styles.timeText}>~5 mins</Text>
       </View>
 
-      {pausedSession ? (
-        <Text style={styles.resumeHint}>
-          Resuming from Ayah {(pausedSession.last_confirmed_ayah ?? 0) + 1}
-        </Text>
+      {resumeHint ? (
+        <Text style={styles.resumeHint}>{resumeHint}</Text>
       ) : null}
 
       {error ? <Text style={styles.error}>{error}</Text> : null}

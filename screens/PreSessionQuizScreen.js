@@ -5,16 +5,18 @@ import {
   ScrollView,
   StyleSheet,
   Text,
-  TouchableOpacity,
   View,
 } from 'react-native';
 import { useNavigation } from '@react-navigation/native';
 import { Audio } from 'expo-av';
 import * as Haptics from 'expo-haptics';
 import { normalizeArabic, wordDiff } from '../lib/arabicUtils';
+import { fetchDueQuizItems, updateQuizResult } from '../lib/quizEngine';
 import { getAyah } from '../lib/quranApi';
 import { supabase } from '../lib/supabase';
 import { startListening, stopListening } from '../lib/silenceDetection';
+
+const HARDCODED_USER_ID = '87ec942f-de08-4f9b-afe4-a33e31af56c5';
 
 const ELEVENLABS_STT_URL = 'https://api.elevenlabs.io/v1/speech-to-text';
 
@@ -54,42 +56,186 @@ async function transcribeWithElevenLabs(uri) {
   return data.text ?? '';
 }
 
-export default function RecitationScreen(props) {
-  const params = props.route?.params ?? props;
-  const {
-    surahNumber,
-    startAyah,
-    endAyah,
-    sessionId,
-    resumeFromAyah = startAyah,
-  } = params;
+async function loadContextBlock(surahNumber, centerAyah) {
+  const start = Math.max(1, centerAyah - 2);
+  let end = centerAyah + 1;
 
+  try {
+    await getAyah(surahNumber, end);
+  } catch {
+    end = centerAyah;
+  }
+
+  const ayahNumbers = [];
+  for (let n = start; n <= end; n++) {
+    ayahNumbers.push(n);
+  }
+
+  const block = [];
+  for (const ayahNumber of ayahNumbers) {
+    const data = await getAyah(surahNumber, ayahNumber);
+    block.push({ ayahNumber, ...data });
+  }
+
+  return block;
+}
+
+function getStartingCue(block) {
+  if (!block.length) {
+    return '';
+  }
+  const first = block[0];
+  const text = first.isDisconnectedLetters
+    ? first.textCompare
+    : first.textDisplay;
+  const words = text.trim().split(/\s+/).filter(Boolean);
+  return words.slice(0, 3).join(' ');
+}
+
+export default function PreSessionQuizScreen(props) {
   const navigation = useNavigation();
-  const totalAyahs = endAyah - startAyah + 1;
-  const initialAyahIndex = resumeFromAyah - startAyah;
-  const [currentAyahIndex, setCurrentAyahIndex] = useState(initialAyahIndex);
+  const sessionParams = props.route?.params ?? {};
+
+  const [quizItems, setQuizItems] = useState([]);
+  const [currentItemIndex, setCurrentItemIndex] = useState(0);
   const [confirmedAyahs, setConfirmedAyahs] = useState([]);
+  const [startingCue, setStartingCue] = useState('');
   const [isTranscribing, setIsTranscribing] = useState(false);
-  const [sessionComplete, setSessionComplete] = useState(false);
   const [isLoading, setIsLoading] = useState(true);
   const [error, setError] = useState('');
+  const [showTransition, setShowTransition] = useState(false);
 
+  const blockAyahsRef = useRef([]);
+  const targetAyahIndexRef = useRef(0);
+  const targetAyahResultRef = useRef(null);
   const ayahDataRef = useRef({
     textDisplay: '',
     textCompare: '',
     words: [],
     isDisconnectedLetters: false,
   });
-  const nextAyahCacheRef = useRef(null); // { index, data } — prefetched next ayah
-  const mistakeStateRef = useRef('none'); // 'none' | 'awaiting_retry' | 'tier2_readback'
+  const [currentBlockIndex, setCurrentBlockIndex] = useState(0);
+  const currentBlockIndexRef = useRef(0);
+  const currentItemIndexRef = useRef(0);
+  const mistakeStateRef = useRef('none');
   const wrongIndicesRef = useRef([]);
   const [mistakeMessage, setMistakeMessage] = useState('');
   const [tier2AyahDisplay, setTier2AyahDisplay] = useState('');
   const [tier2TranscribedText, setTier2TranscribedText] = useState('');
   const [tier2HighlightIndices, setTier2HighlightIndices] = useState([]);
-  const currentAyahIndexRef = useRef(initialAyahIndex);
   const startedRef = useRef(false);
+  const onClipRecordedRef = useRef(null);
+  const getExpectedWordCountRef = useRef(null);
+  const onAyahCompleteRef = useRef(null);
   const pulseAnim = useRef(new Animated.Value(1)).current;
+  const fadeAnim = useRef(new Animated.Value(0)).current;
+
+  const currentItem = quizItems[currentItemIndex];
+  const blockLength = blockAyahsRef.current.length;
+
+  const navigateToRecitation = useCallback(async () => {
+    if (sessionParams.sessionId) {
+      await supabase
+        .from('sessions')
+        .update({ phase: 'revision' })
+        .eq('id', sessionParams.sessionId);
+    }
+    navigation.replace('Recitation', sessionParams);
+  }, [navigation, sessionParams]);
+
+  const finishAllQuizItems = useCallback(async () => {
+    await stopListening();
+    if (sessionParams.sessionId) {
+      await supabase
+        .from('sessions')
+        .update({ phase: 'revision' })
+        .eq('id', sessionParams.sessionId);
+    }
+    setShowTransition(true);
+    Animated.timing(fadeAnim, {
+      toValue: 1,
+      duration: 800,
+      useNativeDriver: true,
+    }).start();
+    setTimeout(() => {
+      navigation.replace('Recitation', sessionParams);
+    }, 3500);
+  }, [fadeAnim, navigation, sessionParams]);
+
+  const loadBlockForItem = useCallback(async (item) => {
+    const block = await loadContextBlock(item.surah_number, item.ayah_number);
+    blockAyahsRef.current = block;
+    targetAyahIndexRef.current = block.findIndex(
+      (b) => b.ayahNumber === item.ayah_number
+    );
+    targetAyahResultRef.current = null;
+    currentBlockIndexRef.current = 0;
+    setCurrentBlockIndex(0);
+    mistakeStateRef.current = 'none';
+    wrongIndicesRef.current = [];
+    setMistakeMessage('');
+    setTier2AyahDisplay('');
+    setTier2TranscribedText('');
+    setTier2HighlightIndices([]);
+    setConfirmedAyahs([]);
+    setStartingCue(getStartingCue(block));
+
+    const first = block[0];
+    ayahDataRef.current = {
+      textDisplay: first.textDisplay,
+      textCompare: first.textCompare,
+      words: first.words,
+      isDisconnectedLetters: first.isDisconnectedLetters,
+    };
+  }, []);
+
+  const loadBlockAyah = useCallback((blockIndex) => {
+    const entry = blockAyahsRef.current[blockIndex];
+    if (!entry) {
+      return;
+    }
+    ayahDataRef.current = {
+      textDisplay: entry.textDisplay,
+      textCompare: entry.textCompare,
+      words: entry.words,
+      isDisconnectedLetters: entry.isDisconnectedLetters,
+    };
+  }, []);
+
+  const recordTargetAyahResult = useCallback((result) => {
+    if (currentBlockIndexRef.current === targetAyahIndexRef.current) {
+      targetAyahResultRef.current = result;
+    }
+  }, []);
+
+  const advanceToNextBlockAyah = useCallback(async () => {
+    const nextIndex = currentBlockIndexRef.current + 1;
+    if (nextIndex >= blockAyahsRef.current.length) {
+      const item = quizItems[currentItemIndexRef.current];
+      const result = targetAyahResultRef.current ?? 'wrong';
+      await updateQuizResult(item.id, result);
+
+      const nextItemIndex = currentItemIndexRef.current + 1;
+      if (nextItemIndex >= quizItems.length) {
+        await finishAllQuizItems();
+        return;
+      }
+
+      currentItemIndexRef.current = nextItemIndex;
+      setCurrentItemIndex(nextItemIndex);
+      await loadBlockForItem(quizItems[nextItemIndex]);
+      return;
+    }
+
+    currentBlockIndexRef.current = nextIndex;
+    setCurrentBlockIndex(nextIndex);
+    mistakeStateRef.current = 'none';
+    setMistakeMessage('');
+    setTier2AyahDisplay('');
+    setTier2TranscribedText('');
+    setTier2HighlightIndices([]);
+    loadBlockAyah(nextIndex);
+  }, [quizItems, loadBlockAyah, loadBlockForItem, finishAllQuizItems]);
 
   const onClipRecorded = useCallback(async (uri) => {
     setIsTranscribing(true);
@@ -103,29 +249,6 @@ export default function RecitationScreen(props) {
   const getExpectedWordCount = useCallback(() => {
     return ayahDataRef.current.words.length;
   }, []);
-
-  const loadAyah = useCallback(async (ayahIndex) => {
-    const ayahNumber = startAyah + ayahIndex;
-
-    // Use prefetched data if it matches what we need
-    if (nextAyahCacheRef.current?.index === ayahIndex) {
-      ayahDataRef.current = nextAyahCacheRef.current.data;
-      nextAyahCacheRef.current = null;
-    } else {
-      const data = await getAyah(surahNumber, ayahNumber);
-      ayahDataRef.current = data;
-    }
-
-    // Kick off background prefetch of the next ayah
-    const prefetchIndex = ayahIndex + 1;
-    if (prefetchIndex < totalAyahs) {
-      getAyah(surahNumber, startAyah + prefetchIndex)
-        .then((data) => {
-          nextAyahCacheRef.current = { index: prefetchIndex, data };
-        })
-        .catch(() => {}); // silent — will fetch on demand if prefetch fails
-    }
-  }, [surahNumber, startAyah, totalAyahs]);
 
   const buzzAndTone = useCallback(async () => {
     try {
@@ -150,38 +273,19 @@ export default function RecitationScreen(props) {
 
   const onAyahComplete = useCallback(
     async (accumulatedText) => {
+      const isTargetAyah =
+        currentBlockIndexRef.current === targetAyahIndexRef.current;
+
       if (ayahDataRef.current.isDisconnectedLetters) {
         const capturedDisplay = ayahDataRef.current.textCompare;
         setConfirmedAyahs((prev) => [
           ...prev,
-          {
-            textDisplay: capturedDisplay,
-            status: 'correct',
-          },
+          { textDisplay: capturedDisplay, status: 'correct' },
         ]);
-        await supabase
-          .from('sessions')
-          .update({
-            last_confirmed_ayah: startAyah + currentAyahIndexRef.current,
-          })
-          .eq('id', sessionId);
-        const nextIndex = currentAyahIndexRef.current + 1;
-        if (nextIndex >= totalAyahs) {
-          setSessionComplete(true);
-          await supabase
-            .from('sessions')
-            .update({
-              status: 'complete',
-              phase: 'complete',
-              completed_at: new Date().toISOString(),
-            })
-            .eq('id', sessionId);
-          await stopListening();
-          return;
+        if (isTargetAyah && targetAyahResultRef.current === null) {
+          recordTargetAyahResult('correct_first');
         }
-        currentAyahIndexRef.current = nextIndex;
-        setCurrentAyahIndex(nextIndex);
-        await loadAyah(nextIndex);
+        await advanceToNextBlockAyah();
         return;
       }
 
@@ -196,21 +300,11 @@ export default function RecitationScreen(props) {
       );
       const allCorrect = wrongEntries.length === 0;
 
-      const wrongForDisplay = diff
-        .map((item, index) => ({
-          ...item,
-          displayWord: words[index]?.textDisplay ?? item.word,
-        }))
-        .filter((item) => item.status === 'wrong' || item.status === 'missing')
-        .map((item) => item.displayWord);
-
       const wrongIndices = diff
         .map((item, i) =>
           item.status === 'wrong' || item.status === 'missing' ? i : -1
         )
         .filter((i) => i >= 0);
-
-      // --- Mistake state machine ---
 
       if (mistakeStateRef.current === 'none') {
         if (allCorrect) {
@@ -219,29 +313,10 @@ export default function RecitationScreen(props) {
             ...prev,
             { textDisplay, status: 'correct' },
           ]);
-          await supabase
-            .from('sessions')
-            .update({
-              last_confirmed_ayah: startAyah + currentAyahIndexRef.current,
-            })
-            .eq('id', sessionId);
-          const nextIndex = currentAyahIndexRef.current + 1;
-          if (nextIndex >= totalAyahs) {
-            setSessionComplete(true);
-            await supabase
-              .from('sessions')
-              .update({
-                status: 'complete',
-                phase: 'complete',
-                completed_at: new Date().toISOString(),
-              })
-              .eq('id', sessionId);
-            await stopListening();
-            return;
+          if (isTargetAyah) {
+            recordTargetAyahResult('correct_first');
           }
-          currentAyahIndexRef.current = nextIndex;
-          setCurrentAyahIndex(nextIndex);
-          await loadAyah(nextIndex);
+          await advanceToNextBlockAyah();
         } else {
           wrongIndicesRef.current = wrongIndices;
           mistakeStateRef.current = 'awaiting_retry';
@@ -265,30 +340,10 @@ export default function RecitationScreen(props) {
               wrongIndices: wrongIndicesRef.current,
             },
           ]);
-          // TODO: insert into quiz_cards at Box 0 — deferred until Supabase wiring sprint
-          await supabase
-            .from('sessions')
-            .update({
-              last_confirmed_ayah: startAyah + currentAyahIndexRef.current,
-            })
-            .eq('id', sessionId);
-          const nextIndex = currentAyahIndexRef.current + 1;
-          if (nextIndex >= totalAyahs) {
-            setSessionComplete(true);
-            await supabase
-              .from('sessions')
-              .update({
-                status: 'complete',
-                phase: 'complete',
-                completed_at: new Date().toISOString(),
-              })
-              .eq('id', sessionId);
-            await stopListening();
-            return;
+          if (isTargetAyah) {
+            recordTargetAyahResult('correct_second');
           }
-          currentAyahIndexRef.current = nextIndex;
-          setCurrentAyahIndex(nextIndex);
-          await loadAyah(nextIndex);
+          await advanceToNextBlockAyah();
         } else {
           wrongIndicesRef.current = wrongIndices;
           mistakeStateRef.current = 'tier2_readback';
@@ -313,32 +368,27 @@ export default function RecitationScreen(props) {
             wrongIndices: wrongIndicesRef.current,
           },
         ]);
-        // TODO: insert into quiz_cards at Box 0, increment juz mistake count — deferred
-        const nextIndex = currentAyahIndexRef.current + 1;
-        if (nextIndex >= totalAyahs) {
-          setSessionComplete(true);
-          await supabase
-            .from('sessions')
-            .update({
-              status: 'complete',
-              phase: 'complete',
-              completed_at: new Date().toISOString(),
-            })
-            .eq('id', sessionId);
-          await stopListening();
-          return;
+        if (isTargetAyah) {
+          recordTargetAyahResult('wrong');
         }
-        currentAyahIndexRef.current = nextIndex;
-        setCurrentAyahIndex(nextIndex);
-        await loadAyah(nextIndex);
-        return;
+        await advanceToNextBlockAyah();
       }
     },
-    [loadAyah, buzzAndTone, startAyah, sessionId, totalAyahs]
+    [
+      advanceToNextBlockAyah,
+      buzzAndTone,
+      recordTargetAyahResult,
+    ]
   );
 
+  onClipRecordedRef.current = onClipRecorded;
+  getExpectedWordCountRef.current = getExpectedWordCount;
+  onAyahCompleteRef.current = onAyahComplete;
+
   useEffect(() => {
-    if (startedRef.current) return;
+    if (startedRef.current) {
+      return;
+    }
     startedRef.current = true;
 
     let mounted = true;
@@ -346,35 +396,34 @@ export default function RecitationScreen(props) {
     (async () => {
       try {
         setIsLoading(true);
+        const items = await fetchDueQuizItems(HARDCODED_USER_ID);
+        console.log('Quiz items fetched:', JSON.stringify(items));
 
-        if (resumeFromAyah > startAyah) {
-          const priorConfirmed = [];
-          for (let ayah = startAyah; ayah < resumeFromAyah; ayah++) {
-            const data = await getAyah(surahNumber, ayah);
-            priorConfirmed.push({
-              textDisplay: data.isDisconnectedLetters
-                ? data.textCompare
-                : data.textDisplay,
-              status: 'correct',
-            });
-          }
-          if (mounted) {
-            setConfirmedAyahs(priorConfirmed);
-          }
-        }
-
-        await loadAyah(initialAyahIndex);
         if (!mounted) {
           return;
         }
+
+        if (items.length === 0) {
+          await navigateToRecitation();
+          return;
+        }
+
+        setQuizItems(items);
+        currentItemIndexRef.current = 0;
+        await loadBlockForItem(items[0]);
+
+        if (!mounted) {
+          return;
+        }
+
         await startListening(
-          onClipRecorded,
-          getExpectedWordCount,
-          onAyahComplete
+          (uri) => onClipRecordedRef.current(uri),
+          () => getExpectedWordCountRef.current(),
+          (accumulatedText) => onAyahCompleteRef.current(accumulatedText)
         );
       } catch (err) {
         if (mounted) {
-          setError(err.message ?? 'Failed to start recitation session.');
+          setError(err.message ?? 'Failed to start pre-session quiz.');
         }
       } finally {
         if (mounted) {
@@ -388,23 +437,10 @@ export default function RecitationScreen(props) {
       startedRef.current = false;
       stopListening();
     };
-  }, [
-    loadAyah,
-    onClipRecorded,
-    getExpectedWordCount,
-    onAyahComplete,
-    initialAyahIndex,
-    resumeFromAyah,
-    startAyah,
-    surahNumber,
-  ]);
+  }, [loadBlockForItem, navigateToRecitation]);
 
   useEffect(() => {
-    currentAyahIndexRef.current = currentAyahIndex;
-  }, [currentAyahIndex]);
-
-  useEffect(() => {
-    if (isTranscribing || sessionComplete || isLoading || error) {
+    if (isTranscribing || isLoading || error || showTransition) {
       pulseAnim.stopAnimation();
       pulseAnim.setValue(1);
       return;
@@ -426,34 +462,49 @@ export default function RecitationScreen(props) {
     );
     loop.start();
     return () => loop.stop();
-  }, [isTranscribing, sessionComplete, isLoading, error, pulseAnim]);
+  }, [isTranscribing, isLoading, error, showTransition, pulseAnim]);
 
-  const handlePauseSession = async () => {
-    if (sessionId) {
-      await supabase
-        .from('sessions')
-        .update({ status: 'paused' })
-        .eq('id', sessionId);
-    }
-    await stopListening();
-    navigation.navigate('Today');
-  };
+  useEffect(() => {
+    currentBlockIndexRef.current = currentBlockIndex;
+  }, [currentBlockIndex]);
 
-  const handleBackToHome = () => {
-    navigation.navigate('Today');
-  };
+  useEffect(() => {
+    currentItemIndexRef.current = currentItemIndex;
+  }, [currentItemIndex]);
 
-  const displayAyahNumber = Math.min(currentAyahIndex + 1, totalAyahs);
-  const isListening = !sessionComplete && !isLoading && !error;
+  const displayAyahInBlock = currentBlockIndex + 1;
+  const isListening = !isLoading && !error && !showTransition;
+
+  if (showTransition) {
+    return (
+      <Animated.View
+        style={[styles.transitionOverlay, { opacity: fadeAnim }]}
+      >
+        <Text style={styles.transitionText}>Time to revise</Text>
+      </Animated.View>
+    );
+  }
 
   return (
     <ScrollView contentContainerStyle={styles.container}>
-      <Text style={styles.title}>Recitation</Text>
-      <Text style={styles.subtitle}>Al-Baqarah 2:1–7</Text>
+      <Text style={styles.title}>Pre-Session Quiz</Text>
+      {currentItem ? (
+        <Text style={styles.subtitle}>
+          Item {currentItemIndex + 1} of {quizItems.length} — Ayah{' '}
+          {currentItem.ayah_number}
+        </Text>
+      ) : null}
 
       {error ? <Text style={styles.error}>{error}</Text> : null}
 
+      {confirmedAyahs.length === 0 ? (
+        <Text style={styles.reciteHint}>Recite from the grey ayah</Text>
+      ) : null}
+
       <View style={styles.mushafFrame}>
+        {startingCue ? (
+          <Text style={styles.startingCue}>{startingCue}</Text>
+        ) : null}
         {confirmedAyahs.map((ayah, index) => {
           const hasWrongWords =
             ayah.wrongIndices && ayah.wrongIndices.length > 0;
@@ -490,11 +541,11 @@ export default function RecitationScreen(props) {
         })}
       </View>
 
-      {mistakeMessage && !sessionComplete ? (
+      {mistakeMessage ? (
         <Text style={styles.mistakeMessage}>{mistakeMessage}</Text>
       ) : null}
 
-      {tier2AyahDisplay && !sessionComplete ? (
+      {tier2AyahDisplay ? (
         <View style={styles.tier2Frame}>
           <Text style={styles.tier2Label}>What you said:</Text>
           <Text style={styles.tier2TranscribedText}>{tier2TranscribedText}</Text>
@@ -520,18 +571,7 @@ export default function RecitationScreen(props) {
       ) : null}
 
       <View style={styles.micSection}>
-        {sessionComplete ? (
-          <View style={styles.sessionCompleteSection}>
-            <Text style={styles.sessionCompleteTitle}>Session Complete</Text>
-            <TouchableOpacity
-              style={styles.backToHomeButton}
-              onPress={handleBackToHome}
-              activeOpacity={0.8}
-            >
-              <Text style={styles.backToHomeButtonText}>Back to Home</Text>
-            </TouchableOpacity>
-          </View>
-        ) : isLoading ? (
+        {isLoading ? (
           <ActivityIndicator size="large" />
         ) : (
           <>
@@ -547,24 +587,10 @@ export default function RecitationScreen(props) {
         )}
       </View>
 
-      {!sessionComplete ? (
+      {blockLength > 0 ? (
         <Text style={styles.progress}>
-          {`Ayah ${displayAyahNumber} of ${totalAyahs}`}
+          {`Ayah ${displayAyahInBlock} of ${blockLength} in this quiz`}
         </Text>
-      ) : null}
-
-      {!sessionComplete ? (
-        <TouchableOpacity
-          style={[
-            styles.endSessionButton,
-            isLoading && styles.endSessionButtonDisabled,
-          ]}
-          onPress={handlePauseSession}
-          disabled={isLoading}
-          activeOpacity={0.8}
-        >
-          <Text style={styles.endSessionButtonText}>Pause Session</Text>
-        </TouchableOpacity>
       ) : null}
     </ScrollView>
   );
@@ -591,6 +617,12 @@ const styles = StyleSheet.create({
     color: '#c00',
     marginBottom: 16,
   },
+  reciteHint: {
+    fontSize: 13,
+    color: '#757575',
+    textAlign: 'center',
+    marginBottom: 8,
+  },
   mushafFrame: {
     borderWidth: 2,
     borderColor: '#2e7d32',
@@ -599,6 +631,14 @@ const styles = StyleSheet.create({
     minHeight: 200,
     marginBottom: 24,
     backgroundColor: '#fafaf8',
+  },
+  startingCue: {
+    fontSize: 22,
+    lineHeight: 40,
+    textAlign: 'right',
+    writingDirection: 'rtl',
+    color: '#757575',
+    marginBottom: 12,
   },
   ayahLine: {
     fontSize: 22,
@@ -614,9 +654,6 @@ const styles = StyleSheet.create({
     color: '#1b5e20',
   },
   mushafWordWrong: {
-    color: '#c62828',
-  },
-  ayahMistake: {
     color: '#c62828',
   },
   mistakeMessage: {
@@ -665,27 +702,6 @@ const styles = StyleSheet.create({
     minHeight: 100,
     marginBottom: 24,
   },
-  sessionCompleteSection: {
-    alignItems: 'center',
-    paddingVertical: 16,
-  },
-  sessionCompleteTitle: {
-    fontSize: 22,
-    fontWeight: '700',
-    color: '#1b5e20',
-    marginBottom: 20,
-  },
-  backToHomeButton: {
-    backgroundColor: '#2e7d32',
-    borderRadius: 12,
-    paddingVertical: 14,
-    paddingHorizontal: 32,
-  },
-  backToHomeButtonText: {
-    color: '#fff',
-    fontSize: 17,
-    fontWeight: '600',
-  },
   micIcon: {
     fontSize: 48,
   },
@@ -700,20 +716,16 @@ const styles = StyleSheet.create({
     marginBottom: 16,
     color: '#333',
   },
-  endSessionButton: {
-    backgroundColor: '#c62828',
-    borderRadius: 12,
-    paddingVertical: 16,
-    paddingHorizontal: 24,
+  transitionOverlay: {
+    flex: 1,
+    backgroundColor: '#fff',
+    justifyContent: 'center',
     alignItems: 'center',
-    marginTop: 8,
   },
-  endSessionButtonDisabled: {
-    opacity: 0.5,
-  },
-  endSessionButtonText: {
-    color: '#fff',
-    fontSize: 18,
+  transitionText: {
+    fontSize: 32,
     fontWeight: '700',
+    color: '#1b5e20',
+    textAlign: 'center',
   },
 });
