@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import {
   ActivityIndicator,
   ScrollView,
@@ -8,10 +8,12 @@ import {
   View,
 } from 'react-native';
 import { CommonActions, useNavigation } from '@react-navigation/native';
+import { getAyahLocation, getJuzTotalAyahs } from '../lib/juzSurahMap';
 import { getAyah } from '../lib/quranApi';
+import { updateJuzProgressAfterSession } from '../lib/planEngine';
 import { supabase } from '../lib/supabase';
 
-const SURAH_NAME = 'Al-Baqarah';
+const HARDCODED_USER_ID = '87ec942f-de08-4f9b-afe4-a33e31af56c5';
 
 function buildWrongWordIndices(words, wrongWords) {
   const remaining = [...(wrongWords ?? [])];
@@ -87,11 +89,13 @@ function MistakeCard({ mistake }) {
 export default function SessionSummaryScreen({ route }) {
   const navigation = useNavigation();
   const sessionId = route?.params?.sessionId;
+  const totalAyahsInJuzParam = route?.params?.totalAyahsInJuz;
 
   const [isLoading, setIsLoading] = useState(true);
   const [error, setError] = useState('');
   const [session, setSession] = useState(null);
   const [mistakes, setMistakes] = useState([]);
+  const planUpdatedRef = useRef(false);
 
   useEffect(() => {
     if (!sessionId) {
@@ -110,13 +114,30 @@ export default function SessionSummaryScreen({ route }) {
         const { data: sessionData, error: sessionError } = await supabase
           .from('sessions')
           .select(
-            'portion_start_ayah, portion_end_ayah, juz_number, completed_at'
+            'portion_start_ayah, portion_end_ayah, juz_number, completed_at, status'
           )
           .eq('id', sessionId)
           .single();
 
         if (sessionError) {
           throw new Error(sessionError.message);
+        }
+
+        if (
+          sessionData.status === 'complete' &&
+          !planUpdatedRef.current
+        ) {
+          planUpdatedRef.current = true;
+          const totalAyahsInJuz =
+            totalAyahsInJuzParam ??
+            getJuzTotalAyahs(sessionData.juz_number);
+          await updateJuzProgressAfterSession(
+            HARDCODED_USER_ID,
+            sessionId,
+            sessionData.juz_number,
+            sessionData.portion_end_ayah,
+            totalAyahsInJuz
+          );
         }
 
         const { data: mistakesData, error: mistakesError } = await supabase
@@ -160,7 +181,7 @@ export default function SessionSummaryScreen({ route }) {
     return () => {
       mounted = false;
     };
-  }, [sessionId]);
+  }, [sessionId, totalAyahsInJuzParam]);
 
   const confirmedCount = mistakes.filter((m) => m.tier === 2).length;
   const slipCount = mistakes.filter((m) => m.tier === 1).length;
@@ -197,15 +218,26 @@ export default function SessionSummaryScreen({ route }) {
     );
   }
 
-  const startAyah = session?.portion_start_ayah ?? 1;
-  const endAyah = session?.portion_end_ayah ?? startAyah;
+  let portionLabel = '';
+  if (session) {
+    const start = getAyahLocation(
+      session.juz_number,
+      session.portion_start_ayah
+    );
+    const end = getAyahLocation(session.juz_number, session.portion_end_ayah);
+    if (start.surahNumber === end.surahNumber) {
+      portionLabel = `${start.surahName} ${start.ayahNumber}–${end.ayahNumber}`;
+    } else {
+      portionLabel = `${start.surahName} ${start.ayahNumber} to ${end.surahName} ${end.ayahNumber}`;
+    }
+  }
 
   return (
     <ScrollView contentContainerStyle={styles.container}>
       <Text style={styles.title}>Session Complete</Text>
 
       <Text style={styles.portionText}>
-        {SURAH_NAME} — Ayahs {startAyah} to {endAyah}
+        {session ? `Juz ${session.juz_number} — ${portionLabel}` : ''}
       </Text>
 
       <Text style={styles.summaryLine}>

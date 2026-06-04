@@ -69,6 +69,8 @@ export default function RecitationScreen(props) {
     startAyah,
     endAyah,
     sessionId,
+    juzNumber = 1,
+    totalAyahsInJuz,
     resumeFromAyah = startAyah,
   } = params;
 
@@ -112,8 +114,18 @@ export default function RecitationScreen(props) {
       surahNumber,
       startAyah,
       endAyah,
+      juzNumber,
+      totalAyahsInJuz,
     });
-  }, [navigation, sessionId, surahNumber, startAyah, endAyah]);
+  }, [
+    navigation,
+    sessionId,
+    surahNumber,
+    startAyah,
+    endAyah,
+    juzNumber,
+    totalAyahsInJuz,
+  ]);
 
   finishRevisionRef.current = finishRevisionAndNavigate;
 

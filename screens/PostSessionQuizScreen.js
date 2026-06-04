@@ -12,7 +12,12 @@ import { useNavigation } from '@react-navigation/native';
 import { Audio } from 'expo-av';
 import * as Haptics from 'expo-haptics';
 import { normalizeArabic, wordDiff } from '../lib/arabicUtils';
-import { fetchPostSessionItems, updateQuizResult } from '../lib/quizEngine';
+import {
+  checkMistakeHealing,
+  fetchPostSessionItems,
+  flagContextAyahIfNeeded,
+  updateQuizResult,
+} from '../lib/quizEngine';
 import { getAyah } from '../lib/quranApi';
 import { supabase } from '../lib/supabase';
 import { startListening, stopListening } from '../lib/silenceDetection';
@@ -96,7 +101,11 @@ function getStartingCue(block) {
 export default function PostSessionQuizScreen(props) {
   const navigation = useNavigation();
   const sessionParams = props.route?.params ?? {};
-  const { sessionId } = sessionParams;
+  const {
+    sessionId,
+    juzNumber: sessionJuzNumber = 1,
+    totalAyahsInJuz,
+  } = sessionParams;
 
   const [quizItems, setQuizItems] = useState([]);
   const [currentItemIndex, setCurrentItemIndex] = useState(0);
@@ -165,9 +174,9 @@ export default function PostSessionQuizScreen(props) {
       useNativeDriver: true,
     }).start();
     setTimeout(() => {
-      navigation.replace('SessionSummary', { sessionId });
+      navigation.replace('SessionSummary', { sessionId, totalAyahsInJuz });
     }, 2000);
-  }, [completeSession, fadeAnim, navigation, sessionId]);
+  }, [completeSession, fadeAnim, navigation, sessionId, totalAyahsInJuz]);
 
   const loadBlockForItem = useCallback(async (item) => {
     const block = await loadContextBlock(item.surah_number, item.ayah_number);
@@ -221,6 +230,14 @@ export default function PostSessionQuizScreen(props) {
       const item = quizItems[currentItemIndexRef.current];
       const result = targetAyahResultRef.current ?? 'wrong';
       await updateQuizResult(item.id, result);
+      if (result === 'correct_first') {
+        await checkMistakeHealing(
+          HARDCODED_USER_ID,
+          item.surah_number,
+          item.ayah_number,
+          sessionJuzNumber
+        );
+      }
 
       const nextItemIndex = currentItemIndexRef.current + 1;
       if (nextItemIndex >= quizItems.length) {
@@ -246,7 +263,13 @@ export default function PostSessionQuizScreen(props) {
     setTier2TranscribedText('');
     setTier2HighlightIndices([]);
     loadBlockAyah(nextIndex);
-  }, [quizItems, loadBlockAyah, loadBlockForItem, finishAllQuizItems]);
+  }, [
+    quizItems,
+    loadBlockAyah,
+    loadBlockForItem,
+    finishAllQuizItems,
+    sessionJuzNumber,
+  ]);
 
   const onClipRecorded = useCallback(async (uri) => {
     setIsTranscribing(true);
@@ -353,6 +376,17 @@ export default function PostSessionQuizScreen(props) {
           ]);
           if (isTargetAyah) {
             recordTargetAyahResult('correct_second');
+          } else if (wrongIndicesRef.current.length > 0) {
+            const blockEntry =
+              blockAyahsRef.current[currentBlockIndexRef.current];
+            const item = quizItems[currentItemIndexRef.current];
+            if (blockEntry && item) {
+              await flagContextAyahIfNeeded(
+                HARDCODED_USER_ID,
+                item.surah_number,
+                blockEntry.ayahNumber
+              );
+            }
           }
           await advanceToNextBlockAyah();
         } else {
@@ -385,11 +419,7 @@ export default function PostSessionQuizScreen(props) {
         await advanceToNextBlockAyah();
       }
     },
-    [
-      advanceToNextBlockAyah,
-      buzzAndTone,
-      recordTargetAyahResult,
-    ]
+    [advanceToNextBlockAyah, buzzAndTone, quizItems, recordTargetAyahResult]
   );
 
   onClipRecordedRef.current = onClipRecorded;
