@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import {
   ActivityIndicator,
   Button,
@@ -7,11 +7,14 @@ import {
   View,
 } from 'react-native';
 import { useNavigation } from '@react-navigation/native';
+import { getCurrentUserId } from '../lib/auth';
 import { getAyahLocation, getJuzTotalAyahs } from '../lib/juzSurahMap';
 import { getTodayPortion } from '../lib/planEngine';
+import {
+  scheduleDailyNotification,
+  scheduleOverdueNotification,
+} from '../lib/notifications';
 import { supabase } from '../lib/supabase';
-
-const HARDCODED_USER_ID = '87ec942f-de08-4f9b-afe4-a33e31af56c5';
 
 function getTodayDateString() {
   const d = new Date();
@@ -52,6 +55,18 @@ function formatPortionDisplay(todayPortion) {
   return `Juz ${juzNumber}: ${start.surahName} ${start.ayahNumber} to ${end.surahName} ${end.ayahNumber}`;
 }
 
+function estimateSessionMinutes(todayPortion, quizCount) {
+  let mins = 0;
+  if (todayPortion && todayPortion.type !== 'quiz_only') {
+    const ayahCount =
+      todayPortion.portionEndAyah - todayPortion.portionStartAyah + 1;
+    mins += ayahCount * 1;
+  }
+  mins += (quizCount ?? 0) * 1;
+  const rounded = Math.max(5, Math.ceil(mins / 5) * 5);
+  return `~${rounded} mins`;
+}
+
 function getResumeHint(pausedSession) {
   if (!pausedSession) {
     return null;
@@ -72,10 +87,12 @@ function getResumeHint(pausedSession) {
 export default function TodayScreen() {
   const navigation = useNavigation();
   const [todayPortion, setTodayPortion] = useState(null);
+  const [quizCount, setQuizCount] = useState(0);
   const [portionLoading, setPortionLoading] = useState(true);
   const [pausedSession, setPausedSession] = useState(null);
   const [isStarting, setIsStarting] = useState(false);
   const [error, setError] = useState('');
+  const notificationsScheduledRef = useRef(false);
 
   useEffect(() => {
     let mounted = true;
@@ -86,18 +103,24 @@ export default function TodayScreen() {
         setError('');
 
         const today = getTodayDateString();
+        const userId = await getCurrentUserId();
 
-        const [portion, pausedResult] = await Promise.all([
-          getTodayPortion(HARDCODED_USER_ID),
+        const [portion, pausedResult, quizResult] = await Promise.all([
+          getTodayPortion(userId),
           supabase
             .from('sessions')
             .select(
               'id, last_confirmed_ayah, phase, juz_number, portion_start_ayah, portion_end_ayah'
             )
-            .eq('user_id', HARDCODED_USER_ID)
+            .eq('user_id', userId)
             .eq('status', 'paused')
             .eq('date', today)
             .maybeSingle(),
+          supabase
+            .from('quiz_queue')
+            .select('id', { count: 'exact', head: true })
+            .eq('user_id', userId)
+            .lte('next_review_date', today),
         ]);
 
         if (!mounted) {
@@ -105,6 +128,36 @@ export default function TodayScreen() {
         }
 
         setTodayPortion(portion);
+        setQuizCount(quizResult.count ?? 0);
+
+        if (!notificationsScheduledRef.current) {
+          notificationsScheduledRef.current = true;
+          try {
+            if (portion.type === 'quiz_only') {
+              await scheduleDailyNotification(9, 0, null, null, null);
+            } else {
+              const { juzNumber, portionStartAyah, portionEndAyah } = portion;
+              const start = getAyahLocation(juzNumber, portionStartAyah);
+              const end = getAyahLocation(juzNumber, portionEndAyah);
+              await scheduleDailyNotification(
+                9,
+                0,
+                start.surahName,
+                start.ayahNumber,
+                end.ayahNumber
+              );
+            }
+
+            if (
+              portion.scheduledDate &&
+              portion.scheduledDate < today
+            ) {
+              await scheduleOverdueNotification();
+            }
+          } catch (notifErr) {
+            console.warn('Failed to schedule notifications:', notifErr);
+          }
+        }
 
         if (!pausedResult.error && pausedResult.data) {
           setPausedSession(pausedResult.data);
@@ -151,13 +204,14 @@ export default function TodayScreen() {
 
     try {
       const today = getTodayDateString();
+      const userId = await getCurrentUserId();
 
       const { data: paused, error: fetchError } = await supabase
         .from('sessions')
         .select(
           'id, last_confirmed_ayah, phase, juz_number, portion_start_ayah, portion_end_ayah'
         )
-        .eq('user_id', HARDCODED_USER_ID)
+        .eq('user_id', userId)
         .eq('status', 'paused')
         .eq('date', today)
         .maybeSingle();
@@ -175,7 +229,7 @@ export default function TodayScreen() {
         const { data: newSession, error: insertError } = await supabase
           .from('sessions')
           .insert({
-            user_id: HARDCODED_USER_ID,
+            user_id: userId,
             date: today,
             status: 'in_progress',
             phase: 'pre_quiz',
@@ -203,17 +257,22 @@ export default function TodayScreen() {
         return;
       }
 
+      const startLoc = getAyahLocation(
+        todayPortion.juzNumber,
+        todayPortion.portionStartAyah
+      );
+
       const { data: newSession, error: insertError } = await supabase
         .from('sessions')
         .insert({
-          user_id: HARDCODED_USER_ID,
+          user_id: userId,
           date: today,
           status: 'in_progress',
           phase: 'pre_quiz',
           juz_number: todayPortion.juzNumber,
           portion_start_ayah: todayPortion.portionStartAyah,
           portion_end_ayah: todayPortion.portionEndAyah,
-          last_confirmed_ayah: 0,
+          last_confirmed_ayah: startLoc.ayahNumber - 1,
           started_at: new Date().toISOString(),
         })
         .select('id')
@@ -222,11 +281,6 @@ export default function TodayScreen() {
       if (insertError) {
         throw new Error(insertError.message);
       }
-
-      const startLoc = getAyahLocation(
-        todayPortion.juzNumber,
-        todayPortion.portionStartAyah
-      );
       navigation.navigate(
         'PreSessionQuiz',
         buildSessionParams(newSession.id, startLoc.ayahNumber, todayPortion)
@@ -258,7 +312,9 @@ export default function TodayScreen() {
             {portionDisplay ?? 'Unable to load portion'}
           </Text>
         )}
-        <Text style={styles.timeText}>~5 mins</Text>
+        <Text style={styles.timeText}>
+          {estimateSessionMinutes(todayPortion, quizCount)}
+        </Text>
       </View>
 
       {resumeHint ? (
@@ -277,6 +333,25 @@ export default function TodayScreen() {
           />
         </View>
       )}
+
+      {/* DEV ONLY — remove before release */}
+      <View style={styles.buttonWrap}>
+        <Button
+          title="[Dev] Test Recitation (Al-Baqarah 1–7)"
+          color="#888"
+          onPress={() =>
+            navigation.navigate('Recitation', {
+              surahNumber: 2,
+              startAyah: 1,
+              endAyah: 7,
+              sessionId: null,
+              juzNumber: 1,
+              totalAyahsInJuz: 7,
+              resumeFromAyah: 1,
+            })
+          }
+        />
+      </View>
     </View>
   );
 }

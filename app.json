@@ -16,10 +16,13 @@
       "supportsTablet": true,
       "infoPlist": {
         "NSMicrophoneUsageDescription": "This app records audio to test Quran memorization transcription."
-      }
+      },
+      "bundleIdentifier": "com.anonymous.HifzApp"
     },
     "android": {
-      "permissions": ["RECORD_AUDIO"],
+      "permissions": [
+        "RECORD_AUDIO"
+      ],
       "adaptiveIcon": {
         "foregroundImage": "./assets/adaptive-icon.png",
         "backgroundColor": "#ffffff"
@@ -28,6 +31,20 @@
     },
     "web": {
       "favicon": "./assets/favicon.png"
-    }
+    },
+    "plugins": [
+      "@siteed/audio-studio",
+      [
+        "expo-notifications",
+        {
+          "icon": "./assets/icon.png",
+          "color": "#2e7d32"
+        }
+      ],
+      "@react-native-community/datetimepicker",
+      "expo-sqlite",
+      "expo-asset",
+      "expo-font"
+    ]
   }
 }

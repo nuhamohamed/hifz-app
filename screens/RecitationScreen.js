@@ -1,8 +1,7 @@
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   ActivityIndicator,
   Animated,
-  ScrollView,
   StyleSheet,
   Text,
   TouchableOpacity,
@@ -11,10 +10,15 @@ import {
 import { useNavigation } from '@react-navigation/native';
 import { Audio } from 'expo-av';
 import * as Haptics from 'expo-haptics';
+import { getCurrentUserId } from '../lib/auth';
 import { normalizeArabic, wordDiff } from '../lib/arabicUtils';
 import { getAyah } from '../lib/quranApi';
 import { supabase } from '../lib/supabase';
-import { startListening, stopListening } from '../lib/silenceDetection';
+import { startListening, stopListening, resetUtterance, resumeListening } from '../lib/realtimeTranscription';
+import { createLiveJudge } from '../lib/liveWordJudge';
+import { useSQLiteContext } from 'expo-sqlite';
+import MushafPage from '../components/MushafPage';
+import { getPageForAyah } from '../lib/mushafDb';
 
 function getTodayDateString() {
   const d = new Date();
@@ -22,44 +26,6 @@ function getTodayDateString() {
   const m = String(d.getUTCMonth() + 1).padStart(2, '0');
   const day = String(d.getUTCDate()).padStart(2, '0');
   return `${y}-${m}-${day}`;
-}
-
-const ELEVENLABS_STT_URL = 'https://api.elevenlabs.io/v1/speech-to-text';
-
-async function transcribeWithElevenLabs(uri) {
-  const apiKey = process.env.EXPO_PUBLIC_ELEVENLABS_API_KEY;
-  if (!apiKey) {
-    throw new Error('EXPO_PUBLIC_ELEVENLABS_API_KEY is not set in .env');
-  }
-
-  const formData = new FormData();
-  formData.append('file', {
-    uri,
-    type: 'audio/m4a',
-    name: 'recording.m4a',
-  });
-  formData.append('model_id', 'scribe_v2');
-  formData.append('language_code', 'ara');
-
-  const response = await fetch(ELEVENLABS_STT_URL, {
-    method: 'POST',
-    headers: {
-      'xi-api-key': apiKey,
-    },
-    body: formData,
-  });
-
-  const data = await response.json();
-
-  if (!response.ok) {
-    const errorMessage =
-      typeof data.detail === 'string'
-        ? data.detail
-        : `Transcription failed (${response.status})`;
-    throw new Error(errorMessage);
-  }
-
-  return data.text ?? '';
 }
 
 export default function RecitationScreen(props) {
@@ -75,11 +41,12 @@ export default function RecitationScreen(props) {
   } = params;
 
   const navigation = useNavigation();
+  const db = useSQLiteContext();
   const totalAyahs = endAyah - startAyah + 1;
   const initialAyahIndex = resumeFromAyah - startAyah;
   const [currentAyahIndex, setCurrentAyahIndex] = useState(initialAyahIndex);
   const [confirmedAyahs, setConfirmedAyahs] = useState([]);
-  const [isTranscribing, setIsTranscribing] = useState(false);
+  const [currentAyahDisplay, setCurrentAyahDisplay] = useState('');
   const [isLoading, setIsLoading] = useState(true);
   const [error, setError] = useState('');
 
@@ -90,16 +57,21 @@ export default function RecitationScreen(props) {
     isDisconnectedLetters: false,
   });
   const nextAyahCacheRef = useRef(null); // { index, data } — prefetched next ayah
-  const mistakeStateRef = useRef('none'); // 'none' | 'awaiting_retry' | 'tier2_readback'
+  const mistakeStateRef = useRef('none'); // 'none' | 'has_mistakes' | 'awaiting_retry'
   const wrongIndicesRef = useRef([]);
+  const retryTriggeredRef = useRef(false);
+  const firstFailedTextRef = useRef('');
   const [mistakeMessage, setMistakeMessage] = useState('');
-  const [tier2AyahDisplay, setTier2AyahDisplay] = useState('');
-  const [tier2TranscribedText, setTier2TranscribedText] = useState('');
-  const [tier2HighlightIndices, setTier2HighlightIndices] = useState([]);
   const currentAyahIndexRef = useRef(initialAyahIndex);
   const startedRef = useRef(false);
   const pulseAnim = useRef(new Animated.Value(1)).current;
+  const fadeAnim = useRef(new Animated.Value(0)).current;
+  const [showTransition, setShowTransition] = useState(false);
   const finishRevisionRef = useRef(null);
+  const liveJudgeRef = useRef(null);
+  const [liveWrongIndices, setLiveWrongIndices] = useState([]);
+  const [liveText, setLiveText] = useState('');
+  const [revealedWordCount, setRevealedWordCount] = useState(0);
 
   const finishRevisionAndNavigate = useCallback(async () => {
     await stopListening();
@@ -109,6 +81,14 @@ export default function RecitationScreen(props) {
         .update({ phase: 'post_quiz' })
         .eq('id', sessionId);
     }
+    // Gradual hand-off: fade in the transition screen, hold, then navigate.
+    setShowTransition(true);
+    Animated.timing(fadeAnim, {
+      toValue: 1,
+      duration: 1500,
+      useNativeDriver: true,
+    }).start();
+    await new Promise((resolve) => setTimeout(resolve, 4000));
     navigation.replace('PostSessionQuiz', {
       sessionId,
       surahNumber,
@@ -125,34 +105,44 @@ export default function RecitationScreen(props) {
     endAyah,
     juzNumber,
     totalAyahsInJuz,
+    fadeAnim,
   ]);
 
   finishRevisionRef.current = finishRevisionAndNavigate;
 
-  const onClipRecorded = useCallback(async (uri) => {
-    setIsTranscribing(true);
-    try {
-      return await transcribeWithElevenLabs(uri);
-    } finally {
-      setIsTranscribing(false);
-    }
-  }, []);
+  // Returns normalized expected words for the current ayah.
+  // The transcription module matches committed words against this list in order;
+  // completion fires as soon as the last entry is matched (no silence wait).
+  const getExpectedWords = useCallback(() => {
+    // Disconnected letters (الم، يس، الر، etc.) can't be transcribed by STT
+    // reliably. Return [] so processCommitWords advances on the first commit
+    // without trying to match any specific word.
+    if (ayahDataRef.current?.isDisconnectedLetters) return [];
 
-  const getExpectedWordCount = useCallback(() => {
-    return ayahDataRef.current.words.length;
+    const words = ayahDataRef.current?.words ?? [];
+    const normalized = words
+      .map((w) => normalizeArabic(w.textDisplay))
+      .filter(Boolean);
+    return normalized;
   }, []);
 
   const loadAyah = useCallback(async (ayahIndex) => {
     const ayahNumber = startAyah + ayahIndex;
 
+    let data;
     // Use prefetched data if it matches what we need
     if (nextAyahCacheRef.current?.index === ayahIndex) {
-      ayahDataRef.current = nextAyahCacheRef.current.data;
+      data = nextAyahCacheRef.current.data;
+      ayahDataRef.current = data;
       nextAyahCacheRef.current = null;
     } else {
-      const data = await getAyah(surahNumber, ayahNumber);
+      data = await getAyah(surahNumber, ayahNumber);
       ayahDataRef.current = data;
     }
+
+    setCurrentAyahDisplay(
+      data.isDisconnectedLetters ? data.textCompare : data.textDisplay
+    );
 
     // Kick off background prefetch of the next ayah
     const prefetchIndex = ayahIndex + 1;
@@ -186,201 +176,220 @@ export default function RecitationScreen(props) {
     }
   }, []);
 
+  const recreateJudge = useCallback(() => {
+    liveJudgeRef.current = createLiveJudge({
+      getExpectedWords: () => {
+        const norm = normalizeArabic(ayahDataRef.current.textCompare ?? '');
+        return norm ? norm.split(/\s+/).filter(Boolean) : [];
+      },
+      onMistake: (wrongEntries, liveText) => {
+        // Only act on the FIRST mistake of a new attempt. Subsequent calls are
+        // ignored because the judge sets fired=true and becomes a no-op anyway.
+        if (mistakeStateRef.current !== 'none' || ayahDataRef.current.isDisconnectedLetters) return;
+        mistakeStateRef.current = 'has_mistakes';
+        retryTriggeredRef.current = false;
+        wrongIndicesRef.current = wrongEntries.map((e) => e.index);
+        firstFailedTextRef.current = liveText; // tentative; confirmed in onAyahComplete
+        buzzAndTone(); // fire-and-forget — don't await in sync callback
+        setMistakeMessage('Mistake — try again from the beginning');
+      },
+      onMarksChange: (indices) => {
+        // Only update live wrong slots when there's no active mistake being shown.
+        // During has_mistakes / awaiting_retry, the slots are locked at the
+        // confirmed wrong positions and must not be overwritten by the live judge.
+        if (mistakeStateRef.current !== 'none') return;
+        setLiveWrongIndices(indices);
+      },
+    });
+  }, [buzzAndTone]);
+
   const onAyahComplete = useCallback(
     async (accumulatedText) => {
-      if (ayahDataRef.current.isDisconnectedLetters) {
-        const capturedDisplay = ayahDataRef.current.textCompare;
-        setConfirmedAyahs((prev) => [
-          ...prev,
-          {
-            textDisplay: capturedDisplay,
-            status: 'correct',
-          },
-        ]);
-        await supabase
-          .from('sessions')
-          .update({
-            last_confirmed_ayah: startAyah + currentAyahIndexRef.current,
-          })
-          .eq('id', sessionId);
-        const nextIndex = currentAyahIndexRef.current + 1;
-        if (nextIndex >= totalAyahs) {
-          await finishRevisionRef.current();
-          return;
-        }
-        currentAyahIndexRef.current = nextIndex;
-        setCurrentAyahIndex(nextIndex);
-        await loadAyah(nextIndex);
-        return;
-      }
+      try {
+        setLiveText('');
 
-      const { textDisplay, textCompare, words } = ayahDataRef.current;
-      const diff = wordDiff(
-        normalizeArabic(textCompare),
-        normalizeArabic(accumulatedText)
-      );
+        // ── Helper: advance to the next ayah ──
+        // Called by all advance paths. Pauses STT immediately (before any async
+        // work) so stale commits can't race against loadAyah / ayahDataRef update.
+        const advanceAyah = async ({
+          confirmedEntry, // object pushed to confirmedAyahs
+          mistakeInsert = null, // optional { userId, ayahNumber, tier, wrong_words, transcribed_text }
+          message = '', // feedback message ('' clears it)
+          clearFirstFailed = false,
+        }) => {
+          const completedIndex = currentAyahIndexRef.current;
+          const nextIndex = completedIndex + 1;
 
-      const wrongEntries = diff.filter(
-        (item) => item.status === 'wrong' || item.status === 'missing'
-      );
-      const allCorrect = wrongEntries.length === 0;
+          // 1. Freeze STT before any state change — prevents commits from landing
+          //    while ayahDataRef is stale (between now and loadAyah completing).
+          resetUtterance({ discardMs: 30000 });
 
-      const wrongForDisplay = diff
-        .map((item, index) => ({
-          ...item,
-          displayWord: words[index]?.textDisplay ?? item.word,
-        }))
-        .filter((item) => item.status === 'wrong' || item.status === 'missing')
-        .map((item) => item.displayWord);
+          // 2. All synchronous state updates in one batch before the first await.
+          mistakeStateRef.current = 'none';
+          retryTriggeredRef.current = false;
+          if (clearFirstFailed) firstFailedTextRef.current = '';
+          setRevealedWordCount(0);
+          setLiveWrongIndices([]);
+          setMistakeMessage(message);
+          currentAyahIndexRef.current = nextIndex;
+          setCurrentAyahIndex(nextIndex);
+          setCurrentAyahDisplay('');
+          setConfirmedAyahs((prev) => [...prev, confirmedEntry]);
 
-      const wrongIndices = diff
-        .map((item, i) =>
-          item.status === 'wrong' || item.status === 'missing' ? i : -1
-        )
-        .filter((i) => i >= 0);
+          // Clear the feedback message after 2.5 s (only relevant for non-empty messages).
+          if (message) setTimeout(() => setMistakeMessage(''), 2500);
 
-      // --- Mistake state machine ---
-
-      if (mistakeStateRef.current === 'none') {
-        if (allCorrect) {
-          setMistakeMessage('');
-          setConfirmedAyahs((prev) => [
-            ...prev,
-            { textDisplay, status: 'correct' },
-          ]);
-          await supabase
-            .from('sessions')
-            .update({
-              last_confirmed_ayah: startAyah + currentAyahIndexRef.current,
-            })
-            .eq('id', sessionId);
-          const nextIndex = currentAyahIndexRef.current + 1;
+          // 3. Handle session end before any DB writes to avoid unnecessary async work.
           if (nextIndex >= totalAyahs) {
+            resumeListening();
             await finishRevisionRef.current();
             return;
           }
-          currentAyahIndexRef.current = nextIndex;
-          setCurrentAyahIndex(nextIndex);
-          await loadAyah(nextIndex);
-        } else {
-          wrongIndicesRef.current = wrongIndices;
-          mistakeStateRef.current = 'awaiting_retry';
-          await buzzAndTone();
-          setMistakeMessage(
-            'Possible mistake detected — please try again.'
-          );
-        }
-        return;
-      }
 
-      if (mistakeStateRef.current === 'awaiting_retry') {
-        if (allCorrect) {
-          mistakeStateRef.current = 'none';
-          setMistakeMessage('');
-          setConfirmedAyahs((prev) => [
-            ...prev,
-            {
-              textDisplay,
-              status: 'correct',
-              wrongIndices: wrongIndicesRef.current,
-            },
-          ]);
-          if (sessionId) {
-            const ayahNumber = startAyah + currentAyahIndexRef.current;
+          // 4. Async DB writes.
+          if (mistakeInsert && sessionId) {
+            const { userId, ayahNumber, tier, wrong_words, transcribed_text } = mistakeInsert;
             await supabase.from('mistakes').insert({
-              user_id: '87ec942f-de08-4f9b-afe4-a33e31af56c5',
+              user_id: userId,
               session_id: sessionId,
               surah_number: surahNumber,
               ayah_number: ayahNumber,
-              tier: 1,
-              wrong_words: wrongIndicesRef.current.map(
-                (i) => ayahDataRef.current.words[i]?.textDisplay ?? ''
-              ),
+              tier,
+              wrong_words,
+              transcribed_text,
             });
             await supabase.from('quiz_queue').upsert(
-              {
-                user_id: '87ec942f-de08-4f9b-afe4-a33e31af56c5',
-                surah_number: surahNumber,
-                ayah_number: ayahNumber,
-                box_level: 0,
-                next_review_date: getTodayDateString(),
-              },
+              { user_id: userId, surah_number: surahNumber, ayah_number: ayahNumber,
+                box_level: 0, next_review_date: getTodayDateString() },
               { onConflict: 'user_id,surah_number,ayah_number' }
             );
           }
           await supabase
             .from('sessions')
-            .update({
-              last_confirmed_ayah: startAyah + currentAyahIndexRef.current,
-            })
+            .update({ last_confirmed_ayah: startAyah + completedIndex })
             .eq('id', sessionId);
-          const nextIndex = currentAyahIndexRef.current + 1;
-          if (nextIndex >= totalAyahs) {
-            await finishRevisionRef.current();
-            return;
-          }
-          currentAyahIndexRef.current = nextIndex;
-          setCurrentAyahIndex(nextIndex);
-          await loadAyah(nextIndex);
-        } else {
-          wrongIndicesRef.current = wrongIndices;
-          mistakeStateRef.current = 'tier2_readback';
-          setMistakeMessage('');
-          setTier2TranscribedText(accumulatedText);
-          setTier2AyahDisplay(textDisplay);
-          setTier2HighlightIndices(wrongIndices);
-        }
-        return;
-      }
 
-      if (mistakeStateRef.current === 'tier2_readback') {
-        mistakeStateRef.current = 'none';
-        setTier2AyahDisplay('');
-        setTier2TranscribedText('');
-        setTier2HighlightIndices([]);
-        setConfirmedAyahs((prev) => [
-          ...prev,
-          {
-            textDisplay,
-            status: 'mistake',
-            wrongIndices: wrongIndicesRef.current,
-          },
-        ]);
-        if (sessionId) {
-          const ayahNumber = startAyah + currentAyahIndexRef.current;
-          await supabase.from('mistakes').insert({
-            user_id: '87ec942f-de08-4f9b-afe4-a33e31af56c5',
-            session_id: sessionId,
-            surah_number: surahNumber,
-            ayah_number: ayahNumber,
-            tier: 2,
-            wrong_words: wrongIndicesRef.current.map(
-              (i) => ayahDataRef.current.words[i]?.textDisplay ?? ''
-            ),
+          // 5. Load new ayah data THEN resume STT — ensures getExpectedWords() and
+          //    ayahDataRef are correct before any commit is processed.
+          await loadAyah(nextIndex);
+          recreateJudge();
+          resumeListening();
+        };
+
+        // ── Disconnected letters (الم etc.): always advance ──
+        if (ayahDataRef.current.isDisconnectedLetters) {
+          await advanceAyah({
+            confirmedEntry: { textDisplay: ayahDataRef.current.textCompare, status: 'correct' },
           });
-          await supabase.from('quiz_queue').upsert(
-            {
-              user_id: '87ec942f-de08-4f9b-afe4-a33e31af56c5',
-              surah_number: surahNumber,
-              ayah_number: ayahNumber,
-              box_level: 0,
-              next_review_date: getTodayDateString(),
-            },
-            { onConflict: 'user_id,surah_number,ayah_number' }
-          );
-        }
-        const nextIndex = currentAyahIndexRef.current + 1;
-        if (nextIndex >= totalAyahs) {
-          await finishRevisionRef.current();
           return;
         }
-        currentAyahIndexRef.current = nextIndex;
-        setCurrentAyahIndex(nextIndex);
-        await loadAyah(nextIndex);
-        return;
+
+        const { textDisplay, textCompare, words } = ayahDataRef.current;
+
+        // Compute letter-level diff from the first failed attempt (for mushaf display).
+        const computeFirstAttemptInfo = () => {
+          const fd = wordDiff(
+            normalizeArabic(textCompare),
+            normalizeArabic(firstFailedTextRef.current)
+          );
+          const letterDiffByIndex = {};
+          const firstWrongIndices = [];
+          fd.forEach((item, idx) => {
+            if (item.status === 'wrong' || item.status === 'missing') {
+              letterDiffByIndex[idx] = item.status === 'missing' ? null : (item.spoken ?? null);
+              firstWrongIndices.push(idx);
+            }
+          });
+          return { letterDiffByIndex, firstWrongIndices };
+        };
+
+        // ── has_mistakes: ayah completed after live-detected mistake ──
+        if (mistakeStateRef.current === 'has_mistakes') {
+          const diff = wordDiff(normalizeArabic(textCompare), normalizeArabic(accumulatedText));
+          const wrongIndices = diff
+            .map((item, i) => (item.status === 'wrong' || item.status === 'missing' ? i : -1))
+            .filter((i) => i >= 0);
+
+          if (wrongIndices.length === 0) {
+            // Live judge false-positive — advance as correct.
+            await advanceAyah({
+              confirmedEntry: { textDisplay, status: 'correct' },
+            });
+            return;
+          }
+
+          // Real mistake confirmed — lock in definitive wrong positions and wait.
+          wrongIndicesRef.current = wrongIndices;
+          firstFailedTextRef.current = accumulatedText;
+          setLiveWrongIndices(wrongIndices);
+          retryTriggeredRef.current = false;
+          // Short pause to drain any stale commits still in the Speechmatics pipeline.
+          resetUtterance({ discardMs: 200 });
+          return;
+        }
+
+        const diff = wordDiff(normalizeArabic(textCompare), normalizeArabic(accumulatedText));
+        const wrongIndices = diff
+          .map((item, i) => (item.status === 'wrong' || item.status === 'missing' ? i : -1))
+          .filter((i) => i >= 0);
+        const allCorrect = wrongIndices.length === 0;
+
+        // ── none: first attempt ──
+        if (mistakeStateRef.current === 'none') {
+          if (allCorrect) {
+            await advanceAyah({ confirmedEntry: { textDisplay, status: 'correct' } });
+          } else {
+            // Live judge missed the mistake — enter has_mistakes now.
+            wrongIndicesRef.current = wrongIndices;
+            firstFailedTextRef.current = accumulatedText;
+            mistakeStateRef.current = 'has_mistakes';
+            retryTriggeredRef.current = false;
+            setRevealedWordCount(words.length); // restore full reveal (onCommit('') cleared it)
+            setLiveWrongIndices(wrongIndices);
+            resetUtterance({ discardMs: 200 });
+            buzzAndTone();
+            setMistakeMessage('Mistake — try again from the beginning');
+          }
+          return;
+        }
+
+        // ── awaiting_retry: second attempt — always advance ──
+        if (mistakeStateRef.current === 'awaiting_retry') {
+          const { letterDiffByIndex, firstWrongIndices } = computeFirstAttemptInfo();
+          const isRetryCorrect = allCorrect;
+
+          let mistakeInsert = null;
+          if (sessionId) {
+            const userId = await getCurrentUserId();
+            mistakeInsert = {
+              userId,
+              ayahNumber: startAyah + currentAyahIndexRef.current,
+              tier: isRetryCorrect ? 1 : 2,
+              wrong_words: firstWrongIndices.map(
+                (i) => ayahDataRef.current.words[i]?.textDisplay ?? ''
+              ),
+              transcribed_text: firstFailedTextRef.current,
+            };
+          }
+
+          await advanceAyah({
+            confirmedEntry: {
+              textDisplay,
+              status: isRetryCorrect ? 'correct' : 'mistake',
+              wrongIndices: firstWrongIndices,
+              letterDiffByIndex,
+            },
+            mistakeInsert,
+            message: isRetryCorrect ? 'Correct' : 'Still incorrect — correct word shown',
+            clearFirstFailed: true,
+          });
+        }
+      } catch (err) {
+        resumeListening(); // make sure STT isn't left frozen if something throws
+        setError(err?.message ?? 'Failed to process ayah completion.');
       }
     },
-    [loadAyah, buzzAndTone, startAyah, sessionId, totalAyahs, surahNumber]
+    [loadAyah, buzzAndTone, recreateJudge, startAyah, sessionId, totalAyahs, surahNumber]
   );
 
   useEffect(() => {
@@ -394,16 +403,42 @@ export default function RecitationScreen(props) {
         setIsLoading(true);
 
         if (resumeFromAyah > startAyah) {
+          const userId = await getCurrentUserId();
+
+          const { data: priorMistakes } = await supabase
+            .from('mistakes')
+            .select('ayah_number, wrong_words, tier')
+            .eq('session_id', sessionId)
+            .order('ayah_number', { ascending: true });
+
+          const mistakesByAyah = {};
+          for (const m of priorMistakes ?? []) {
+            mistakesByAyah[m.ayah_number] = m;
+          }
+
           const priorConfirmed = [];
           for (let ayah = startAyah; ayah < resumeFromAyah; ayah++) {
             const data = await getAyah(surahNumber, ayah);
+            const mistake = mistakesByAyah[ayah];
+            let wrongIndices = [];
+
+            if (mistake?.wrong_words?.length) {
+              wrongIndices = mistake.wrong_words
+                .map((w) =>
+                  data.words.findIndex((word) => word.textDisplay === w)
+                )
+                .filter((i) => i >= 0);
+            }
+
             priorConfirmed.push({
               textDisplay: data.isDisconnectedLetters
                 ? data.textCompare
                 : data.textDisplay,
-              status: 'correct',
+              status: mistake?.tier === 2 ? 'mistake' : 'correct',
+              wrongIndices,
             });
           }
+
           if (mounted) {
             setConfirmedAyahs(priorConfirmed);
           }
@@ -413,11 +448,65 @@ export default function RecitationScreen(props) {
         if (!mounted) {
           return;
         }
-        await startListening(
-          onClipRecorded,
-          getExpectedWordCount,
-          onAyahComplete
-        );
+        recreateJudge();
+        await startListening({
+          getExpectedWords,
+          onAyahComplete,
+          // Partials arrive in real-time but Speechmatics over-predicts Arabic
+          // Quran text — it shows future words before they're spoken. Use partials
+          // only for the live mistake judge and retry detection, not for word reveal.
+          // text = accumulatedText + partialText (for the live judge / display)
+          // partialOnly = raw current speech fragment only (for retry detection)
+          onPartial: (text, partialOnly) => {
+            liveJudgeRef.current?.update(text);
+            setLiveText(text);
+
+            // Retry detection: fires when the user's CURRENT speech (partialOnly,
+            // not the accumulated prefix) starts with the ayah's first word.
+            // Using `text` here would always match because accumulatedText starts
+            // with word1 — so we'd get a false trigger while still mid-first-attempt.
+            if (
+              mistakeStateRef.current === 'has_mistakes' &&
+              !retryTriggeredRef.current &&
+              !ayahDataRef.current?.isDisconnectedLetters &&
+              partialOnly // only raw partials, not commit-triggered calls (which pass undefined)
+            ) {
+              const words = ayahDataRef.current?.words ?? [];
+              if (words.length > 0) {
+                const normFirst = normalizeArabic(words[0].textDisplay ?? '');
+                const retryWords = normalizeArabic(partialOnly).split(/\s+/).filter(Boolean);
+                if (normFirst && retryWords.length > 0 && retryWords[0] === normFirst) {
+                  retryTriggeredRef.current = true;
+                  mistakeStateRef.current = 'awaiting_retry';
+                  setMistakeMessage('');
+                  recreateJudge();
+                  // Brief discard to drain any stale first-attempt commits that
+                  // Speechmatics hasn't sent yet, before the retry commits arrive.
+                  resetUtterance({ discardMs: 300 });
+                }
+              }
+            }
+          },
+          // Committed words are stable (no prediction). Drive the reveal from
+          // these so only actually-spoken words appear on the mushaf.
+          // max_delay:1.0 in the WS config ensures commits arrive every ≤1 s
+          // even without a pause, so the reveal stays close to real-time.
+          onCommit: (text) => {
+            const count = text
+              ? (normalizeArabic(text)?.split(/\s+/).filter(Boolean).length ?? 0)
+              : 0;
+            // Empty commit after ayah completion fires before onAyahComplete —
+            // don't blank the mushaf while a mistake is still being shown.
+            if (count === 0 && mistakeStateRef.current === 'has_mistakes') return;
+            // During retry the wrong-word slots are locked; liveWrongIndices
+            // drives visibility instead of revealedWordCount.
+            if (mistakeStateRef.current === 'awaiting_retry') return;
+            setRevealedWordCount(count);
+          },
+          onError: (message) => {
+            if (mounted) setError(message);
+          },
+        });
       } catch (err) {
         if (mounted) {
           setError(err.message ?? 'Failed to start recitation session.');
@@ -436,9 +525,9 @@ export default function RecitationScreen(props) {
     };
   }, [
     loadAyah,
-    onClipRecorded,
-    getExpectedWordCount,
+    getExpectedWords,
     onAyahComplete,
+    recreateJudge,
     initialAyahIndex,
     resumeFromAyah,
     startAyah,
@@ -450,7 +539,7 @@ export default function RecitationScreen(props) {
   }, [currentAyahIndex]);
 
   useEffect(() => {
-    if (isTranscribing || isLoading || error) {
+    if (isLoading || error) {
       pulseAnim.stopAnimation();
       pulseAnim.setValue(1);
       return;
@@ -472,7 +561,7 @@ export default function RecitationScreen(props) {
     );
     loop.start();
     return () => loop.stop();
-  }, [isTranscribing, isLoading, error, pulseAnim]);
+  }, [isLoading, error, pulseAnim]);
 
   const handlePauseSession = async () => {
     if (sessionId) {
@@ -485,241 +574,184 @@ export default function RecitationScreen(props) {
     navigation.navigate('Today');
   };
 
+  // --- Mushaf page state ---
+  const [currentPage, setCurrentPage] = useState(null);
+
+  useEffect(() => {
+    let mounted = true;
+    const ayahNumber = startAyah + Math.min(currentAyahIndex, totalAyahs - 1);
+    getPageForAyah(db, surahNumber, ayahNumber)
+      .then((page) => {
+        if (mounted && page != null) setCurrentPage(page);
+      })
+      .catch(() => {}); // keep previous page on lookup failure
+    return () => {
+      mounted = false;
+    };
+  }, [db, surahNumber, startAyah, currentAyahIndex, totalAyahs]);
+
+  // Confirmed ayahs → per-ayah word statuses. Unconfirmed ayahs are absent,
+  // so the mushaf renders them invisible (unread words are never disclosed).
+  const ayahStatuses = useMemo(() => {
+    const map = {};
+    confirmedAyahs.forEach((ayah, index) => {
+      map[`${surahNumber}:${startAyah + index}`] = {
+        wrongIndices: ayah.wrongIndices ?? [],
+        letterDiffByIndex: ayah.letterDiffByIndex ?? null,
+      };
+    });
+    const currentKey = `${surahNumber}:${startAyah + currentAyahIndex}`;
+    if (!map[currentKey]) {
+      // Current unconfirmed ayah: reveal words one-by-one as the STT picks
+      // them up. revealedWordCount drives how many words are visible; words
+      // in liveWrongIndices that have been revealed get a red tint.
+      map[currentKey] = { revealedCount: revealedWordCount, liveWrongIndices };
+    }
+    return map;
+  }, [confirmedAyahs, surahNumber, startAyah, currentAyahIndex, liveWrongIndices, revealedWordCount]);
+
   const displayAyahNumber = Math.min(currentAyahIndex + 1, totalAyahs);
-  const isListening = !isLoading && !error;
+  const isListening = !isLoading && !error && !showTransition;
+
+  if (showTransition) {
+    return (
+      <Animated.View style={[styles.transitionOverlay, { opacity: fadeAnim }]}>
+        <Text style={styles.transitionText}>Revision complete</Text>
+      </Animated.View>
+    );
+  }
 
   return (
-    <ScrollView contentContainerStyle={styles.container}>
-      <Text style={styles.title}>Recitation</Text>
-      <Text style={styles.subtitle}>Al-Baqarah 2:1–7</Text>
-
+    <View style={styles.screen}>
       {error ? <Text style={styles.error}>{error}</Text> : null}
 
-      <View style={styles.mushafFrame}>
-        {confirmedAyahs.map((ayah, index) => {
-          const hasWrongWords =
-            ayah.wrongIndices && ayah.wrongIndices.length > 0;
-          if (!hasWrongWords) {
-            return (
-              <Text
-                key={`confirmed-${index}`}
-                style={[styles.ayahLine, styles.ayahCorrect]}
-              >
-                {ayah.textDisplay}
-              </Text>
-            );
-          }
-          const wrongSet = new Set(ayah.wrongIndices);
-          return (
-            <Text
-              key={`confirmed-${index}`}
-              style={[styles.ayahLine, styles.ayahCorrect]}
-            >
-              {ayah.textDisplay.split(/\s+/).map((word, wi) => (
-                <Text
-                  key={wi}
-                  style={
-                    wrongSet.has(wi)
-                      ? styles.mushafWordWrong
-                      : styles.mushafWordCorrect
-                  }
-                >
-                  {word}{' '}
-                </Text>
-              ))}
-            </Text>
-          );
-        })}
+      {/* Mushaf fills all available space */}
+      <View style={styles.mushafArea}>
+        {currentPage != null ? (
+          <MushafPage pageNumber={currentPage} ayahStatuses={ayahStatuses} />
+        ) : null}
       </View>
 
+      {/* Feedback panel — small single-line status messages only */}
       {mistakeMessage ? (
-        <Text style={styles.mistakeMessage}>{mistakeMessage}</Text>
-      ) : null}
-
-      {tier2AyahDisplay ? (
-        <View style={styles.tier2Frame}>
-          <Text style={styles.tier2Label}>What you said:</Text>
-          <Text style={styles.tier2TranscribedText}>{tier2TranscribedText}</Text>
-          <Text style={styles.tier2Label}>Correct:</Text>
-          <Text style={styles.tier2AyahText}>
-            {(() => {
-              const wrongSet = new Set(tier2HighlightIndices);
-              return tier2AyahDisplay.split(/\s+/).map((word, i) => (
-                <Text
-                  key={i}
-                  style={
-                    wrongSet.has(i)
-                      ? styles.tier2WordWrong
-                      : styles.tier2WordCorrect
-                  }
-                >
-                  {word}{' '}
-                </Text>
-              ));
-            })()}
+        <View style={styles.feedbackPanel}>
+          <Text style={[
+            styles.feedbackMessage,
+            mistakeMessage === 'Correct' && styles.feedbackCorrect,
+          ]}>
+            {mistakeMessage}
           </Text>
         </View>
       ) : null}
 
-      <View style={styles.micSection}>
-        {isLoading ? (
-          <ActivityIndicator size="large" />
-        ) : (
-          <>
+      {/* Bottom bar — always visible */}
+      <View style={styles.bottomBar}>
+        <TouchableOpacity
+          style={[styles.pauseBtn, isLoading && styles.pauseBtnDisabled]}
+          onPress={handlePauseSession}
+          disabled={isLoading}
+          activeOpacity={0.8}
+        >
+          <Text style={styles.pauseBtnText}>Pause</Text>
+        </TouchableOpacity>
+
+        <View style={styles.micArea}>
+          {isLoading ? (
+            <ActivityIndicator size="small" color="#8a6d2f" />
+          ) : (
             <Animated.Text
               style={[styles.micIcon, { opacity: isListening ? pulseAnim : 1 }]}
             >
               🎤
             </Animated.Text>
-            {isTranscribing ? (
-              <Text style={styles.checkingText}>checking...</Text>
-            ) : null}
-          </>
-        )}
+          )}
+        </View>
+
+        <Text style={styles.progress}>
+          {`Ayah ${displayAyahNumber} of ${totalAyahs}`}
+        </Text>
       </View>
-
-      <Text style={styles.progress}>
-        {`Ayah ${displayAyahNumber} of ${totalAyahs}`}
-      </Text>
-
-      <TouchableOpacity
-        style={[
-          styles.endSessionButton,
-          isLoading && styles.endSessionButtonDisabled,
-        ]}
-        onPress={handlePauseSession}
-        disabled={isLoading}
-        activeOpacity={0.8}
-      >
-        <Text style={styles.endSessionButtonText}>Pause Session</Text>
-      </TouchableOpacity>
-    </ScrollView>
+    </View>
   );
 }
 
 const styles = StyleSheet.create({
-  container: {
-    flexGrow: 1,
-    padding: 24,
-    paddingTop: 64,
+  screen: {
+    flex: 1,
+    paddingTop: 56,
     backgroundColor: '#fff',
-  },
-  title: {
-    fontSize: 24,
-    fontWeight: '600',
-    marginBottom: 4,
-  },
-  subtitle: {
-    fontSize: 14,
-    color: '#666',
-    marginBottom: 24,
   },
   error: {
     color: '#c00',
-    marginBottom: 16,
-  },
-  mushafFrame: {
-    borderWidth: 2,
-    borderColor: '#2e7d32',
-    borderRadius: 8,
-    padding: 20,
-    minHeight: 200,
-    marginBottom: 24,
-    backgroundColor: '#fafaf8',
-  },
-  ayahLine: {
-    fontSize: 22,
-    lineHeight: 40,
-    textAlign: 'right',
-    writingDirection: 'rtl',
+    marginHorizontal: 16,
     marginBottom: 8,
   },
-  ayahCorrect: {
-    color: '#1b5e20',
+  mushafArea: {
+    flex: 1,
   },
-  mushafWordCorrect: {
-    color: '#1b5e20',
+  feedbackPanel: {
+    borderTopWidth: StyleSheet.hairlineWidth,
+    borderTopColor: '#d4c9a8',
   },
-  mushafWordWrong: {
-    color: '#c62828',
-  },
-  ayahMistake: {
-    color: '#c62828',
-  },
-  mistakeMessage: {
+  feedbackMessage: {
     color: '#e65100',
     fontSize: 15,
     textAlign: 'center',
-    marginBottom: 16,
+    paddingVertical: 10,
+    paddingHorizontal: 16,
     fontWeight: '500',
   },
-  tier2Frame: {
-    borderWidth: 1,
-    borderColor: '#c62828',
-    borderRadius: 8,
-    padding: 16,
-    marginBottom: 16,
-    backgroundColor: '#fff8f8',
+  feedbackCorrect: {
+    color: '#2e7d32',
   },
-  tier2Label: {
-    fontSize: 13,
-    fontWeight: '600',
-    color: '#666',
-    marginBottom: 4,
-  },
-  tier2TranscribedText: {
-    fontSize: 18,
-    lineHeight: 32,
-    textAlign: 'right',
-    writingDirection: 'rtl',
-    color: '#757575',
-    marginBottom: 16,
-  },
-  tier2AyahText: {
-    fontSize: 22,
-    lineHeight: 40,
-    textAlign: 'right',
-    writingDirection: 'rtl',
-  },
-  tier2WordWrong: {
-    color: '#c62828',
-  },
-  tier2WordCorrect: {
-    color: '#1b1b1b',
-  },
-  micSection: {
+  transitionOverlay: {
+    flex: 1,
+    backgroundColor: '#fff',
+    justifyContent: 'center',
     alignItems: 'center',
-    minHeight: 100,
-    marginBottom: 24,
+  },
+  transitionText: {
+    fontSize: 32,
+    fontWeight: '700',
+    color: '#1b5e20',
+    textAlign: 'center',
+  },
+  bottomBar: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    paddingHorizontal: 20,
+    paddingTop: 10,
+    paddingBottom: 32,
+    borderTopWidth: StyleSheet.hairlineWidth,
+    borderTopColor: '#d4c9a8',
+    backgroundColor: '#fff',
+  },
+  micArea: {
+    alignItems: 'center',
+    justifyContent: 'center',
   },
   micIcon: {
-    fontSize: 48,
-  },
-  checkingText: {
-    marginTop: 8,
-    fontSize: 14,
-    color: '#666',
+    fontSize: 38,
   },
   progress: {
-    fontSize: 16,
-    textAlign: 'center',
-    marginBottom: 16,
-    color: '#333',
+    fontSize: 14,
+    color: '#8a6d2f',
+    fontWeight: '500',
+    textAlign: 'right',
   },
-  endSessionButton: {
+  pauseBtn: {
     backgroundColor: '#c62828',
-    borderRadius: 12,
-    paddingVertical: 16,
-    paddingHorizontal: 24,
-    alignItems: 'center',
-    marginTop: 8,
+    borderRadius: 8,
+    paddingVertical: 8,
+    paddingHorizontal: 16,
   },
-  endSessionButtonDisabled: {
+  pauseBtnDisabled: {
     opacity: 0.5,
   },
-  endSessionButtonText: {
+  pauseBtnText: {
     color: '#fff',
-    fontSize: 18,
+    fontSize: 14,
     fontWeight: '700',
   },
 });
