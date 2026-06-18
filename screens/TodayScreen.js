@@ -506,6 +506,11 @@ export default function TodayScreen() {
             color="#888"
             onPress={() => navigation.navigate('SessionSummary', { sessionId: null, totalAyahsInJuz: 286 })}
           />
+          <Button
+            title="[Dev] ✦ Design Mockups (Dawrah)"
+            color="#1E4090"
+            onPress={() => navigation.navigate('Mockups')}
+          />
         </View>
       )}
     </View>

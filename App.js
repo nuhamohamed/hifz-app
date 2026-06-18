@@ -14,6 +14,7 @@ import TodayScreen from './screens/TodayScreen';
 import MemorizedJuzScreen from './screens/onboarding/MemorizedJuzScreen';
 import ScheduleScreen from './screens/onboarding/ScheduleScreen';
 import SignInScreen from './screens/onboarding/SignInScreen';
+import MockupNavigator from './screens/mockups/MockupNavigator';
 
 Notifications.setNotificationHandler({
   handleNotification: async () => ({
@@ -68,6 +69,7 @@ export default function App() {
             name="SessionSummary"
             component={SessionSummaryScreen}
           />
+          <Stack.Screen name="Mockups" component={MockupNavigator} />
         </Stack.Navigator>
       </NavigationContainer>
       <StatusBar style="auto" />
