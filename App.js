@@ -9,7 +9,11 @@ import PostSessionQuizScreen from './screens/PostSessionQuizScreen';
 import PreSessionQuizScreen from './screens/PreSessionQuizScreen';
 import RecitationScreen from './screens/RecitationScreen';
 import SessionSummaryScreen from './screens/SessionSummaryScreen';
+import SettingsScreen from './screens/SettingsScreen';
 import TodayScreen from './screens/TodayScreen';
+import MemorizedJuzScreen from './screens/onboarding/MemorizedJuzScreen';
+import ScheduleScreen from './screens/onboarding/ScheduleScreen';
+import SignInScreen from './screens/onboarding/SignInScreen';
 
 Notifications.setNotificationHandler({
   handleNotification: async () => ({
@@ -47,6 +51,10 @@ export default function App() {
           screenOptions={{ headerShown: false }}
         >
           <Stack.Screen name="Today" component={TodayScreen} />
+          <Stack.Screen name="Settings" component={SettingsScreen} />
+          <Stack.Screen name="SignIn" component={SignInScreen} />
+          <Stack.Screen name="MemorizedJuz" component={MemorizedJuzScreen} />
+          <Stack.Screen name="Schedule" component={ScheduleScreen} />
           <Stack.Screen
             name="PreSessionQuiz"
             component={PreSessionQuizScreen}

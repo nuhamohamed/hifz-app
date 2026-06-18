@@ -2,19 +2,31 @@ import { useEffect, useRef, useState } from 'react';
 import {
   ActivityIndicator,
   Button,
+  Linking,
   StyleSheet,
   Text,
+  TouchableOpacity,
   View,
 } from 'react-native';
+import * as Notifications from 'expo-notifications';
 import { useNavigation } from '@react-navigation/native';
+import { Ionicons } from '@expo/vector-icons';
 import { getCurrentUserId } from '../lib/auth';
 import { getAyahLocation, getJuzTotalAyahs } from '../lib/juzSurahMap';
 import { getTodayPortion } from '../lib/planEngine';
 import {
+  cancelEveningNudge,
   scheduleDailyNotification,
-  scheduleOverdueNotification,
+  scheduleEveningNudge,
+  scheduleTestNotification,
 } from '../lib/notifications';
 import { supabase } from '../lib/supabase';
+
+function formatSessionDate(dateStr) {
+  const [, month, day] = dateStr.split('-').map(Number);
+  const monthName = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'][month - 1];
+  return `${monthName} ${day}`;
+}
 
 function getTodayDateString() {
   const d = new Date();
@@ -22,6 +34,23 @@ function getTodayDateString() {
   const m = String(d.getMonth() + 1).padStart(2, '0');
   const day = String(d.getDate()).padStart(2, '0');
   return `${y}-${m}-${day}`;
+}
+
+function getTomorrowDateString() {
+  const d = new Date();
+  d.setDate(d.getDate() + 1);
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+}
+
+function formatTomorrowLine(tomorrow) {
+  if (!tomorrow) return 'Tomorrow: Quiz only';
+  if (tomorrow.type === 'quiz_only') return 'Tomorrow: Quiz only';
+  const start = getAyahLocation(tomorrow.juz_number, tomorrow.portion_start_ayah);
+  const end = getAyahLocation(tomorrow.juz_number, tomorrow.portion_end_ayah);
+  if (start.surahNumber === end.surahNumber) {
+    return `Tomorrow: Juz ${tomorrow.juz_number} — ${start.surahName} ${start.ayahNumber}–${end.ayahNumber}`;
+  }
+  return `Tomorrow: Juz ${tomorrow.juz_number} — ${start.surahName} ${start.ayahNumber} to ${end.surahName} ${end.ayahNumber}`;
 }
 
 function buildSessionParams(sessionId, resumeFromAyah, portion) {
@@ -90,8 +119,11 @@ export default function TodayScreen() {
   const [quizCount, setQuizCount] = useState(0);
   const [portionLoading, setPortionLoading] = useState(true);
   const [pausedSession, setPausedSession] = useState(null);
+  const [sessionDoneToday, setSessionDoneToday] = useState(false);
+  const [tomorrowText, setTomorrowText] = useState(null);
   const [isStarting, setIsStarting] = useState(false);
   const [error, setError] = useState('');
+  const [notifDenied, setNotifDenied] = useState(false);
   const notificationsScheduledRef = useRef(false);
 
   useEffect(() => {
@@ -105,22 +137,39 @@ export default function TodayScreen() {
         const today = getTodayDateString();
         const userId = await getCurrentUserId();
 
-        const [portion, pausedResult, quizResult] = await Promise.all([
+        const [portion, pausedResult, quizResult, completedResult, tomorrowResult] = await Promise.all([
           getTodayPortion(userId),
           supabase
             .from('sessions')
             .select(
-              'id, last_confirmed_ayah, phase, juz_number, portion_start_ayah, portion_end_ayah'
+              'id, last_confirmed_ayah, phase, juz_number, portion_start_ayah, portion_end_ayah, date'
             )
             .eq('user_id', userId)
-            .eq('status', 'paused')
-            .eq('date', today)
+            .in('status', ['paused', 'in_progress'])
+            .order('date', { ascending: false })
+            .limit(1)
             .maybeSingle(),
           supabase
             .from('quiz_queue')
             .select('id', { count: 'exact', head: true })
             .eq('user_id', userId)
             .lte('next_review_date', today),
+          supabase
+            .from('sessions')
+            .select('id')
+            .eq('user_id', userId)
+            .eq('status', 'complete')
+            .eq('date', today)
+            .limit(1)
+            .maybeSingle(),
+          supabase
+            .from('scheduled_portions')
+            .select('juz_number, portion_start_ayah, portion_end_ayah, type')
+            .eq('user_id', userId)
+            .eq('scheduled_date', getTomorrowDateString())
+            .order('id', { ascending: false })
+            .limit(1)
+            .maybeSingle(),
         ]);
 
         if (!mounted) {
@@ -130,33 +179,38 @@ export default function TodayScreen() {
         setTodayPortion(portion);
         setQuizCount(quizResult.count ?? 0);
 
+        const isDone = !completedResult.error && !!completedResult.data;
+        if (isDone) {
+          setSessionDoneToday(true);
+          setTomorrowText(formatTomorrowLine(tomorrowResult.data ?? null));
+        }
+
         if (!notificationsScheduledRef.current) {
           notificationsScheduledRef.current = true;
           try {
-            if (portion.type === 'quiz_only') {
-              await scheduleDailyNotification(9, 0, null, null, null);
-            } else {
-              const { juzNumber, portionStartAyah, portionEndAyah } = portion;
-              const start = getAyahLocation(juzNumber, portionStartAyah);
-              const end = getAyahLocation(juzNumber, portionEndAyah);
-              await scheduleDailyNotification(
-                9,
-                0,
-                start.surahName,
-                start.ayahNumber,
-                end.ayahNumber
-              );
-            }
+            // Fetch the user's saved reminder time
+            const { data: userData } = await supabase
+              .from('users')
+              .select('notification_time')
+              .eq('id', userId)
+              .maybeSingle();
+            const [remHour, remMin] = userData?.notification_time
+              ? userData.notification_time.split(':').map(Number)
+              : [9, 0];
+            await scheduleDailyNotification(remHour, remMin);
 
-            if (
-              portion.scheduledDate &&
-              portion.scheduledDate < today
-            ) {
-              await scheduleOverdueNotification();
+            const isOverdue = !!(portion.scheduledDate && portion.scheduledDate < today);
+            if (isDone) {
+              await cancelEveningNudge();
+            } else {
+              await scheduleEveningNudge(isOverdue);
             }
           } catch (notifErr) {
             console.warn('Failed to schedule notifications:', notifErr);
           }
+
+          const { status } = await Notifications.getPermissionsAsync();
+          if (mounted) setNotifDenied(status === 'denied');
         }
 
         if (!pausedResult.error && pausedResult.data) {
@@ -209,11 +263,12 @@ export default function TodayScreen() {
       const { data: paused, error: fetchError } = await supabase
         .from('sessions')
         .select(
-          'id, last_confirmed_ayah, phase, juz_number, portion_start_ayah, portion_end_ayah'
+          'id, last_confirmed_ayah, phase, juz_number, portion_start_ayah, portion_end_ayah, date'
         )
         .eq('user_id', userId)
-        .eq('status', 'paused')
-        .eq('date', today)
+        .in('status', ['paused', 'in_progress'])
+        .order('date', { ascending: false })
+        .limit(1)
         .maybeSingle();
 
       if (fetchError) {
@@ -221,6 +276,12 @@ export default function TodayScreen() {
       }
 
       if (paused) {
+        if (paused.date !== today) {
+          await supabase
+            .from('sessions')
+            .update({ date: today })
+            .eq('id', paused.id);
+        }
         navigateForPausedSession(paused);
         return;
       }
@@ -293,65 +354,160 @@ export default function TodayScreen() {
   };
 
   const resumeHint = getResumeHint(pausedSession);
-  const portionDisplay = formatPortionDisplay(todayPortion);
+  const isCarriedOver = !!(pausedSession && pausedSession.date !== getTodayDateString());
+  const carriedOverPortion = isCarriedOver
+    ? {
+        juzNumber: pausedSession.juz_number,
+        portionStartAyah: pausedSession.portion_start_ayah,
+        portionEndAyah: pausedSession.portion_end_ayah,
+      }
+    : null;
+  const portionDisplay = formatPortionDisplay(carriedOverPortion ?? todayPortion);
 
   return (
     <View style={styles.container}>
-      <Text style={styles.title}>Today's Revision</Text>
-
-      <View style={styles.card}>
-        <Text style={styles.portionLabel}>Today's portion</Text>
-        {portionLoading ? (
-          <ActivityIndicator
-            size="small"
-            color="#2e7d32"
-            style={styles.portionLoader}
-          />
-        ) : (
-          <Text style={styles.portionText}>
-            {portionDisplay ?? 'Unable to load portion'}
-          </Text>
-        )}
-        <Text style={styles.timeText}>
-          {estimateSessionMinutes(todayPortion, quizCount)}
-        </Text>
+      <View style={styles.header}>
+        <Text style={styles.title}>Today's Revision</Text>
+        <TouchableOpacity
+          onPress={() => navigation.navigate('Settings')}
+          activeOpacity={0.7}
+        >
+          <Ionicons name="settings-outline" size={24} color="#2e7d32" />
+        </TouchableOpacity>
       </View>
 
-      {resumeHint ? (
-        <Text style={styles.resumeHint}>{resumeHint}</Text>
-      ) : null}
+      {notifDenied && (
+        <TouchableOpacity
+          style={styles.notifBanner}
+          onPress={() => Linking.openSettings()}
+          activeOpacity={0.8}
+        >
+          <Text style={styles.notifBannerText}>
+            Notifications are off — tap to enable reminders in Settings.
+          </Text>
+        </TouchableOpacity>
+      )}
 
-      {error ? <Text style={styles.error}>{error}</Text> : null}
-
-      {isStarting || portionLoading ? (
-        <ActivityIndicator size="large" style={styles.loader} />
-      ) : (
-        <View style={styles.buttonWrap}>
-          <Button
-            title={pausedSession ? 'Resume Session' : 'Start Session'}
-            onPress={handleStartSession}
-          />
+      {sessionDoneToday ? (
+        <View style={styles.doneCard}>
+          <Text style={styles.doneTitle}>All done for today!</Text>
+          {tomorrowText ? (
+            <Text style={styles.tomorrowText}>{tomorrowText}</Text>
+          ) : null}
         </View>
+      ) : (
+        <>
+          <View style={styles.card}>
+            <Text style={styles.portionLabel}>
+              {isCarriedOver
+                ? `Unfinished session — ${formatSessionDate(pausedSession.date)}`
+                : "Today's portion"}
+            </Text>
+            {portionLoading ? (
+              <ActivityIndicator
+                size="small"
+                color="#2e7d32"
+                style={styles.portionLoader}
+              />
+            ) : (
+              <Text style={styles.portionText}>
+                {portionDisplay ?? 'Unable to load portion'}
+              </Text>
+            )}
+            <Text style={styles.timeText}>
+              {estimateSessionMinutes(todayPortion, quizCount)}
+            </Text>
+          </View>
+
+          {resumeHint ? (
+            <Text style={styles.resumeHint}>{resumeHint}</Text>
+          ) : null}
+
+          {error ? <Text style={styles.error}>{error}</Text> : null}
+
+          {isStarting || portionLoading ? (
+            <ActivityIndicator size="large" style={styles.loader} />
+          ) : (
+            <View style={styles.buttonWrap}>
+              <Button
+                title={pausedSession ? 'Resume Session' : 'Start Session'}
+                onPress={handleStartSession}
+              />
+            </View>
+          )}
+        </>
       )}
 
       {/* DEV ONLY — remove before release */}
-      <View style={styles.buttonWrap}>
-        <Button
-          title="[Dev] Test Recitation (Al-Baqarah 1–7)"
-          color="#888"
-          onPress={() =>
-            navigation.navigate('Recitation', {
-              surahNumber: 2,
-              startAyah: 1,
-              endAyah: 7,
-              sessionId: null,
-              juzNumber: 1,
-              totalAyahsInJuz: 7,
-              resumeFromAyah: 1,
-            })
-          }
-        />
-      </View>
+      {__DEV__ && (
+        <View style={{ gap: 8, marginTop: 16 }}>
+          <Button
+            title="[Dev] Notify: scheduled reminder (5s)"
+            color="#888"
+            onPress={() => scheduleTestNotification('Hifz Revision', '⏰ Time for your Quran revision. Start now.')}
+          />
+          <Button
+            title="[Dev] Notify: evening nudge A (5s)"
+            color="#888"
+            onPress={() => scheduleTestNotification('Hifz Revision', "The day isn't over yet. A few minutes is all it takes.")}
+          />
+          <Button
+            title="[Dev] Notify: evening nudge B (5s)"
+            color="#888"
+            onPress={() => scheduleTestNotification('Hifz Revision', "Still time to revise. You got this.")}
+          />
+          <Button
+            title="[Dev] Notify: evening nudge overdue (5s)"
+            color="#888"
+            onPress={() => scheduleTestNotification('Hifz Revision', "You missed yesterday's revision, but you still have today. Start now.")}
+          />
+          <Button
+            title="[Dev] Onboarding (SignIn)"
+            color="#888"
+            onPress={() => navigation.navigate('SignIn')}
+          />
+          <Button
+            title="[Dev] Onboarding (MemorizedJuz)"
+            color="#888"
+            onPress={() => navigation.navigate('MemorizedJuz')}
+          />
+          <Button
+            title="[Dev] Onboarding (Schedule)"
+            color="#888"
+            onPress={() => navigation.navigate('Schedule')}
+          />
+          <Button
+            title="[Dev] PreSessionQuiz"
+            color="#888"
+            onPress={() => navigation.navigate('PreSessionQuiz', { sessionId: null, juzNumber: 1 })}
+          />
+          <Button
+            title="[Dev] Recitation (Al-Baqarah 1–7)"
+            color="#888"
+            onPress={() =>
+              navigation.navigate('Recitation', {
+                surahNumber: 2,
+                startAyah: 1,
+                endAyah: 7,
+                sessionId: null,
+                juzNumber: 1,
+                totalAyahsInJuz: 286,
+                resumeFromAyah: 1,
+              })
+            }
+          />
+          <Button
+            title="[Dev] PostSessionQuiz"
+            color="#888"
+            onPress={() => navigation.navigate('PostSessionQuiz', { sessionId: null, juzNumber: 1 })}
+          />
+          <Button
+            title="[Dev] SessionSummary"
+            color="#888"
+            onPress={() => navigation.navigate('SessionSummary', { sessionId: null, totalAyahsInJuz: 286 })}
+          />
+        </View>
+      )}
     </View>
   );
 }
@@ -367,8 +523,6 @@ const styles = StyleSheet.create({
   title: {
     fontSize: 28,
     fontWeight: '700',
-    marginBottom: 32,
-    textAlign: 'center',
     color: '#1b1b1b',
   },
   card: {
@@ -378,6 +532,27 @@ const styles = StyleSheet.create({
     borderRadius: 12,
     padding: 24,
     marginBottom: 32,
+  },
+  doneCard: {
+    backgroundColor: '#f1f8f1',
+    borderWidth: 2,
+    borderColor: '#2e7d32',
+    borderRadius: 12,
+    padding: 28,
+    alignItems: 'center',
+  },
+  doneTitle: {
+    fontSize: 22,
+    fontWeight: '700',
+    color: '#1b5e20',
+    marginBottom: 16,
+    textAlign: 'center',
+  },
+  tomorrowText: {
+    fontSize: 16,
+    color: '#555',
+    textAlign: 'center',
+    lineHeight: 24,
   },
   portionLabel: {
     fontSize: 14,
@@ -415,5 +590,24 @@ const styles = StyleSheet.create({
   },
   buttonWrap: {
     paddingHorizontal: 16,
+  },
+  header: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    marginBottom: 32,
+  },
+  notifBanner: {
+    backgroundColor: '#fff3e0',
+    borderWidth: 1,
+    borderColor: '#e65100',
+    borderRadius: 10,
+    padding: 12,
+    marginBottom: 16,
+  },
+  notifBannerText: {
+    fontSize: 14,
+    color: '#e65100',
+    textAlign: 'center',
   },
 });

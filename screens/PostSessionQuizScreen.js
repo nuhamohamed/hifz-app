@@ -13,6 +13,7 @@ import { Audio } from 'expo-av';
 import * as Haptics from 'expo-haptics';
 import { normalizeArabic, wordDiff } from '../lib/arabicUtils';
 import { getCurrentUserId } from '../lib/auth';
+import { createLiveJudge } from '../lib/liveWordJudge';
 import {
   checkMistakeHealing,
   fetchPostSessionItems,
@@ -21,32 +22,35 @@ import {
 } from '../lib/quizEngine';
 import { getAyah } from '../lib/quranApi';
 import { supabase } from '../lib/supabase';
-import { startListening, stopListening } from '../lib/realtimeTranscription';
+import {
+  startListening,
+  stopListening,
+  resetUtterance,
+  resumeListening,
+} from '../lib/realtimeTranscription';
 import { useSQLiteContext } from 'expo-sqlite';
 import MushafPage from '../components/MushafPage';
 import { getPageForAyah } from '../lib/mushafDb';
 
+function dedupeConsecutiveWords(text) {
+  if (!text) return text;
+  const words = normalizeArabic(text).split(/\s+/).filter(Boolean);
+  return words.filter((w, i) => i === 0 || w !== words[i - 1]).join(' ');
+}
+
 async function loadContextBlock(surahNumber, centerAyah) {
   const start = Math.max(1, centerAyah - 2);
   let end = centerAyah + 1;
-
   try {
     await getAyah(surahNumber, end);
   } catch {
     end = centerAyah;
   }
-
-  const ayahNumbers = [];
-  for (let n = start; n <= end; n++) {
-    ayahNumbers.push(n);
-  }
-
   const block = [];
-  for (const ayahNumber of ayahNumbers) {
-    const data = await getAyah(surahNumber, ayahNumber);
-    block.push({ ayahNumber, ...data });
+  for (let n = start; n <= end; n++) {
+    const data = await getAyah(surahNumber, n);
+    block.push({ ayahNumber: n, ...data });
   }
-
   return block;
 }
 
@@ -71,12 +75,7 @@ export default function PostSessionQuizScreen(props) {
   const blockAyahsRef = useRef([]);
   const targetAyahIndexRef = useRef(0);
   const targetAyahResultRef = useRef(null);
-  const ayahDataRef = useRef({
-    textDisplay: '',
-    textCompare: '',
-    words: [],
-    isDisconnectedLetters: false,
-  });
+  const ayahDataRef = useRef({ textDisplay: '', textCompare: '', words: [], isDisconnectedLetters: false });
   const [currentBlockIndex, setCurrentBlockIndex] = useState(0);
   const currentBlockIndexRef = useRef(0);
   const currentItemIndexRef = useRef(0);
@@ -89,10 +88,19 @@ export default function PostSessionQuizScreen(props) {
   const [tier2TranscribedText, setTier2TranscribedText] = useState('');
   const [tier2HighlightIndices, setTier2HighlightIndices] = useState([]);
   const startedRef = useRef(false);
-  const getExpectedWordCountRef = useRef(null);
   const onAyahCompleteRef = useRef(null);
   const pulseAnim = useRef(new Animated.Value(1)).current;
   const fadeAnim = useRef(new Animated.Value(0)).current;
+
+  // Live word-reveal state
+  const [revealedWordCount, setRevealedWordCount] = useState(0);
+  const [liveWrongIndices, setLiveWrongIndices] = useState([]);
+  const [liveLetterDiff, setLiveLetterDiff] = useState({});
+  const accumulatedWrongIndicesRef = useRef(new Set());
+  const prevMatchPosRef = useRef(0);
+  const revealedWordCountRef = useRef(0);
+  const letterDiffRef = useRef({});
+  const liveJudgeRef = useRef(null);
 
   const currentItem = quizItems[currentItemIndex];
   const blockLength = blockAyahsRef.current.length;
@@ -101,11 +109,7 @@ export default function PostSessionQuizScreen(props) {
     if (sessionId) {
       await supabase
         .from('sessions')
-        .update({
-          phase: 'complete',
-          status: 'complete',
-          completed_at: new Date().toISOString(),
-        })
+        .update({ phase: 'complete', status: 'complete', completed_at: new Date().toISOString() })
         .eq('id', sessionId);
     }
   }, [sessionId]);
@@ -120,22 +124,80 @@ export default function PostSessionQuizScreen(props) {
     await stopListening();
     await completeSession();
     setShowTransition(true);
-    Animated.timing(fadeAnim, {
-      toValue: 1,
-      duration: 1500,
-      useNativeDriver: true,
-    }).start();
+    Animated.timing(fadeAnim, { toValue: 1, duration: 1500, useNativeDriver: true }).start();
     setTimeout(() => {
       navigation.replace('SessionSummary', { sessionId, totalAyahsInJuz });
     }, 4500);
   }, [completeSession, fadeAnim, navigation, sessionId, totalAyahsInJuz]);
 
+  const buzzAndTone = useCallback(async () => {
+    try { await Haptics.notificationAsync(Haptics.NotificationFeedbackType.Warning); } catch {}
+    try {
+      const { sound } = await Audio.Sound.createAsync(require('../assets/beep.mp3'));
+      await sound.playAsync();
+      sound.setOnPlaybackStatusUpdate((s) => { if (s.didJustFinish) sound.unloadAsync(); });
+    } catch (e) { console.log('Sound error:', e); }
+  }, []);
+
+  const revealNextWord = useCallback(() => {
+    const wordIndex = revealedWordCountRef.current;
+    const words = ayahDataRef.current?.words;
+    if (!words || wordIndex >= words.length) return;
+    accumulatedWrongIndicesRef.current.add(wordIndex);
+    letterDiffRef.current[wordIndex] = null;
+    setLiveWrongIndices([...accumulatedWrongIndicesRef.current]);
+    setLiveLetterDiff((prev) => ({ ...prev, [wordIndex]: null }));
+    revealedWordCountRef.current = wordIndex + 1;
+    setRevealedWordCount(wordIndex + 1);
+  }, []);
+
+  const resetLiveState = useCallback(() => {
+    accumulatedWrongIndicesRef.current = new Set();
+    prevMatchPosRef.current = 0;
+    revealedWordCountRef.current = 0;
+    letterDiffRef.current = {};
+    setRevealedWordCount(0);
+    setLiveWrongIndices([]);
+    setLiveLetterDiff({});
+  }, []);
+
+  const recreateJudge = useCallback(() => {
+    liveJudgeRef.current = createLiveJudge({
+      getExpectedWords: () => {
+        if (ayahDataRef.current?.isDisconnectedLetters) return [];
+        return (ayahDataRef.current?.words ?? [])
+          .map((w) => normalizeArabic(w.textCompare))
+          .filter(Boolean);
+      },
+      onMistake: () => {
+        if (!ayahDataRef.current?.isDisconnectedLetters) buzzAndTone();
+      },
+      onMarksChange: (entries) => {
+        entries.forEach(({ index }) => accumulatedWrongIndicesRef.current.add(index));
+        const allWrong = [...accumulatedWrongIndicesRef.current];
+        setLiveWrongIndices(allWrong);
+        entries.forEach(({ index, spoken }) => { letterDiffRef.current[index] = spoken ?? null; });
+        setLiveLetterDiff((prev) => {
+          const next = { ...prev };
+          entries.forEach(({ index, spoken }) => { next[index] = spoken ?? null; });
+          return next;
+        });
+        if (allWrong.length > 0) {
+          const maxWrong = Math.max(...allWrong);
+          if (maxWrong >= revealedWordCountRef.current) {
+            revealedWordCountRef.current = maxWrong + 1;
+            setRevealedWordCount(maxWrong + 1);
+          }
+        }
+      },
+    });
+  }, [buzzAndTone]);
+
   const loadBlockForItem = useCallback(async (item) => {
+    resetUtterance({ discardMs: 2000 });
     const block = await loadContextBlock(item.surah_number, item.ayah_number);
     blockAyahsRef.current = block;
-    targetAyahIndexRef.current = block.findIndex(
-      (b) => b.ayahNumber === item.ayah_number
-    );
+    targetAyahIndexRef.current = block.findIndex((b) => b.ayahNumber === item.ayah_number);
     targetAyahResultRef.current = null;
     currentBlockIndexRef.current = 0;
     setCurrentBlockIndex(0);
@@ -147,28 +209,21 @@ export default function PostSessionQuizScreen(props) {
     setTier2HighlightIndices([]);
     setConfirmedAyahs([]);
     firstFailedTextRef.current = '';
+    resetLiveState();
 
     const first = block[0];
-    ayahDataRef.current = {
-      textDisplay: first.textDisplay,
-      textCompare: first.textCompare,
-      words: first.words,
-      isDisconnectedLetters: first.isDisconnectedLetters,
-    };
-  }, []);
+    ayahDataRef.current = { textDisplay: first.textDisplay, textCompare: first.textCompare, words: first.words, isDisconnectedLetters: first.isDisconnectedLetters };
+    recreateJudge();
+    resumeListening();
+  }, [resetLiveState, recreateJudge]);
 
   const loadBlockAyah = useCallback((blockIndex) => {
     const entry = blockAyahsRef.current[blockIndex];
-    if (!entry) {
-      return;
-    }
-    ayahDataRef.current = {
-      textDisplay: entry.textDisplay,
-      textCompare: entry.textCompare,
-      words: entry.words,
-      isDisconnectedLetters: entry.isDisconnectedLetters,
-    };
-  }, []);
+    if (!entry) return;
+    ayahDataRef.current = { textDisplay: entry.textDisplay, textCompare: entry.textCompare, words: entry.words, isDisconnectedLetters: entry.isDisconnectedLetters };
+    resetLiveState();
+    recreateJudge();
+  }, [resetLiveState, recreateJudge]);
 
   const recordTargetAyahResult = useCallback((result) => {
     if (currentBlockIndexRef.current === targetAyahIndexRef.current) {
@@ -184,12 +239,7 @@ export default function PostSessionQuizScreen(props) {
       await updateQuizResult(item.id, result);
       if (result === 'correct_first') {
         const userId = await getCurrentUserId();
-        await checkMistakeHealing(
-          userId,
-          item.surah_number,
-          item.ayah_number,
-          sessionJuzNumber
-        );
+        await checkMistakeHealing(userId, item.surah_number, item.ayah_number, sessionJuzNumber);
       }
 
       const nextItemIndex = currentItemIndexRef.current + 1;
@@ -216,93 +266,40 @@ export default function PostSessionQuizScreen(props) {
     setTier2TranscribedText('');
     setTier2HighlightIndices([]);
     loadBlockAyah(nextIndex);
-  }, [
-    quizItems,
-    loadBlockAyah,
-    loadBlockForItem,
-    finishAllQuizItems,
-    sessionJuzNumber,
-  ]);
-
-  const getExpectedWordCount = useCallback(() => {
-    return ayahDataRef.current.words.length;
-  }, []);
-
-  const buzzAndTone = useCallback(async () => {
-    try {
-      await Haptics.notificationAsync(Haptics.NotificationFeedbackType.Warning);
-    } catch {
-      // haptics not supported on this device
-    }
-    try {
-      const { sound } = await Audio.Sound.createAsync(
-        require('../assets/beep.mp3')
-      );
-      await sound.playAsync();
-      sound.setOnPlaybackStatusUpdate((status) => {
-        if (status.didJustFinish) {
-          sound.unloadAsync();
-        }
-      });
-    } catch (e) {
-      console.log('Sound error:', e);
-    }
-  }, []);
+  }, [quizItems, loadBlockAyah, loadBlockForItem, finishAllQuizItems, sessionJuzNumber]);
 
   const onAyahComplete = useCallback(
     async (accumulatedText) => {
-      const isTargetAyah =
-        currentBlockIndexRef.current === targetAyahIndexRef.current;
+      const isTargetAyah = currentBlockIndexRef.current === targetAyahIndexRef.current;
 
       if (ayahDataRef.current.isDisconnectedLetters) {
         const capturedDisplay = ayahDataRef.current.textCompare;
-        setConfirmedAyahs((prev) => [
-          ...prev,
-          { textDisplay: capturedDisplay, status: 'correct' },
-        ]);
-        if (isTargetAyah && targetAyahResultRef.current === null) {
-          recordTargetAyahResult('correct_first');
-        }
+        setConfirmedAyahs((prev) => [...prev, { textDisplay: capturedDisplay, status: 'correct' }]);
+        if (isTargetAyah && targetAyahResultRef.current === null) recordTargetAyahResult('correct_first');
         await advanceToNextBlockAyah();
         return;
       }
 
-      const { textDisplay, textCompare, words } = ayahDataRef.current;
-      const diff = wordDiff(
-        normalizeArabic(textCompare),
-        normalizeArabic(accumulatedText)
-      );
-
-      const wrongEntries = diff.filter(
-        (item) => item.status === 'wrong' || item.status === 'missing'
-      );
+      const { textDisplay, textCompare } = ayahDataRef.current;
+      const diff = wordDiff(normalizeArabic(textCompare), normalizeArabic(accumulatedText));
+      const wrongEntries = diff.filter((item) => item.status === 'wrong' || item.status === 'missing');
       const allCorrect = wrongEntries.length === 0;
-
       const wrongIndices = diff
-        .map((item, i) =>
-          item.status === 'wrong' || item.status === 'missing' ? i : -1
-        )
+        .map((item, i) => (item.status === 'wrong' || item.status === 'missing' ? i : -1))
         .filter((i) => i >= 0);
 
       if (mistakeStateRef.current === 'none') {
         if (allCorrect) {
           setMistakeMessage('');
-          setConfirmedAyahs((prev) => [
-            ...prev,
-            { textDisplay, status: 'correct' },
-          ]);
-          if (isTargetAyah) {
-            recordTargetAyahResult('correct_first');
-          }
+          setConfirmedAyahs((prev) => [...prev, { textDisplay, status: 'correct' }]);
+          if (isTargetAyah) recordTargetAyahResult('correct_first');
           await advanceToNextBlockAyah();
         } else {
           wrongIndicesRef.current = wrongIndices;
           firstFailedTextRef.current = accumulatedText;
           mistakeStateRef.current = 'awaiting_retry';
           await buzzAndTone();
-          setMistakeMessage(
-            'Possible mistake detected — please try again.'
-          );
+          setMistakeMessage('Possible mistake detected — please try again.');
         }
         return;
       }
@@ -316,25 +313,16 @@ export default function PostSessionQuizScreen(props) {
           setMistakeMessage('');
           setConfirmedAyahs((prev) => [
             ...prev,
-            {
-              textDisplay,
-              status: 'correct',
-              wrongIndices: wrongIndicesRef.current,
-            },
+            { textDisplay, status: 'correct', wrongIndices: wrongIndicesRef.current },
           ]);
           if (isTargetAyah) {
             recordTargetAyahResult('correct_second');
           } else if (wrongIndicesRef.current.length > 0) {
-            const blockEntry =
-              blockAyahsRef.current[currentBlockIndexRef.current];
+            const blockEntry = blockAyahsRef.current[currentBlockIndexRef.current];
             const item = quizItems[currentItemIndexRef.current];
             if (blockEntry && item) {
               const userId = await getCurrentUserId();
-              await flagContextAyahIfNeeded(
-                userId,
-                item.surah_number,
-                blockEntry.ayahNumber
-              );
+              await flagContextAyahIfNeeded(userId, item.surah_number, blockEntry.ayahNumber);
             }
           }
           await advanceToNextBlockAyah();
@@ -356,30 +344,20 @@ export default function PostSessionQuizScreen(props) {
         setTier2HighlightIndices([]);
         setConfirmedAyahs((prev) => [
           ...prev,
-          {
-            textDisplay,
-            status: 'mistake',
-            wrongIndices: wrongIndicesRef.current,
-          },
+          { textDisplay, status: 'mistake', wrongIndices: wrongIndicesRef.current },
         ]);
-        if (isTargetAyah) {
-          recordTargetAyahResult('wrong');
-        }
+        if (isTargetAyah) recordTargetAyahResult('wrong');
         await advanceToNextBlockAyah();
       }
     },
     [advanceToNextBlockAyah, buzzAndTone, quizItems, recordTargetAyahResult]
   );
 
-  getExpectedWordCountRef.current = getExpectedWordCount;
   onAyahCompleteRef.current = onAyahComplete;
 
   useEffect(() => {
-    if (startedRef.current) {
-      return;
-    }
+    if (startedRef.current) return;
     startedRef.current = true;
-
     let mounted = true;
 
     (async () => {
@@ -389,9 +367,7 @@ export default function PostSessionQuizScreen(props) {
         const items = await fetchPostSessionItems(userId, sessionId);
         console.log('Post-session quiz items fetched:', JSON.stringify(items));
 
-        if (!mounted) {
-          return;
-        }
+        if (!mounted) return;
 
         if (items.length === 0) {
           await navigateToSessionSummary();
@@ -402,26 +378,47 @@ export default function PostSessionQuizScreen(props) {
         currentItemIndexRef.current = 0;
         await loadBlockForItem(items[0]);
 
-        if (!mounted) {
-          return;
-        }
+        if (!mounted) return;
 
         await startListening({
-          getExpectedWordCount: () => getExpectedWordCountRef.current(),
-          onAyahComplete: (accumulatedText) =>
-            onAyahCompleteRef.current(accumulatedText),
-          onError: (message) => {
-            if (mounted) setError(message);
+          getExpectedWords: () => {
+            if (ayahDataRef.current?.isDisconnectedLetters) return [];
+            return (ayahDataRef.current?.words ?? [])
+              .map((w) => normalizeArabic(w.textCompare))
+              .filter(Boolean);
           },
+          onAyahComplete: (text) => onAyahCompleteRef.current(text),
+          onPartial: (text) => {
+            liveJudgeRef.current?.update(dedupeConsecutiveWords(text));
+          },
+          onCommit: (matchedCount) => {
+            const prev = prevMatchPosRef.current;
+            prevMatchPosRef.current = matchedCount;
+            if (matchedCount > prev) {
+              if (matchedCount > prev + 1) {
+                const skipStart = prev;
+                for (let i = skipStart; i < matchedCount - 1; i++) {
+                  accumulatedWrongIndicesRef.current.add(i);
+                }
+                setLiveWrongIndices([...accumulatedWrongIndicesRef.current]);
+                setLiveLetterDiff((existing) => {
+                  const next = { ...existing };
+                  for (let i = skipStart; i < matchedCount - 1; i++) next[i] = null;
+                  return next;
+                });
+                if (!ayahDataRef.current?.isDisconnectedLetters) buzzAndTone();
+              }
+              const newRevealed = Math.max(revealedWordCountRef.current, matchedCount);
+              revealedWordCountRef.current = newRevealed;
+              setRevealedWordCount(newRevealed);
+            }
+          },
+          onError: (message) => { if (mounted) setError(message); },
         });
       } catch (err) {
-        if (mounted) {
-          setError(err.message ?? 'Failed to start post-session quiz.');
-        }
+        if (mounted) setError(err.message ?? 'Failed to start post-session quiz.');
       } finally {
-        if (mounted) {
-          setIsLoading(false);
-        }
+        if (mounted) setIsLoading(false);
       }
     })();
 
@@ -430,7 +427,7 @@ export default function PostSessionQuizScreen(props) {
       startedRef.current = false;
       stopListening();
     };
-  }, [loadBlockForItem, navigateToSessionSummary, sessionId]);
+  }, [loadBlockForItem, navigateToSessionSummary, sessionId, buzzAndTone]);
 
   useEffect(() => {
     if (isLoading || error || showTransition || showNextItemTransition) {
@@ -438,34 +435,19 @@ export default function PostSessionQuizScreen(props) {
       pulseAnim.setValue(1);
       return;
     }
-
     const loop = Animated.loop(
       Animated.sequence([
-        Animated.timing(pulseAnim, {
-          toValue: 0.35,
-          duration: 700,
-          useNativeDriver: true,
-        }),
-        Animated.timing(pulseAnim, {
-          toValue: 1,
-          duration: 700,
-          useNativeDriver: true,
-        }),
+        Animated.timing(pulseAnim, { toValue: 0.35, duration: 700, useNativeDriver: true }),
+        Animated.timing(pulseAnim, { toValue: 1, duration: 700, useNativeDriver: true }),
       ])
     );
     loop.start();
     return () => loop.stop();
   }, [isLoading, error, showTransition, showNextItemTransition, pulseAnim]);
 
-  useEffect(() => {
-    currentBlockIndexRef.current = currentBlockIndex;
-  }, [currentBlockIndex]);
+  useEffect(() => { currentBlockIndexRef.current = currentBlockIndex; }, [currentBlockIndex]);
+  useEffect(() => { currentItemIndexRef.current = currentItemIndex; }, [currentItemIndex]);
 
-  useEffect(() => {
-    currentItemIndexRef.current = currentItemIndex;
-  }, [currentItemIndex]);
-
-  // --- Mushaf page state ---
   const [currentPage, setCurrentPage] = useState(null);
 
   useEffect(() => {
@@ -474,49 +456,48 @@ export default function PostSessionQuizScreen(props) {
     if (!blockEntry) return;
     let mounted = true;
     getPageForAyah(db, currentItem.surah_number, blockEntry.ayahNumber)
-      .then((page) => {
-        if (mounted && page != null) setCurrentPage(page);
-      })
-      .catch(() => {}); // keep previous page on lookup failure
-    return () => {
-      mounted = false;
-    };
-    // isLoading: re-run once the block has finished loading on startup
+      .then((page) => { if (mounted && page != null) setCurrentPage(page); })
+      .catch(() => {});
+    return () => { mounted = false; };
   }, [db, currentItem, currentBlockIndex, isLoading]);
 
-  // Confirmed block ayahs → per-ayah word statuses; unconfirmed ayahs stay
-  // hidden on the mushaf.
   const ayahStatuses = useMemo(() => {
     if (!currentItem) return {};
     const map = {};
+
     confirmedAyahs.forEach((ayah, index) => {
       const blockEntry = blockAyahsRef.current[index];
       if (!blockEntry) return;
       map[`${currentItem.surah_number}:${blockEntry.ayahNumber}`] = {
         wrongIndices: ayah.wrongIndices ?? [],
+        letterDiffByIndex: ayah.letterDiffByIndex,
       };
     });
-    // The block's first ayah is given as a prompt: gray until recited.
-    const firstEntry = blockAyahsRef.current[0];
-    if (confirmedAyahs.length === 0 && firstEntry) {
-      map[`${currentItem.surah_number}:${firstEntry.ayahNumber}`] = {
-        wrongIndices: [],
-        cue: true,
-      };
-    }
-    return map;
-  }, [confirmedAyahs, currentItem]);
 
-  const displayAyahInBlock = currentBlockIndex + 1;
-  const isListening =
-    !isLoading && !error && !showTransition && !showNextItemTransition;
+    // Current block ayah: live reveal (or grey cue before recitation starts).
+    const currentEntry = blockAyahsRef.current[currentBlockIndex];
+    if (currentEntry) {
+      const key = `${currentItem.surah_number}:${currentEntry.ayahNumber}`;
+      if (!map[key]) {
+        map[key] = revealedWordCount === 0
+          ? { wrongIndices: [], cue: true }
+          : {
+              revealedCount: revealedWordCount,
+              liveWrongIndices,
+              skippedWordIndices: [],
+              letterDiffByIndex: liveLetterDiff,
+            };
+      }
+    }
+
+    return map;
+  }, [confirmedAyahs, currentItem, currentBlockIndex, revealedWordCount, liveWrongIndices, liveLetterDiff]);
+
+  const isListening = !isLoading && !error && !showTransition && !showNextItemTransition;
 
   const handlePauseSession = async () => {
     if (sessionId) {
-      await supabase
-        .from('sessions')
-        .update({ status: 'paused' })
-        .eq('id', sessionId);
+      await supabase.from('sessions').update({ status: 'paused' }).eq('id', sessionId);
     }
     await stopListening();
     navigation.navigate('Today');
@@ -524,9 +505,7 @@ export default function PostSessionQuizScreen(props) {
 
   if (showTransition) {
     return (
-      <Animated.View
-        style={[styles.transitionOverlay, { opacity: fadeAnim }]}
-      >
+      <Animated.View style={[styles.transitionOverlay, { opacity: fadeAnim }]}>
         <Text style={styles.transitionText}>Session complete</Text>
       </Animated.View>
     );
@@ -540,137 +519,116 @@ export default function PostSessionQuizScreen(props) {
     );
   }
 
-  return (
-    <ScrollView contentContainerStyle={styles.container}>
-      <Text style={styles.title}>Post-Session Quiz</Text>
-      {currentItem ? (
-        <Text style={styles.subtitle}>
-          Question {currentItemIndex + 1} of {quizItems.length} — Ayah{' '}
-          {currentItem.ayah_number}
-        </Text>
-      ) : null}
+  const hasFeedback = mistakeMessage || correctFeedback || tier2AyahDisplay;
 
+  return (
+    <View style={styles.screen}>
       {error ? <Text style={styles.error}>{error}</Text> : null}
 
-      {confirmedAyahs.length === 0 ? (
-        <Text style={styles.reciteHint}>Recite from the grey ayah</Text>
-      ) : null}
-
-      {currentPage != null ? (
-        <View style={styles.mushafContainer}>
+      <View style={styles.mushafArea}>
+        {currentPage != null ? (
           <MushafPage pageNumber={currentPage} ayahStatuses={ayahStatuses} />
-        </View>
-      ) : null}
-
-      {mistakeMessage ? (
-        <Text style={styles.mistakeMessage}>{mistakeMessage}</Text>
-      ) : null}
-
-      {correctFeedback ? (
-        <Text style={styles.correctFeedback}>✓ Correct</Text>
-      ) : null}
-
-      {tier2AyahDisplay ? (
-        <View style={styles.tier2Frame}>
-          <Text style={styles.tier2Label}>What you said:</Text>
-          <Text style={styles.tier2TranscribedText}>{tier2TranscribedText}</Text>
-          <Text style={styles.tier2Label}>Correct:</Text>
-          <Text style={styles.tier2AyahText}>
-            {(() => {
-              const wrongSet = new Set(tier2HighlightIndices);
-              return tier2AyahDisplay.split(/\s+/).map((word, i) => (
-                <Text
-                  key={i}
-                  style={
-                    wrongSet.has(i)
-                      ? styles.tier2WordWrong
-                      : styles.tier2WordCorrect
-                  }
-                >
-                  {word}{' '}
-                </Text>
-              ));
-            })()}
-          </Text>
-          <Text style={styles.tier2Instruction}>
-            Read the correct version above again
-          </Text>
-        </View>
-      ) : null}
-
-      <View style={styles.micSection}>
-        {isLoading ? (
-          <ActivityIndicator size="large" />
-        ) : (
-          <>
-            <Animated.Text
-              style={[styles.micIcon, { opacity: isListening ? pulseAnim : 1 }]}
-            >
-              🎤
-            </Animated.Text>
-          </>
-        )}
+        ) : null}
       </View>
 
-      {blockLength > 0 ? (
-        <Text style={styles.progress}>
-          {`Ayah ${displayAyahInBlock} of ${blockLength} in this quiz`}
-        </Text>
+      {(revealedWordCount === 0 || hasFeedback) ? (
+        <View style={styles.feedbackPanel}>
+          {revealedWordCount === 0 && !hasFeedback ? (
+            <>
+              <Text style={styles.reciteHint}>Recite from the grey ayah</Text>
+            </>
+          ) : null}
+          {mistakeMessage ? (
+            <Text style={styles.mistakeMessage}>{mistakeMessage}</Text>
+          ) : null}
+          {correctFeedback ? (
+            <Text style={styles.correctFeedback}>Correct</Text>
+          ) : null}
+          {tier2AyahDisplay ? (
+            <ScrollView style={styles.tier2Scroll}>
+              <View style={styles.tier2Frame}>
+                <Text style={styles.tier2Label}>What you said:</Text>
+                <Text style={styles.tier2TranscribedText}>{tier2TranscribedText}</Text>
+                <Text style={styles.tier2Label}>Correct:</Text>
+                <Text style={styles.tier2AyahText}>
+                  {(() => {
+                    const wrongSet = new Set(tier2HighlightIndices);
+                    return tier2AyahDisplay.split(/\s+/).map((word, i) => (
+                      <Text key={i} style={wrongSet.has(i) ? styles.tier2WordWrong : styles.tier2WordCorrect}>
+                        {word}{' '}
+                      </Text>
+                    ));
+                  })()}
+                </Text>
+                <Text style={styles.tier2Instruction}>Read the correct version above again</Text>
+              </View>
+            </ScrollView>
+          ) : null}
+        </View>
       ) : null}
 
-      <TouchableOpacity
-        style={[
-          styles.endSessionButton,
-          isLoading && styles.endSessionButtonDisabled,
-        ]}
-        onPress={handlePauseSession}
-        disabled={isLoading}
-        activeOpacity={0.8}
-      >
-        <Text style={styles.endSessionButtonText}>Pause Session</Text>
-      </TouchableOpacity>
-    </ScrollView>
+      <View style={styles.bottomBar}>
+        <TouchableOpacity
+          style={[styles.pauseBtn, isLoading && styles.pauseBtnDisabled]}
+          onPress={handlePauseSession}
+          disabled={isLoading}
+          activeOpacity={0.8}
+        >
+          <Text style={styles.pauseBtnText}>Pause</Text>
+        </TouchableOpacity>
+
+        <View style={styles.micArea}>
+          {isLoading ? (
+            <ActivityIndicator size="small" color="#8a6d2f" />
+          ) : (
+            <Animated.Text style={[styles.micIcon, { opacity: isListening ? pulseAnim : 1 }]}>
+              🎤
+            </Animated.Text>
+          )}
+        </View>
+
+        <TouchableOpacity
+          style={styles.revealBtn}
+          onPress={revealNextWord}
+          activeOpacity={0.8}
+        >
+          <Text style={styles.revealBtnText}>Reveal</Text>
+        </TouchableOpacity>
+      </View>
+    </View>
   );
 }
 
 const styles = StyleSheet.create({
-  container: {
-    flexGrow: 1,
+  screen: {
+    flex: 1,
     paddingTop: 56,
     backgroundColor: '#fff',
   },
-  title: {
-    fontSize: 24,
-    fontWeight: '600',
-    marginBottom: 4,
-    marginHorizontal: 16,
-  },
-  subtitle: {
-    fontSize: 14,
-    color: '#666',
-    marginBottom: 16,
-    marginHorizontal: 16,
-  },
   error: {
     color: '#c00',
-    marginBottom: 16,
     marginHorizontal: 16,
+    marginBottom: 8,
+  },
+  mushafArea: {
+    flex: 1,
+  },
+  feedbackPanel: {
+    maxHeight: 260,
   },
   reciteHint: {
     fontSize: 13,
     color: '#757575',
     textAlign: 'center',
-    marginBottom: 8,
-  },
-  mushafContainer: {
-    flexGrow: 1,
-    marginBottom: 16,
+    paddingVertical: 8,
+    paddingHorizontal: 16,
   },
   mistakeMessage: {
     color: '#e65100',
     fontSize: 15,
     textAlign: 'center',
-    marginBottom: 16,
+    paddingVertical: 10,
+    paddingHorizontal: 16,
     fontWeight: '500',
   },
   correctFeedback: {
@@ -678,15 +636,17 @@ const styles = StyleSheet.create({
     fontSize: 18,
     fontWeight: '700',
     textAlign: 'center',
-    marginBottom: 16,
+    paddingVertical: 10,
+  },
+  tier2Scroll: {
+    maxHeight: 240,
   },
   tier2Frame: {
     borderWidth: 1,
     borderColor: '#c62828',
     borderRadius: 8,
     padding: 16,
-    marginBottom: 16,
-    marginHorizontal: 16,
+    margin: 12,
     backgroundColor: '#fff8f8',
   },
   tier2Label: {
@@ -711,12 +671,8 @@ const styles = StyleSheet.create({
     writingDirection: 'rtl',
     fontFamily: 'UthmanicHafs',
   },
-  tier2WordWrong: {
-    color: '#c62828',
-  },
-  tier2WordCorrect: {
-    color: '#1b1b1b',
-  },
+  tier2WordWrong: { color: '#c62828' },
+  tier2WordCorrect: { color: '#1b1b1b' },
   tier2Instruction: {
     fontSize: 14,
     color: '#e65100',
@@ -724,19 +680,53 @@ const styles = StyleSheet.create({
     textAlign: 'center',
     marginTop: 12,
   },
-  micSection: {
+  bottomBar: {
+    flexDirection: 'row',
     alignItems: 'center',
-    minHeight: 100,
-    marginBottom: 24,
+    justifyContent: 'space-between',
+    paddingHorizontal: 20,
+    paddingTop: 10,
+    paddingBottom: 32,
+    borderTopWidth: StyleSheet.hairlineWidth,
+    borderTopColor: '#d4c9a8',
+    backgroundColor: '#fff',
+  },
+  micArea: {
+    alignItems: 'center',
+    justifyContent: 'center',
   },
   micIcon: {
-    fontSize: 48,
+    fontSize: 38,
   },
-  progress: {
-    fontSize: 16,
+  pageNumber: {
+    fontSize: 13,
+    color: '#a0916a',
     textAlign: 'center',
-    marginBottom: 16,
-    color: '#333',
+    paddingTop: 8,
+    paddingHorizontal: 16,
+  },
+  revealBtn: {
+    backgroundColor: '#e8e0cc',
+    borderRadius: 7,
+    paddingVertical: 5,
+    paddingHorizontal: 11,
+  },
+  revealBtnText: {
+    fontSize: 13,
+    color: '#5a4a1f',
+    fontWeight: '600',
+  },
+  pauseBtn: {
+    backgroundColor: '#c62828',
+    borderRadius: 8,
+    paddingVertical: 8,
+    paddingHorizontal: 16,
+  },
+  pauseBtnDisabled: { opacity: 0.5 },
+  pauseBtnText: {
+    color: '#fff',
+    fontSize: 14,
+    fontWeight: '700',
   },
   transitionOverlay: {
     flex: 1,
@@ -749,23 +739,5 @@ const styles = StyleSheet.create({
     fontWeight: '700',
     color: '#1b5e20',
     textAlign: 'center',
-  },
-  endSessionButton: {
-    backgroundColor: '#c62828',
-    borderRadius: 12,
-    paddingVertical: 16,
-    paddingHorizontal: 24,
-    alignItems: 'center',
-    marginTop: 8,
-    marginHorizontal: 16,
-    marginBottom: 16,
-  },
-  endSessionButtonDisabled: {
-    opacity: 0.5,
-  },
-  endSessionButtonText: {
-    color: '#fff',
-    fontSize: 18,
-    fontWeight: '700',
   },
 });

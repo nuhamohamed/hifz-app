@@ -10,14 +10,15 @@ import {
 import { CommonActions, useNavigation } from '@react-navigation/native';
 import { getCurrentUserId } from '../lib/auth';
 import { getAyahLocation, getJuzTotalAyahs } from '../lib/juzSurahMap';
+import { cancelEveningNudge } from '../lib/notifications';
 import { getAyah } from '../lib/quranApi';
 import { updateJuzProgressAfterSession } from '../lib/planEngine';
 import { supabase } from '../lib/supabase';
 
 function getTomorrowDateString() {
   const d = new Date();
-  d.setUTCDate(d.getUTCDate() + 1);
-  return `${d.getUTCFullYear()}-${String(d.getUTCMonth() + 1).padStart(2, '0')}-${String(d.getUTCDate()).padStart(2, '0')}`;
+  d.setDate(d.getDate() + 1);
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
 }
 
 function formatTomorrowLine(tomorrow) {
@@ -136,6 +137,8 @@ export default function SessionSummaryScreen({ route }) {
   const [session, setSession] = useState(null);
   const [mistakes, setMistakes] = useState([]);
   const [tomorrowText, setTomorrowText] = useState(null);
+  const [juzComplete, setJuzComplete] = useState(false);
+  const [gatePassed, setGatePassed] = useState(null);
   const planUpdatedRef = useRef(false);
 
   useEffect(() => {
@@ -166,14 +169,13 @@ export default function SessionSummaryScreen({ route }) {
 
         const userId = await getCurrentUserId();
 
-        if (
-          sessionData.status === 'complete' &&
-          !planUpdatedRef.current
-        ) {
+        const totalAyahsInJuz =
+          totalAyahsInJuzParam ?? getJuzTotalAyahs(sessionData.juz_number);
+        const isJuzComplete =
+          sessionData.portion_end_ayah >= totalAyahsInJuz;
+
+        if (sessionData.status === 'complete' && !planUpdatedRef.current) {
           planUpdatedRef.current = true;
-          const totalAyahsInJuz =
-            totalAyahsInJuzParam ??
-            getJuzTotalAyahs(sessionData.juz_number);
           await updateJuzProgressAfterSession(
             userId,
             sessionId,
@@ -181,6 +183,17 @@ export default function SessionSummaryScreen({ route }) {
             sessionData.portion_end_ayah,
             totalAyahsInJuz
           );
+        }
+
+        let gate = null;
+        if (isJuzComplete) {
+          const { data: progressData } = await supabase
+            .from('juz_progress')
+            .select('gate_passed')
+            .eq('user_id', userId)
+            .eq('juz_number', sessionData.juz_number)
+            .maybeSingle();
+          gate = progressData?.gate_passed ?? null;
         }
 
         const { data: tomorrow, error: tomorrowError } = await supabase
@@ -233,6 +246,8 @@ export default function SessionSummaryScreen({ route }) {
         setSession(sessionData);
         setMistakes(enrichedMistakes);
         setTomorrowText(nextTomorrowText);
+        setJuzComplete(isJuzComplete);
+        setGatePassed(gate);
       } catch (err) {
         if (mounted) {
           setError(err.message ?? 'Failed to load session summary.');
@@ -253,6 +268,7 @@ export default function SessionSummaryScreen({ route }) {
   const slipCount = mistakes.filter((m) => m.tier === 1).length;
 
   const handleBackToHome = () => {
+    cancelEveningNudge().catch(() => {});
     navigation.dispatch(
       CommonActions.reset({
         index: 0,
@@ -300,7 +316,22 @@ export default function SessionSummaryScreen({ route }) {
 
   return (
     <ScrollView contentContainerStyle={styles.container}>
-      <Text style={styles.title}>Session Complete</Text>
+      {juzComplete ? (
+        <View style={styles.juzCompleteCard}>
+          <Text style={styles.juzCompleteTitle}>
+            Juz {session?.juz_number} Complete!
+          </Text>
+          <Text style={styles.gateText}>
+            {gatePassed === true
+              ? 'You passed. Strong work keeping your mistakes low.'
+              : gatePassed === false
+              ? "You'll redo this juz — too many mistakes this round. Keep at it."
+              : ''}
+          </Text>
+        </View>
+      ) : (
+        <Text style={styles.title}>Session Complete</Text>
+      )}
 
       <Text style={styles.portionText}>
         {session ? `Juz ${session.juz_number} — ${portionLabel}` : ''}
@@ -358,6 +389,28 @@ const styles = StyleSheet.create({
     color: '#1b5e20',
     marginBottom: 12,
     textAlign: 'center',
+  },
+  juzCompleteCard: {
+    backgroundColor: '#f1f8f1',
+    borderWidth: 2,
+    borderColor: '#2e7d32',
+    borderRadius: 14,
+    padding: 24,
+    alignItems: 'center',
+    marginBottom: 16,
+  },
+  juzCompleteTitle: {
+    fontSize: 26,
+    fontWeight: '700',
+    color: '#1b5e20',
+    marginBottom: 10,
+    textAlign: 'center',
+  },
+  gateText: {
+    fontSize: 15,
+    color: '#444',
+    textAlign: 'center',
+    lineHeight: 22,
   },
   portionText: {
     fontSize: 17,

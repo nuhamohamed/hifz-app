@@ -18,6 +18,12 @@ const WRONG_COLOR = '#c62828';
 export function LetterDiffWord({ displayWord, spokenWord }) {
   if (!displayWord) return null;
   const segments = computeLetterSegments(displayWord, spokenWord ?? null);
+  // If the user spoke extra letters that don't correspond to any display letter
+  // (e.g. وهدى instead of هدى), all display segments align correctly and no
+  // segment is flagged wrong — fall back to whole-word red so the mistake shows.
+  if (!segments.some((s) => s.wrong)) {
+    return <Text style={{ color: WRONG_COLOR }}>{displayWord}</Text>;
+  }
   return (
     <>
       {segments.map((seg, i) => (

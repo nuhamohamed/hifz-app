@@ -128,7 +128,8 @@ function MushafLine({ line, ayahStatuses, lineHeight }) {
         const ayahStatus = ayahStatuses[`${word.surah}:${word.ayah}`];
         const wordIndex = word.word - 1;
         const isWordReveal = ayahStatus?.revealedCount != null;
-        const isRevealed = isWordReveal && wordIndex < ayahStatus.revealedCount;
+        const isSkipped = isWordReveal && (ayahStatus.skippedWordIndices ?? []).includes(wordIndex);
+        const isRevealed = isWordReveal && wordIndex < ayahStatus.revealedCount && !isSkipped;
         const isLiveWrong = isWordReveal && (ayahStatus.liveWrongIndices ?? []).includes(wordIndex);
         const isVisiblyWrong = isRevealed && isLiveWrong;
         const isLiveCorrect = isRevealed && !isLiveWrong;
@@ -140,6 +141,20 @@ function MushafLine({ line, ayahStatuses, lineHeight }) {
         const isHidden = ayahStatus == null || (isWordReveal && !isRevealed);
 
         const letterDiffByIndex = ayahStatus?.letterDiffByIndex;
+
+        // Live wrong word during recitation — letter-level diff with pink background.
+        if (isVisiblyWrong && letterDiffByIndex != null && wordIndex in letterDiffByIndex) {
+          return (
+            <Text key={word.id} style={[styles.word, styles.wordLiveWrong]}>
+              <LetterDiffWord
+                displayWord={word.text}
+                spokenWord={letterDiffByIndex[wordIndex]}
+              />
+            </Text>
+          );
+        }
+
+        // Confirmed wrong word after ayah completion — letter-level diff, no background.
         if (isConfirmedWrong && letterDiffByIndex != null && wordIndex in letterDiffByIndex) {
           return (
             <Text key={word.id} style={styles.word}>
@@ -158,8 +173,9 @@ function MushafLine({ line, ayahStatuses, lineHeight }) {
               styles.word,
               ayahStatus?.cue && styles.wordCue,
               isConfirmedWrong && styles.wordWrong,
-              (isHidden || isVisiblyWrong) && styles.wordHidden,
+              isHidden && styles.wordHidden,
               isLiveCorrect && styles.wordLiveCorrect,
+              isVisiblyWrong && styles.wordWrong,
               isVisiblyWrong && styles.wordLiveWrong,
             ]}
           >

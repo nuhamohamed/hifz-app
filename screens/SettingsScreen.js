@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import {
   ActivityIndicator,
   Platform,
@@ -9,11 +9,10 @@ import {
 } from 'react-native';
 import DateTimePicker from '@react-native-community/datetimepicker';
 import Slider from '@react-native-community/slider';
-import { CommonActions, useNavigation } from '@react-navigation/native';
-import { getCurrentUserId } from '../../lib/auth';
-import { scheduleDailyNotification } from '../../lib/notifications';
-import { seedJuzProgressFromMemorized } from '../../lib/planEngine';
-import { supabase } from '../../lib/supabase';
+import { useNavigation } from '@react-navigation/native';
+import { getCurrentUserId } from '../lib/auth';
+import { scheduleDailyNotification } from '../lib/notifications';
+import { supabase } from '../lib/supabase';
 
 function formatNotificationTime(date) {
   const hours = String(date.getHours()).padStart(2, '0');
@@ -21,41 +20,66 @@ function formatNotificationTime(date) {
   return `${hours}:${minutes}:00`;
 }
 
-function getDefaultReminderTime() {
-  const date = new Date();
-  date.setHours(8, 0, 0, 0);
-  return date;
+function formatTimeDisplay(date) {
+  const hours = date.getHours();
+  const minutes = date.getMinutes();
+  const period = hours >= 12 ? 'PM' : 'AM';
+  const displayHours = hours % 12 || 12;
+  return `${displayHours}:${String(minutes).padStart(2, '0')} ${period}`;
 }
 
-export default function ScheduleScreen() {
+export default function SettingsScreen() {
   const navigation = useNavigation();
   const [sessionMinutes, setSessionMinutes] = useState(30);
-  const [reminderTime, setReminderTime] = useState(getDefaultReminderTime);
+  const [reminderTime, setReminderTime] = useState(() => {
+    const d = new Date();
+    d.setHours(8, 0, 0, 0);
+    return d;
+  });
   const [showTimePicker, setShowTimePicker] = useState(Platform.OS === 'ios');
-  const [error, setError] = useState('');
+  const [isLoading, setIsLoading] = useState(true);
   const [isSaving, setIsSaving] = useState(false);
+  const [error, setError] = useState('');
+  const [saved, setSaved] = useState(false);
+
+  useEffect(() => {
+    (async () => {
+      try {
+        const userId = await getCurrentUserId();
+        const { data, error: fetchError } = await supabase
+          .from('users')
+          .select('session_minutes, notification_time')
+          .eq('id', userId)
+          .maybeSingle();
+
+        if (fetchError) throw new Error(fetchError.message);
+
+        if (data?.session_minutes) {
+          setSessionMinutes(data.session_minutes);
+        }
+        if (data?.notification_time) {
+          const [h, m] = data.notification_time.split(':').map(Number);
+          const d = new Date();
+          d.setHours(h, m, 0, 0);
+          setReminderTime(d);
+        }
+      } catch (err) {
+        setError(err.message ?? 'Failed to load settings.');
+      } finally {
+        setIsLoading(false);
+      }
+    })();
+  }, []);
 
   const onTimeChange = (_event, selectedDate) => {
-    if (Platform.OS === 'android') {
-      setShowTimePicker(false);
-    }
-    if (selectedDate) {
-      setReminderTime(selectedDate);
-    }
+    if (Platform.OS === 'android') setShowTimePicker(false);
+    if (selectedDate) setReminderTime(selectedDate);
   };
 
-  const formatTimeDisplay = (date) => {
-    const hours = date.getHours();
-    const minutes = date.getMinutes();
-    const period = hours >= 12 ? 'PM' : 'AM';
-    const displayHours = hours % 12 || 12;
-    return `${displayHours}:${String(minutes).padStart(2, '0')} ${period}`;
-  };
-
-  const handleStartPlan = async () => {
+  const handleSave = async () => {
     setError('');
+    setSaved(false);
     setIsSaving(true);
-
     try {
       const userId = await getCurrentUserId();
 
@@ -67,35 +91,38 @@ export default function ScheduleScreen() {
         })
         .eq('id', userId);
 
-      if (updateError) {
-        throw new Error(updateError.message);
-      }
-
-      await seedJuzProgressFromMemorized(userId);
+      if (updateError) throw new Error(updateError.message);
 
       await scheduleDailyNotification(
         reminderTime.getHours(),
         reminderTime.getMinutes()
       );
 
-      navigation.dispatch(
-        CommonActions.reset({
-          index: 0,
-          routes: [{ name: 'Today' }],
-        })
-      );
+      setSaved(true);
     } catch (err) {
-      setError(err.message ?? 'Failed to start your plan.');
+      setError(err.message ?? 'Failed to save settings.');
     } finally {
       setIsSaving(false);
     }
   };
 
+  if (isLoading) {
+    return (
+      <View style={styles.centered}>
+        <ActivityIndicator size="large" color="#2e7d32" />
+      </View>
+    );
+  }
+
   return (
     <View style={styles.container}>
-      <Text style={styles.title}>Your schedule</Text>
+      <TouchableOpacity style={styles.backButton} onPress={() => navigation.goBack()}>
+        <Text style={styles.backButtonText}>← Back</Text>
+      </TouchableOpacity>
 
-      <Text style={styles.label}>How long is each session?</Text>
+      <Text style={styles.title}>Edit Settings</Text>
+
+      <Text style={styles.label}>Session length</Text>
       <Text style={styles.valueText}>{sessionMinutes} minutes</Text>
       <Slider
         style={styles.slider}
@@ -113,9 +140,7 @@ export default function ScheduleScreen() {
         <Text style={styles.sliderLabel}>120 min</Text>
       </View>
 
-      <Text style={[styles.label, styles.labelSpaced]}>
-        What time should we remind you?
-      </Text>
+      <Text style={[styles.label, styles.labelSpaced]}>Daily reminder</Text>
 
       {Platform.OS === 'android' ? (
         <TouchableOpacity
@@ -123,9 +148,7 @@ export default function ScheduleScreen() {
           onPress={() => setShowTimePicker(true)}
           activeOpacity={0.8}
         >
-          <Text style={styles.timeButtonText}>
-            {formatTimeDisplay(reminderTime)}
-          </Text>
+          <Text style={styles.timeButtonText}>{formatTimeDisplay(reminderTime)}</Text>
         </TouchableOpacity>
       ) : null}
 
@@ -139,20 +162,17 @@ export default function ScheduleScreen() {
       ) : null}
 
       {error ? <Text style={styles.error}>{error}</Text> : null}
+      {saved ? <Text style={styles.savedText}>Saved.</Text> : null}
 
       {isSaving ? (
-        <ActivityIndicator
-          size="large"
-          color="#2e7d32"
-          style={styles.loader}
-        />
+        <ActivityIndicator size="large" color="#2e7d32" style={styles.loader} />
       ) : (
         <TouchableOpacity
-          style={styles.startButton}
-          onPress={handleStartPlan}
+          style={styles.saveButton}
+          onPress={handleSave}
           activeOpacity={0.8}
         >
-          <Text style={styles.startButtonText}>Start my plan</Text>
+          <Text style={styles.saveButtonText}>Save</Text>
         </TouchableOpacity>
       )}
     </View>
@@ -166,6 +186,20 @@ const styles = StyleSheet.create({
     paddingTop: 64,
     paddingHorizontal: 24,
     paddingBottom: 32,
+  },
+  centered: {
+    flex: 1,
+    justifyContent: 'center',
+    alignItems: 'center',
+    backgroundColor: '#fff',
+  },
+  backButton: {
+    marginBottom: 16,
+  },
+  backButtonText: {
+    fontSize: 16,
+    color: '#2e7d32',
+    fontWeight: '600',
   },
   title: {
     fontSize: 26,
@@ -222,17 +256,25 @@ const styles = StyleSheet.create({
     marginTop: 16,
     marginBottom: 8,
   },
+  savedText: {
+    color: '#2e7d32',
+    fontSize: 14,
+    textAlign: 'center',
+    marginTop: 16,
+    marginBottom: 8,
+    fontWeight: '600',
+  },
   loader: {
     marginTop: 24,
   },
-  startButton: {
+  saveButton: {
     backgroundColor: '#2e7d32',
     borderRadius: 12,
     paddingVertical: 16,
     alignItems: 'center',
     marginTop: 'auto',
   },
-  startButtonText: {
+  saveButtonText: {
     color: '#fff',
     fontSize: 17,
     fontWeight: '700',
