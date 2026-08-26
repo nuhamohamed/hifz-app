@@ -1,19 +1,23 @@
 export const C = {
-  background: '#F8F7F2',
-  cobalt: '#1E4090',
-  cobaltLight: '#2A52B5',
-  cobaltDim: 'rgba(30,64,144,0.08)',
-  gold: '#B8962A',
-  goldLight: '#F5EDD0',
-  navy: '#0A1428',
-  navyMid: '#3D4F6B',
-  navyLight: '#8A97AD',
+  background: '#FDFAF6',          // Cream — page bg
+  cobalt: '#1A3D8A',              // Blue — brand/CTA
+  cobaltLight: '#4A7AB8',         // Sky blue — accent
+  cobaltDim: 'rgba(26,61,138,0.08)',
+  gold: '#D4580A',                // Orange — energy
+  goldLight: '#FAEADE',           // Parchment — warm tint
+  navy: '#06152C',                // Navy — primary text
+  navyMid: '#3D4F6B',            // derived mid-tone
+  navyLight: '#7A8FA8',          // muted text
   white: '#FFFFFF',
   card: '#FFFFFF',
-  cardBorder: 'rgba(10,20,40,0.06)',
+  cardBorder: '#EEEAE3',          // Sand — borders
+  brown: '#703010',               // Walnut — icons/badge
+  espresso: '#5E2600',            // Espresso — emphasis
   error: '#C0392B',
   success: '#1E7A4A',
-  surfaceAlt: '#EEEAE0',
+  surfaceAlt: '#EEEAE3',          // Sand — surfaces
+  ice: '#E6EFF9',                 // Ice — blue tint surface
+  parchment: '#FAEADE',           // Parchment — warm surface
 };
 
 export const F = {

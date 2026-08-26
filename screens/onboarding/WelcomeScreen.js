@@ -1,19 +1,10 @@
 import { useEffect, useRef } from 'react';
 import { Animated, Image, StyleSheet, Text, TouchableOpacity, View } from 'react-native';
-import { C, F, S } from './design';
+import { colors, fonts, spacing } from '../../lib/theme';
 
 const LOGO = require('../../assets/logo.png');
 
-function NavLogo() {
-  return (
-    <View style={styles.navLogo}>
-      <Image source={LOGO} style={styles.logoImg} />
-      <Text style={styles.logoText}>Dawrah</Text>
-    </View>
-  );
-}
-
-export default function WelcomeMockup({ navigation }) {
+export default function WelcomeScreen({ navigation }) {
   const opacity = useRef(new Animated.Value(0)).current;
   const translateY = useRef(new Animated.Value(24)).current;
 
@@ -22,11 +13,14 @@ export default function WelcomeMockup({ navigation }) {
       Animated.timing(opacity, { toValue: 1, duration: 800, delay: 200, useNativeDriver: true }),
       Animated.timing(translateY, { toValue: 0, duration: 700, delay: 200, useNativeDriver: true }),
     ]).start();
-  }, []);
+  }, [opacity, translateY]);
 
   return (
     <View style={styles.screen}>
-      <NavLogo />
+      <View style={styles.navLogo}>
+        <Image source={LOGO} style={styles.logoImg} />
+        <Text style={styles.logoText}>Dawrah</Text>
+      </View>
       <Animated.View style={[styles.inner, { opacity, transform: [{ translateY }] }]}>
         <View style={styles.spacerTop} />
         <Text style={styles.headline}>Your personalized hifdh revision coach.</Text>
@@ -38,7 +32,7 @@ export default function WelcomeMockup({ navigation }) {
 
         <TouchableOpacity
           style={styles.primaryBtn}
-          onPress={() => navigation.navigate('MockupOnboardingName')}
+          onPress={() => navigation.navigate('Name')}
           activeOpacity={0.88}
         >
           <Text style={styles.primaryBtnText}>Get started</Text>
@@ -51,55 +45,55 @@ export default function WelcomeMockup({ navigation }) {
 const styles = StyleSheet.create({
   screen: {
     flex: 1,
-    backgroundColor: C.background,
+    backgroundColor: colors.background,
     paddingBottom: 48,
-    paddingHorizontal: S.lg,
+    paddingHorizontal: spacing.lg,
   },
   navLogo: {
     flexDirection: 'row',
     alignItems: 'center',
     gap: 10,
     paddingTop: 64,
-    marginBottom: S.sm,
+    marginBottom: spacing.sm,
   },
   logoImg: {
     width: 30,
     height: 30,
     resizeMode: 'contain',
-    tintColor: C.navy,
+    tintColor: colors.text,
   },
   logoText: {
-    fontFamily: F.semiBold,
+    fontFamily: fonts.semiBold,
     fontSize: 18,
-    color: C.navy,
+    color: colors.text,
     letterSpacing: -0.2,
   },
   inner: { flex: 1 },
   spacerTop: { flex: 0.35 },
   headline: {
-    fontFamily: F.semiBold,
+    fontFamily: fonts.semiBold,
     fontSize: 20,
-    color: C.cobalt,
-    marginBottom: S.md,
+    color: colors.primary,
+    marginBottom: spacing.md,
     lineHeight: 28,
   },
   body: {
-    fontFamily: F.regular,
+    fontFamily: fonts.regular,
     fontSize: 15,
-    color: C.navyMid,
+    color: colors.textMid,
     lineHeight: 23,
   },
   spacer: { flex: 1 },
   primaryBtn: {
-    backgroundColor: C.cobalt,
+    backgroundColor: colors.primary,
     borderRadius: 14,
     paddingVertical: 17,
     alignItems: 'center',
   },
   primaryBtnText: {
-    fontFamily: F.semiBold,
+    fontFamily: fonts.semiBold,
     fontSize: 17,
-    color: C.white,
+    color: colors.white,
     letterSpacing: 0.2,
   },
 });

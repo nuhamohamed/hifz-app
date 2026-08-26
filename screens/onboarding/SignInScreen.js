@@ -9,13 +9,16 @@ import {
   TouchableOpacity,
   View,
 } from 'react-native';
+import { signInWithGoogle } from '../../lib/auth';
 import { supabase } from '../../lib/supabase';
+import { colors, fonts, radius, spacing } from '../../lib/theme';
 
-export default function SignInScreen({ navigation }) {
+export default function SignInScreen() {
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const [error, setError] = useState('');
   const [isLoading, setIsLoading] = useState(false);
+  const [isGoogleLoading, setIsGoogleLoading] = useState(false);
 
   const handleAuth = async (mode) => {
     setError('');
@@ -41,17 +44,26 @@ export default function SignInScreen({ navigation }) {
       if (result.error) {
         throw new Error(result.error.message);
       }
-
-      if (mode === 'signUp') {
-        navigation.reset({
-          index: 0,
-          routes: [{ name: 'MemorizedJuz' }],
-        });
-      }
+      // No manual navigation here — App.js listens for the auth state change
+      // and swaps to the app navigator (routing fresh sign-ups to onboarding).
     } catch (err) {
       setError(err.message ?? 'Something went wrong. Please try again.');
     } finally {
       setIsLoading(false);
+    }
+  };
+
+  const handleGoogleSignIn = async () => {
+    setError('');
+    setIsGoogleLoading(true);
+    try {
+      await signInWithGoogle();
+      // No manual navigation — App.js reacts to the auth state change once
+      // the session is set.
+    } catch (err) {
+      setError(err.message ?? 'Google sign-in failed. Please try again.');
+    } finally {
+      setIsGoogleLoading(false);
     }
   };
 
@@ -61,13 +73,13 @@ export default function SignInScreen({ navigation }) {
       behavior={Platform.OS === 'ios' ? 'padding' : undefined}
     >
       <View style={styles.inner}>
-        <Text style={styles.title}>Hifz Revision</Text>
+        <Text style={styles.title}>Dawrah</Text>
         <Text style={styles.subtitle}>Sign in to continue</Text>
 
         <TextInput
           style={styles.input}
           placeholder="Email"
-          placeholderTextColor="#999"
+          placeholderTextColor={colors.textMuted}
           value={email}
           onChangeText={setEmail}
           autoCapitalize="none"
@@ -79,7 +91,7 @@ export default function SignInScreen({ navigation }) {
         <TextInput
           style={styles.input}
           placeholder="Password"
-          placeholderTextColor="#999"
+          placeholderTextColor={colors.textMuted}
           value={password}
           onChangeText={setPassword}
           secureTextEntry
@@ -91,7 +103,7 @@ export default function SignInScreen({ navigation }) {
         {isLoading ? (
           <ActivityIndicator
             size="large"
-            color="#2e7d32"
+            color={colors.primary}
             style={styles.loader}
           />
         ) : (
@@ -99,7 +111,7 @@ export default function SignInScreen({ navigation }) {
             <TouchableOpacity
               style={styles.primaryButton}
               onPress={() => handleAuth('signIn')}
-              activeOpacity={0.8}
+              activeOpacity={0.88}
             >
               <Text style={styles.primaryButtonText}>Sign In</Text>
             </TouchableOpacity>
@@ -107,10 +119,28 @@ export default function SignInScreen({ navigation }) {
             <TouchableOpacity
               style={styles.secondaryButton}
               onPress={() => handleAuth('signUp')}
-              activeOpacity={0.8}
+              activeOpacity={0.7}
             >
               <Text style={styles.secondaryButtonText}>Sign Up</Text>
             </TouchableOpacity>
+
+            <View style={styles.dividerRow}>
+              <View style={styles.dividerLine} />
+              <Text style={styles.dividerText}>or</Text>
+              <View style={styles.dividerLine} />
+            </View>
+
+            {isGoogleLoading ? (
+              <ActivityIndicator size="small" color={colors.primary} />
+            ) : (
+              <TouchableOpacity
+                style={styles.googleButton}
+                onPress={handleGoogleSignIn}
+                activeOpacity={0.8}
+              >
+                <Text style={styles.googleButtonText}>Continue with Google</Text>
+              </TouchableOpacity>
+            )}
           </View>
         )}
       </View>
@@ -121,71 +151,105 @@ export default function SignInScreen({ navigation }) {
 const styles = StyleSheet.create({
   container: {
     flex: 1,
-    backgroundColor: '#fff',
+    backgroundColor: colors.background,
   },
   inner: {
     flex: 1,
     justifyContent: 'center',
-    padding: 24,
+    padding: spacing.lg,
     paddingTop: 64,
   },
   title: {
-    fontSize: 28,
-    fontWeight: '700',
-    color: '#1b5e20',
+    fontFamily: fonts.semiBold,
+    fontSize: 30,
+    color: colors.primary,
     textAlign: 'center',
-    marginBottom: 8,
+    letterSpacing: -0.5,
+    marginBottom: spacing.xs,
   },
   subtitle: {
-    fontSize: 16,
-    color: '#666',
+    fontFamily: fonts.regular,
+    fontSize: 15,
+    color: colors.textMid,
     textAlign: 'center',
-    marginBottom: 32,
+    marginBottom: spacing.xl,
   },
   input: {
-    borderWidth: 1,
-    borderColor: '#ddd',
-    borderRadius: 10,
-    paddingHorizontal: 16,
-    paddingVertical: 14,
+    backgroundColor: colors.card,
+    borderWidth: 1.5,
+    borderColor: colors.border,
+    borderRadius: 14,
+    paddingHorizontal: spacing.md,
+    paddingVertical: 16,
+    fontFamily: fonts.medium,
     fontSize: 16,
-    marginBottom: 12,
-    backgroundColor: '#fafafa',
+    color: colors.text,
+    marginBottom: spacing.sm,
   },
   error: {
-    color: '#c62828',
+    fontFamily: fonts.regular,
+    color: colors.error,
     fontSize: 14,
     textAlign: 'center',
-    marginBottom: 16,
+    marginBottom: spacing.md,
   },
   loader: {
-    marginTop: 16,
+    marginTop: spacing.md,
   },
   buttonGroup: {
-    gap: 12,
-    marginTop: 8,
+    gap: spacing.sm,
+    marginTop: spacing.xs,
   },
   primaryButton: {
-    backgroundColor: '#2e7d32',
-    borderRadius: 12,
-    paddingVertical: 16,
+    backgroundColor: colors.primary,
+    borderRadius: radius.md,
+    paddingVertical: 17,
     alignItems: 'center',
   },
   primaryButtonText: {
-    color: '#fff',
+    fontFamily: fonts.semiBold,
+    color: colors.white,
     fontSize: 17,
-    fontWeight: '700',
   },
   secondaryButton: {
-    borderWidth: 2,
-    borderColor: '#2e7d32',
-    borderRadius: 12,
-    paddingVertical: 16,
+    borderWidth: 1.5,
+    borderColor: colors.primary,
+    borderRadius: radius.md,
+    paddingVertical: 17,
     alignItems: 'center',
   },
   secondaryButtonText: {
-    color: '#2e7d32',
+    fontFamily: fonts.semiBold,
+    color: colors.primary,
     fontSize: 17,
-    fontWeight: '700',
+  },
+  dividerRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: spacing.sm,
+    marginTop: spacing.xs,
+  },
+  dividerLine: {
+    flex: 1,
+    height: 1,
+    backgroundColor: colors.border,
+  },
+  dividerText: {
+    fontFamily: fonts.regular,
+    fontSize: 13,
+    color: colors.textMuted,
+  },
+  googleButton: {
+    backgroundColor: colors.card,
+    borderWidth: 1.5,
+    borderColor: colors.border,
+    borderRadius: radius.md,
+    paddingVertical: 17,
+    alignItems: 'center',
+  },
+  googleButtonText: {
+    fontFamily: fonts.semiBold,
+    color: colors.text,
+    fontSize: 16,
   },
 });

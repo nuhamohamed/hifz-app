@@ -1,0 +1,36 @@
+/* Dawrah Design Tokens — sourced live from dawrah.ai on 2026-07-09 */
+
+@import url('https://fonts.googleapis.com/css2?family=Cormorant+Garamond:ital,wght@0,300;0,400;0,500;0,600;0,700;1,300;1,400;1,500&family=DM+Sans:wght@300;400;500;600&display=swap');
+
+:root {
+  /* Typography */
+  --font-primary: 'DM Sans', sans-serif;
+  --font-display: 'Cormorant Garamond', serif;
+
+  /* Brand Colors */
+  --color-navy: #06152C;
+  --color-blue: #1A3D8A;
+  --color-orange: #D4580A;
+  --color-slate: #9AA8BC;
+  --color-white: #FFFFFF;
+  --color-cream: #FDFAF6;
+  --color-off-white: #F6F2ED;
+  --color-red: #C42828;
+  --color-green: #1A6B42;
+  --color-border: #DDD8CE;
+
+  /* Usage */
+  --color-bg: var(--color-white);
+  --color-surface: var(--color-cream);
+  --color-primary: var(--color-blue);
+  --color-accent: var(--color-orange);
+  --color-text: var(--color-navy);
+  --color-text-muted: var(--color-slate);
+  --color-success: var(--color-green);
+  --color-error: var(--color-red);
+
+  /* Style */
+  --radius-sm: 8px;
+  --radius-md: 12px;
+  --radius-lg: 20px;
+}

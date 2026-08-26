@@ -1,6 +1,7 @@
-import { useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import {
   ActivityIndicator,
+  Animated,
   ScrollView,
   StyleSheet,
   Text,
@@ -14,6 +15,7 @@ import { cancelEveningNudge } from '../lib/notifications';
 import { getAyah } from '../lib/quranApi';
 import { updateJuzProgressAfterSession } from '../lib/planEngine';
 import { supabase } from '../lib/supabase';
+import { colors, fonts, spacing } from '../lib/theme';
 
 function getTomorrowDateString() {
   const d = new Date();
@@ -31,9 +33,9 @@ function formatTomorrowLine(tomorrow) {
     tomorrow.portion_end_ayah
   );
   if (start.surahNumber === end.surahNumber) {
-    return `Tomorrow: Juz ${tomorrow.juz_number}: ${start.surahName}, Ayahs ${start.ayahNumber}–${end.ayahNumber}`;
+    return `${start.surahName} · ${start.ayahNumber}–${end.ayahNumber}`;
   }
-  return `Tomorrow: Juz ${tomorrow.juz_number}: ${start.surahName}, Ayahs ${start.ayahNumber} to ${end.surahName}, Ayahs ${end.ayahNumber}`;
+  return `${start.surahName} ${start.ayahNumber} to ${end.surahName} ${end.ayahNumber}`;
 }
 
 function buildWrongWordIndices(words, wrongWords) {
@@ -53,20 +55,18 @@ function buildWrongWordIndices(words, wrongWords) {
 function AyahTextWithHighlights({ words, wrongWords, isDisconnectedLetters }) {
   if (isDisconnectedLetters) {
     const text = words.map((w) => w.textCompare).join(' ');
-    return <Text style={styles.ayahText}>{text}</Text>;
+    return <Text style={styles.compWord}>{text}</Text>;
   }
 
   const wrongIndices = buildWrongWordIndices(words, wrongWords);
   const displayWords = words.map((w) => w.textDisplay);
 
   return (
-    <Text style={styles.ayahText}>
+    <Text style={styles.compWord}>
       {displayWords.map((word, i) => (
         <Text
           key={i}
-          style={
-            wrongIndices.has(i) ? styles.ayahWordWrong : styles.ayahWordCorrect
-          }
+          style={wrongIndices.has(i) ? styles.ayahWordWrong : styles.compCorrect}
         >
           {word}{' '}
         </Text>
@@ -75,55 +75,51 @@ function AyahTextWithHighlights({ words, wrongWords, isDisconnectedLetters }) {
   );
 }
 
-function MistakeCard({ mistake }) {
-  const [expanded, setExpanded] = useState(false);
+function StatPill({ value, label, color }) {
+  return (
+    <View style={styles.statPill}>
+      <Text style={[styles.statValue, { color }]}>{value}</Text>
+      <Text style={styles.statLabel}>{label}</Text>
+    </View>
+  );
+}
+
+function MistakeCard({ mistake, onDismiss }) {
   const isSlip = mistake.tier === 1;
 
   return (
-    <TouchableOpacity
-      style={styles.mistakeCard}
-      onPress={() => setExpanded((prev) => !prev)}
-      activeOpacity={0.85}
-    >
+    <View style={styles.mistakeCard}>
       <View style={styles.mistakeCardHeader}>
         <Text style={styles.mistakeAyahLabel}>Ayah {mistake.ayah_number}</Text>
-        <View
-          style={[
-            styles.badge,
-            isSlip ? styles.badgeSlip : styles.badgeConfirmed,
-          ]}
-        >
-          <Text
-            style={[
-              styles.badgeText,
-              isSlip ? styles.badgeTextSlip : styles.badgeTextConfirmed,
-            ]}
-          >
+        <View style={[styles.badge, isSlip ? styles.badgeSlip : styles.badgeConfirmed]}>
+          <Text style={[styles.badgeText, isSlip ? styles.badgeTextSlip : styles.badgeTextConfirmed]}>
             {isSlip ? 'Slip' : 'Confirmed mistake'}
           </Text>
         </View>
       </View>
-      {!expanded ? (
-        <Text style={styles.mistakeTapHint}>Tap to view details</Text>
-      ) : (
-        <>
-          {mistake.transcribed_text ? (
-            <>
-              <Text style={styles.mistakeDetailLabel}>What you said:</Text>
-              <Text style={styles.transcribedText}>
-                {mistake.transcribed_text}
-              </Text>
-            </>
-          ) : null}
-          <Text style={styles.mistakeDetailLabel}>Correct:</Text>
+
+      <View style={styles.compRow}>
+        <View style={styles.compCol}>
+          <Text style={styles.compLabel}>What you said</Text>
+          <Text style={[styles.compWord, styles.compWrong]}>
+            {mistake.transcribed_text || '—'}
+          </Text>
+        </View>
+        <View style={styles.compDivider} />
+        <View style={styles.compCol}>
+          <Text style={styles.compLabel}>Expected</Text>
           <AyahTextWithHighlights
             words={mistake.words}
             wrongWords={mistake.wrong_words}
             isDisconnectedLetters={mistake.isDisconnectedLetters}
           />
-        </>
-      )}
-    </TouchableOpacity>
+        </View>
+      </View>
+
+      <TouchableOpacity style={styles.notMistakeBtn} onPress={onDismiss} activeOpacity={0.7}>
+        <Text style={styles.notMistakeBtnText}>Not a mistake</Text>
+      </TouchableOpacity>
+    </View>
   );
 }
 
@@ -140,6 +136,8 @@ export default function SessionSummaryScreen({ route }) {
   const [juzComplete, setJuzComplete] = useState(false);
   const [gatePassed, setGatePassed] = useState(null);
   const planUpdatedRef = useRef(false);
+  const opacity = useRef(new Animated.Value(0)).current;
+  const checkScale = useRef(new Animated.Value(0.5)).current;
 
   useEffect(() => {
     if (!sessionId) {
@@ -211,11 +209,11 @@ export default function SessionSummaryScreen({ route }) {
 
         let nextTomorrowText = null;
         if (tomorrow?.type === 'quiz_only') {
-          nextTomorrowText = 'Tomorrow: Quiz only';
+          nextTomorrowText = 'Quiz only';
         } else if (tomorrow) {
           nextTomorrowText = formatTomorrowLine(tomorrow);
         } else {
-          nextTomorrowText = 'Tomorrow: Quiz only';
+          nextTomorrowText = 'Quiz only';
         }
 
         const { data: mistakesData, error: mistakesError } = await supabase
@@ -255,6 +253,10 @@ export default function SessionSummaryScreen({ route }) {
       } finally {
         if (mounted) {
           setIsLoading(false);
+          Animated.parallel([
+            Animated.timing(opacity, { toValue: 1, duration: 600, useNativeDriver: true }),
+            Animated.spring(checkScale, { toValue: 1, friction: 6, tension: 50, useNativeDriver: true }),
+          ]).start();
         }
       }
     })();
@@ -266,6 +268,18 @@ export default function SessionSummaryScreen({ route }) {
 
   const confirmedCount = mistakes.filter((m) => m.tier === 2).length;
   const slipCount = mistakes.filter((m) => m.tier === 1).length;
+
+  const handleDismissMistake = useCallback(async (index, mistake) => {
+    setMistakes((prev) => prev.filter((_, i) => i !== index));
+    if (sessionId) {
+      await supabase
+        .from('mistakes')
+        .delete()
+        .eq('session_id', sessionId)
+        .eq('ayah_number', mistake.ayah_number)
+        .eq('tier', mistake.tier);
+    }
+  }, [sessionId]);
 
   const handleBackToHome = () => {
     cancelEveningNudge().catch(() => {});
@@ -280,7 +294,7 @@ export default function SessionSummaryScreen({ route }) {
   if (isLoading) {
     return (
       <View style={styles.centered}>
-        <ActivityIndicator size="large" color="#2e7d32" />
+        <ActivityIndicator size="large" color={colors.primary} />
       </View>
     );
   }
@@ -289,12 +303,8 @@ export default function SessionSummaryScreen({ route }) {
     return (
       <View style={styles.centered}>
         <Text style={styles.error}>{error}</Text>
-        <TouchableOpacity
-          style={styles.backToHomeButton}
-          onPress={handleBackToHome}
-          activeOpacity={0.8}
-        >
-          <Text style={styles.backToHomeButtonText}>Back to Home</Text>
+        <TouchableOpacity style={styles.homeBtn} onPress={handleBackToHome} activeOpacity={0.88}>
+          <Text style={styles.homeBtnText}>Back to home</Text>
         </TouchableOpacity>
       </View>
     );
@@ -302,232 +312,240 @@ export default function SessionSummaryScreen({ route }) {
 
   let portionLabel = '';
   if (session) {
-    const start = getAyahLocation(
-      session.juz_number,
-      session.portion_start_ayah
-    );
+    const start = getAyahLocation(session.juz_number, session.portion_start_ayah);
     const end = getAyahLocation(session.juz_number, session.portion_end_ayah);
-    if (start.surahNumber === end.surahNumber) {
-      portionLabel = `${start.surahName} ${start.ayahNumber}–${end.ayahNumber}`;
-    } else {
-      portionLabel = `${start.surahName} ${start.ayahNumber} to ${end.surahName} ${end.ayahNumber}`;
-    }
+    portionLabel =
+      start.surahNumber === end.surahNumber
+        ? `${start.surahName} · Ayahs ${start.ayahNumber}–${end.ayahNumber}`
+        : `${start.surahName} ${start.ayahNumber} to ${end.surahName} ${end.ayahNumber}`;
   }
 
+  const ayahCount = session ? session.portion_end_ayah - session.portion_start_ayah + 1 : 0;
+
   return (
-    <ScrollView contentContainerStyle={styles.container}>
-      {juzComplete ? (
-        <View style={styles.juzCompleteCard}>
-          <Text style={styles.juzCompleteTitle}>
-            Juz {session?.juz_number} Complete!
-          </Text>
-          <Text style={styles.gateText}>
-            {gatePassed === true
-              ? 'You passed. Strong work keeping your mistakes low.'
-              : gatePassed === false
-              ? "You'll redo this juz — too many mistakes this round. Keep at it."
-              : ''}
-          </Text>
-        </View>
-      ) : (
-        <Text style={styles.title}>Session Complete</Text>
-      )}
+    <Animated.View style={[styles.screen, { opacity }]}>
+      <ScrollView contentContainerStyle={styles.scrollContent} showsVerticalScrollIndicator={false}>
+        {juzComplete ? (
+          <View style={styles.juzCompleteCard}>
+            <Text style={styles.juzCompleteTitle}>Juz {session?.juz_number} Complete!</Text>
+            <Text style={styles.gateText}>
+              {gatePassed === true
+                ? 'You passed. Strong work keeping your mistakes low.'
+                : gatePassed === false
+                ? "You'll redo this juz — too many mistakes this round. Keep at it."
+                : ''}
+            </Text>
+          </View>
+        ) : (
+          <View style={styles.successSection}>
+            <Animated.View style={[styles.checkCircle, { transform: [{ scale: checkScale }] }]}>
+              <Text style={styles.checkIcon}>✓</Text>
+            </Animated.View>
+            <Text style={styles.successTitle}>Session complete</Text>
+            <Text style={styles.successSub}>{portionLabel}</Text>
+          </View>
+        )}
 
-      <Text style={styles.portionText}>
-        {session ? `Juz ${session.juz_number} — ${portionLabel}` : ''}
-      </Text>
-
-      <Text style={styles.summaryLine}>
-        {confirmedCount} confirmed mistake{confirmedCount === 1 ? '' : 's'} ·{' '}
-        {slipCount} slip{slipCount === 1 ? '' : 's'}
-      </Text>
-
-      {mistakes.length === 0 ? (
-        <Text style={styles.noMistakes}>No mistakes — excellent session! 🎉</Text>
-      ) : (
-        mistakes.map((mistake, index) => (
-          <MistakeCard
-            key={`${mistake.surah_number}-${mistake.ayah_number}-${mistake.tier}-${index}`}
-            mistake={mistake}
+        <View style={styles.statsRow}>
+          <StatPill value={String(ayahCount)} label="ayat recited" color={colors.primary} />
+          <View style={styles.statDivider} />
+          <StatPill
+            value={String(mistakes.length)}
+            label={mistakes.length === 1 ? 'mistake' : 'mistakes'}
+            color={mistakes.length === 0 ? colors.success : colors.error}
           />
-        ))
-      )}
+        </View>
 
-      {tomorrowText ? (
-        <Text style={styles.tomorrowText}>{tomorrowText}</Text>
-      ) : null}
+        {mistakes.length > 0 ? (
+          <>
+            <Text style={styles.sectionLabel}>
+              {confirmedCount} confirmed · {slipCount} slip{slipCount === 1 ? '' : 's'}
+            </Text>
+            {mistakes.map((mistake, index) => (
+              <MistakeCard
+                key={`${mistake.surah_number}-${mistake.ayah_number}-${mistake.tier}-${index}`}
+                mistake={mistake}
+                onDismiss={() => handleDismissMistake(index, mistake)}
+              />
+            ))}
+          </>
+        ) : (
+          <View style={styles.cleanCard}>
+            <Text style={styles.cleanIcon}>✦</Text>
+            <Text style={styles.cleanText}>No mistakes this session. Excellent work.</Text>
+          </View>
+        )}
 
-      <TouchableOpacity
-        style={styles.backToHomeButton}
-        onPress={handleBackToHome}
-        activeOpacity={0.8}
-      >
-        <Text style={styles.backToHomeButtonText}>Back to Home</Text>
-      </TouchableOpacity>
-    </ScrollView>
+        {tomorrowText ? (
+          <>
+            <Text style={styles.sectionLabel}>UP NEXT</Text>
+            <View style={styles.nextCard}>
+              <Text style={styles.nextLabel}>TOMORROW</Text>
+              <Text style={styles.nextTitle}>{tomorrowText}</Text>
+            </View>
+          </>
+        ) : null}
+
+        <View style={{ height: 100 }} />
+      </ScrollView>
+
+      <View style={styles.cta}>
+        <TouchableOpacity style={styles.homeBtn} onPress={handleBackToHome} activeOpacity={0.88}>
+          <Text style={styles.homeBtnText}>Back to home</Text>
+        </TouchableOpacity>
+      </View>
+    </Animated.View>
   );
 }
 
 const styles = StyleSheet.create({
-  container: {
-    flexGrow: 1,
-    padding: 24,
-    paddingTop: 64,
-    paddingBottom: 40,
-    backgroundColor: '#fff',
-  },
+  screen: { flex: 1, backgroundColor: colors.background },
   centered: {
     flex: 1,
     justifyContent: 'center',
     alignItems: 'center',
-    padding: 24,
-    backgroundColor: '#fff',
+    padding: spacing.lg,
+    backgroundColor: colors.background,
   },
-  title: {
-    fontSize: 28,
-    fontWeight: '700',
-    color: '#1b5e20',
-    marginBottom: 12,
-    textAlign: 'center',
+  scrollContent: {
+    paddingTop: 64,
+    paddingHorizontal: spacing.lg,
+    paddingBottom: 16,
   },
+  successSection: { alignItems: 'center', marginBottom: spacing.lg },
+  checkCircle: {
+    width: 72, height: 72, borderRadius: 36,
+    backgroundColor: colors.success,
+    alignItems: 'center', justifyContent: 'center',
+    marginBottom: spacing.md,
+    shadowColor: colors.success,
+    shadowOffset: { width: 0, height: 6 },
+    shadowOpacity: 0.3,
+    shadowRadius: 14,
+    elevation: 8,
+  },
+  checkIcon: { fontSize: 32, color: colors.white, fontWeight: '700' },
+  successTitle: {
+    fontFamily: fonts.semiBold, fontSize: 26, color: colors.text,
+    letterSpacing: -0.3, marginBottom: 6,
+  },
+  successSub: { fontFamily: fonts.regular, fontSize: 14, color: colors.textMid },
+
   juzCompleteCard: {
-    backgroundColor: '#f1f8f1',
+    backgroundColor: colors.successLight,
     borderWidth: 2,
-    borderColor: '#2e7d32',
-    borderRadius: 14,
-    padding: 24,
+    borderColor: colors.success,
+    borderRadius: 16,
+    padding: spacing.lg,
     alignItems: 'center',
-    marginBottom: 16,
+    marginBottom: spacing.md,
   },
   juzCompleteTitle: {
-    fontSize: 26,
-    fontWeight: '700',
-    color: '#1b5e20',
-    marginBottom: 10,
-    textAlign: 'center',
+    fontFamily: fonts.semiBold, fontSize: 24, color: colors.success,
+    marginBottom: 10, textAlign: 'center',
   },
-  gateText: {
-    fontSize: 15,
-    color: '#444',
-    textAlign: 'center',
-    lineHeight: 22,
+  gateText: { fontFamily: fonts.regular, fontSize: 15, color: colors.text, textAlign: 'center', lineHeight: 22 },
+
+  statsRow: {
+    flexDirection: 'row', backgroundColor: colors.card, borderRadius: 16,
+    padding: spacing.md, marginBottom: spacing.md, borderWidth: 1, borderColor: colors.border, alignItems: 'center',
   },
-  portionText: {
-    fontSize: 17,
-    color: '#333',
-    textAlign: 'center',
-    marginBottom: 8,
+  statPill: { flex: 1, alignItems: 'center' },
+  statValue: { fontFamily: fonts.semiBold, fontSize: 24, letterSpacing: -0.5, marginBottom: 2 },
+  statLabel: { fontFamily: fonts.regular, fontSize: 12, color: colors.textMid },
+  statDivider: { width: 1, height: 32, backgroundColor: colors.border },
+
+  sectionLabel: {
+    fontFamily: fonts.semiBold, fontSize: 11, color: colors.textMuted,
+    letterSpacing: 1.2, textTransform: 'uppercase', marginBottom: spacing.sm,
   },
-  summaryLine: {
-    fontSize: 15,
-    color: '#666',
-    textAlign: 'center',
-    marginBottom: 28,
-  },
-  noMistakes: {
-    fontSize: 18,
-    color: '#1b5e20',
-    textAlign: 'center',
-    marginVertical: 32,
-    lineHeight: 28,
-  },
-  tomorrowText: {
-    fontSize: 16,
-    color: '#666',
-    textAlign: 'center',
-    marginTop: 8,
-    marginBottom: 8,
-    lineHeight: 24,
-  },
+
   mistakeCard: {
+    backgroundColor: colors.card,
+    borderRadius: 14,
+    padding: spacing.md,
+    marginBottom: spacing.sm,
     borderWidth: 1,
-    borderColor: '#e0e0e0',
-    borderRadius: 12,
-    padding: 16,
-    marginBottom: 16,
-    backgroundColor: '#fafaf8',
+    borderColor: colors.border,
   },
   mistakeCardHeader: {
     flexDirection: 'row',
     justifyContent: 'space-between',
     alignItems: 'center',
-    marginBottom: 12,
+    marginBottom: spacing.sm,
   },
-  mistakeAyahLabel: {
-    fontSize: 16,
-    fontWeight: '600',
-    color: '#333',
-  },
-  mistakeTapHint: {
-    fontSize: 14,
-    color: '#888',
+  mistakeAyahLabel: { fontFamily: fonts.semiBold, fontSize: 15, color: colors.text },
+  notMistakeBtn: {
+    alignSelf: 'flex-start',
+    borderWidth: 1,
+    borderColor: colors.border,
+    borderRadius: 10,
+    paddingVertical: 5,
+    paddingHorizontal: 12,
     marginTop: 4,
   },
-  mistakeDetailLabel: {
-    fontSize: 13,
-    fontWeight: '600',
-    color: '#666',
-    marginBottom: 4,
-    marginTop: 8,
+  notMistakeBtnText: { fontFamily: fonts.regular, fontSize: 12, color: colors.textMid },
+
+  compRow: { flexDirection: 'row', marginBottom: spacing.sm, gap: spacing.sm },
+  compCol: { flex: 1 },
+  compDivider: { width: 1, backgroundColor: colors.border, alignSelf: 'stretch' },
+  compLabel: {
+    fontFamily: fonts.regular, fontSize: 11, color: colors.textMuted,
+    marginBottom: 4, textTransform: 'uppercase', letterSpacing: 0.6,
   },
-  transcribedText: {
-    fontSize: 18,
-    lineHeight: 32,
-    textAlign: 'right',
-    writingDirection: 'rtl',
-    color: '#757575',
-    marginBottom: 8,
+  compWord: { fontFamily: 'UthmanicHafs', fontSize: 18, writingDirection: 'rtl', lineHeight: 30 },
+  compWrong: { color: colors.error },
+  compCorrect: { color: colors.success },
+
+  ayahWordWrong: { color: colors.error },
+
+  badge: { borderRadius: 8, paddingVertical: 4, paddingHorizontal: 10 },
+  badgeSlip: { backgroundColor: colors.accentLight },
+  badgeConfirmed: { backgroundColor: colors.errorLight },
+  badgeText: { fontFamily: fonts.semiBold, fontSize: 12 },
+  badgeTextSlip: { color: colors.accent },
+  badgeTextConfirmed: { color: colors.error },
+
+  cleanCard: {
+    flexDirection: 'row', alignItems: 'center', gap: 12,
+    backgroundColor: colors.successLight, borderRadius: 14, padding: spacing.md,
+    marginBottom: spacing.md, borderWidth: 1, borderColor: colors.success,
   },
-  badge: {
-    borderRadius: 8,
-    paddingVertical: 4,
-    paddingHorizontal: 10,
+  cleanIcon: { fontSize: 18, color: colors.success },
+  cleanText: { fontFamily: fonts.medium, fontSize: 14, color: colors.success, flex: 1 },
+
+  nextCard: {
+    backgroundColor: colors.primary, borderRadius: 16, padding: spacing.md,
+    marginBottom: spacing.md,
   },
-  badgeSlip: {
-    backgroundColor: '#fff3e0',
+  nextLabel: {
+    fontFamily: fonts.semiBold, fontSize: 10, color: 'rgba(255,255,255,0.55)',
+    letterSpacing: 1.2, textTransform: 'uppercase', marginBottom: 4,
   },
-  badgeConfirmed: {
-    backgroundColor: '#ffebee',
-  },
-  badgeText: {
-    fontSize: 12,
-    fontWeight: '700',
-  },
-  badgeTextSlip: {
-    color: '#e65100',
-  },
-  badgeTextConfirmed: {
-    color: '#c62828',
-  },
-  ayahText: {
-    fontSize: 22,
-    lineHeight: 40,
-    textAlign: 'right',
-    writingDirection: 'rtl',
-  },
-  ayahWordCorrect: {
-    color: '#1b1b1b',
-  },
-  ayahWordWrong: {
-    color: '#c62828',
-  },
+  nextTitle: { fontFamily: fonts.semiBold, fontSize: 20, color: colors.white, letterSpacing: -0.2 },
+
   error: {
-    color: '#c00',
+    fontFamily: fonts.regular,
+    color: colors.error,
     fontSize: 16,
     textAlign: 'center',
-    marginBottom: 24,
+    marginBottom: spacing.lg,
   },
-  backToHomeButton: {
-    backgroundColor: '#2e7d32',
-    borderRadius: 12,
-    paddingVertical: 16,
-    paddingHorizontal: 32,
+  cta: {
+    position: 'absolute',
+    bottom: 0, left: 0, right: 0,
+    paddingHorizontal: spacing.lg,
+    paddingBottom: 48,
+    paddingTop: spacing.sm,
+    backgroundColor: colors.background,
+    borderTopWidth: 1,
+    borderTopColor: colors.border,
+  },
+  homeBtn: {
+    backgroundColor: colors.primary,
+    borderRadius: 14,
+    paddingVertical: 17,
     alignItems: 'center',
-    marginTop: 24,
   },
-  backToHomeButtonText: {
-    color: '#fff',
-    fontSize: 18,
-    fontWeight: '700',
-  },
+  homeBtnText: { fontFamily: fonts.semiBold, fontSize: 17, color: colors.white },
 });

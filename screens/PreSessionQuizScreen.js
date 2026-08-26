@@ -13,6 +13,7 @@ import { Audio } from 'expo-av';
 import * as Haptics from 'expo-haptics';
 import { normalizeArabic, wordDiff } from '../lib/arabicUtils';
 import { getCurrentUserId } from '../lib/auth';
+import { getSurahName } from '../lib/juzSurahMap';
 import { createLiveJudge } from '../lib/liveWordJudge';
 import {
   checkMistakeHealing,
@@ -31,6 +32,7 @@ import {
 import { useSQLiteContext } from 'expo-sqlite';
 import MushafPage from '../components/MushafPage';
 import { getPageForAyah } from '../lib/mushafDb';
+import { colors, fonts } from '../lib/theme';
 
 function dedupeConsecutiveWords(text) {
   if (!text) return text;
@@ -509,9 +511,33 @@ export default function PreSessionQuizScreen(props) {
 
   const hasFeedback = mistakeMessage || correctFeedback || tier2AyahDisplay;
 
+  const quizProgress = quizItems.length > 0
+    ? `Q ${currentItemIndex + 1} of ${quizItems.length}`
+    : '';
+
   return (
     <View style={styles.screen}>
       {error ? <Text style={styles.error}>{error}</Text> : null}
+
+      <View style={styles.header}>
+        <Text style={styles.headerMode}>Mistake Review</Text>
+        <Text style={styles.headerSub}>
+          {quizProgress}
+          {currentItem ? ` · ${getSurahName(currentItem.surah_number)} · Ayah ${currentItem.ayah_number}` : ''}
+        </Text>
+      </View>
+      <View style={styles.progressTrack}>
+        <View
+          style={[
+            styles.progressFill,
+            {
+              width: quizItems.length > 0
+                ? `${((currentItemIndex + 1) / quizItems.length) * 100}%`
+                : '0%',
+            },
+          ]}
+        />
+      </View>
 
       <View style={styles.mushafArea}>
         {currentPage != null ? (
@@ -562,16 +588,21 @@ export default function PreSessionQuizScreen(props) {
           disabled={isLoading}
           activeOpacity={0.8}
         >
-          <Text style={styles.pauseBtnText}>Pause</Text>
+          <Text style={styles.pauseBtnText}>✕ Pause</Text>
         </TouchableOpacity>
 
         <View style={styles.micArea}>
           {isLoading ? (
-            <ActivityIndicator size="small" color="#8a6d2f" />
+            <ActivityIndicator size="small" color={colors.accent} />
           ) : (
-            <Animated.Text style={[styles.micIcon, { opacity: isListening ? pulseAnim : 1 }]}>
-              🎤
-            </Animated.Text>
+            <View style={styles.micWrap}>
+              <Animated.View
+                style={[styles.micRing, { opacity: isListening ? pulseAnim : 0.15, transform: [{ scale: isListening ? pulseAnim : 1 }] }]}
+              />
+              <View style={styles.micCircle}>
+                <Text style={styles.micEmoji}>🎙</Text>
+              </View>
+            </View>
           )}
         </View>
 
@@ -591,10 +622,44 @@ const styles = StyleSheet.create({
   screen: {
     flex: 1,
     paddingTop: 56,
-    backgroundColor: '#fff',
+    backgroundColor: colors.background,
+  },
+  header: {
+    alignItems: 'center',
+    paddingHorizontal: 16,
+    paddingTop: 4,
+    paddingBottom: 8,
+  },
+  headerMode: {
+    fontFamily: fonts.semiBold,
+    fontSize: 16,
+    color: colors.text,
+  },
+  headerProgress: {
+    fontFamily: fonts.medium,
+    fontSize: 13,
+    color: colors.accent,
+  },
+  headerSub: {
+    fontFamily: fonts.regular,
+    fontSize: 12,
+    color: colors.textMuted,
+    marginTop: 2,
+  },
+  progressTrack: {
+    height: 3,
+    backgroundColor: 'rgba(0,0,0,0.07)',
+    marginHorizontal: 16,
+    borderRadius: 2,
+    marginBottom: 6,
+  },
+  progressFill: {
+    height: 3,
+    backgroundColor: colors.primary,
+    borderRadius: 2,
   },
   error: {
-    color: '#c00',
+    color: colors.error,
     marginHorizontal: 16,
     marginBottom: 8,
   },
@@ -605,24 +670,25 @@ const styles = StyleSheet.create({
     maxHeight: 260,
   },
   reciteHint: {
+    fontFamily: fonts.regular,
     fontSize: 13,
-    color: '#757575',
+    color: colors.textMuted,
     textAlign: 'center',
     paddingVertical: 8,
     paddingHorizontal: 16,
   },
   mistakeMessage: {
-    color: '#e65100',
+    fontFamily: fonts.medium,
+    color: colors.accent,
     fontSize: 15,
     textAlign: 'center',
     paddingVertical: 10,
     paddingHorizontal: 16,
-    fontWeight: '500',
   },
   correctFeedback: {
-    color: '#2e7d32',
+    fontFamily: fonts.semiBold,
+    color: colors.success,
     fontSize: 18,
-    fontWeight: '700',
     textAlign: 'center',
     paddingVertical: 10,
   },
@@ -631,16 +697,16 @@ const styles = StyleSheet.create({
   },
   tier2Frame: {
     borderWidth: 1,
-    borderColor: '#c62828',
+    borderColor: colors.error,
     borderRadius: 8,
     padding: 16,
     margin: 12,
-    backgroundColor: '#fff8f8',
+    backgroundColor: colors.errorLight,
   },
   tier2Label: {
     fontSize: 13,
     fontWeight: '600',
-    color: '#666',
+    color: colors.textMuted,
     marginBottom: 4,
   },
   tier2TranscribedText: {
@@ -648,7 +714,7 @@ const styles = StyleSheet.create({
     lineHeight: 32,
     textAlign: 'right',
     writingDirection: 'rtl',
-    color: '#757575',
+    color: colors.textMuted,
     marginBottom: 16,
     fontFamily: 'UthmanicHafs',
   },
@@ -659,11 +725,11 @@ const styles = StyleSheet.create({
     writingDirection: 'rtl',
     fontFamily: 'UthmanicHafs',
   },
-  tier2WordWrong: { color: '#c62828' },
-  tier2WordCorrect: { color: '#1b1b1b' },
+  tier2WordWrong: { color: colors.error },
+  tier2WordCorrect: { color: colors.text },
   tier2Instruction: {
     fontSize: 14,
-    color: '#e65100',
+    color: colors.accent,
     fontWeight: '600',
     textAlign: 'center',
     marginTop: 12,
@@ -676,56 +742,64 @@ const styles = StyleSheet.create({
     paddingTop: 10,
     paddingBottom: 32,
     borderTopWidth: StyleSheet.hairlineWidth,
-    borderTopColor: '#d4c9a8',
-    backgroundColor: '#fff',
+    borderTopColor: colors.border,
+    backgroundColor: colors.white,
   },
   micArea: {
     alignItems: 'center',
     justifyContent: 'center',
   },
-  micIcon: {
-    fontSize: 38,
+  micWrap: { alignItems: 'center', justifyContent: 'center', width: 48, height: 48 },
+  micRing: {
+    position: 'absolute', width: 42, height: 42,
+    borderRadius: 21, backgroundColor: colors.primaryDim,
   },
+  micCircle: {
+    width: 34, height: 34, borderRadius: 17,
+    backgroundColor: colors.primary, alignItems: 'center', justifyContent: 'center',
+  },
+  micEmoji: { fontSize: 16 },
   pageNumber: {
+    fontFamily: fonts.regular,
     fontSize: 13,
-    color: '#a0916a',
+    color: colors.textMuted,
     textAlign: 'center',
     paddingTop: 8,
     paddingHorizontal: 16,
   },
   revealBtn: {
-    backgroundColor: '#e8e0cc',
-    borderRadius: 7,
-    paddingVertical: 5,
-    paddingHorizontal: 11,
+    backgroundColor: colors.goldLight,
+    borderRadius: 20,
+    paddingVertical: 8,
+    paddingHorizontal: 14,
   },
   revealBtnText: {
+    fontFamily: fonts.semiBold,
     fontSize: 13,
-    color: '#5a4a1f',
-    fontWeight: '600',
+    color: colors.brown,
   },
   pauseBtn: {
-    backgroundColor: '#c62828',
-    borderRadius: 8,
+    backgroundColor: 'rgba(6,21,44,0.07)',
+    borderRadius: 20,
     paddingVertical: 8,
-    paddingHorizontal: 16,
+    paddingHorizontal: 14,
   },
   pauseBtnDisabled: { opacity: 0.5 },
   pauseBtnText: {
-    color: '#fff',
-    fontSize: 14,
-    fontWeight: '700',
+    fontFamily: fonts.medium,
+    color: colors.textMid,
+    fontSize: 13,
   },
   transitionOverlay: {
     flex: 1,
-    backgroundColor: '#fff',
+    backgroundColor: colors.background,
     justifyContent: 'center',
     alignItems: 'center',
   },
   transitionText: {
     fontSize: 32,
     fontWeight: '700',
-    color: '#1b5e20',
+    color: colors.success,
     textAlign: 'center',
   },
 });

@@ -1,11 +1,9 @@
 import { useEffect, useRef } from 'react';
-import { Animated, StyleSheet, Text, View } from 'react-native';
+import { Animated, Image, StyleSheet, Text, View } from 'react-native';
 import { C, F } from './design';
 
-/**
- * Reusable full-screen fade transition used between session phases.
- * Props: title, subtitle, nextScreen (navigation target), delay (ms before auto-nav)
- */
+const LOGO = require('../../assets/logo.png');
+
 export default function TransitionMockup({ route, navigation }) {
   const {
     title = 'Time to recite',
@@ -15,12 +13,14 @@ export default function TransitionMockup({ route, navigation }) {
   } = route?.params ?? {};
 
   const opacity = useRef(new Animated.Value(0)).current;
-  const scale = useRef(new Animated.Value(0.94)).current;
+  const scale = useRef(new Animated.Value(0.88)).current;
+  const logoScale = useRef(new Animated.Value(0.8)).current;
 
   useEffect(() => {
     Animated.parallel([
-      Animated.timing(opacity, { toValue: 1, duration: 700, useNativeDriver: true }),
-      Animated.spring(scale, { toValue: 1, friction: 8, tension: 50, useNativeDriver: true }),
+      Animated.timing(opacity, { toValue: 1, duration: 600, useNativeDriver: true }),
+      Animated.spring(scale, { toValue: 1, friction: 7, tension: 50, useNativeDriver: true }),
+      Animated.spring(logoScale, { toValue: 1, friction: 6, tension: 60, delay: 100, useNativeDriver: true }),
     ]).start();
 
     const timer = setTimeout(() => {
@@ -35,36 +35,15 @@ export default function TransitionMockup({ route, navigation }) {
   return (
     <View style={styles.screen}>
       <Animated.View style={[styles.inner, { opacity, transform: [{ scale }] }]}>
-        <View style={styles.iconWrap}>
-          <Text style={styles.icon}>☽</Text>
-        </View>
+        <Animated.Image
+          source={LOGO}
+          style={[styles.logoImg, { transform: [{ scale: logoScale }] }]}
+        />
         <Text style={styles.title}>{title}</Text>
         {subtitle ? <Text style={styles.subtitle}>{subtitle}</Text> : null}
-        }
-        <View style={styles.dotsRow}>
-          {[0, 1, 2].map((i) => (
-            <PulseDot key={i} delay={i * 180} />
-          ))}
-        </View>
       </Animated.View>
     </View>
   );
-}
-
-function PulseDot({ delay }) {
-  const anim = useRef(new Animated.Value(0.3)).current;
-  useEffect(() => {
-    const loop = Animated.loop(
-      Animated.sequence([
-        Animated.delay(delay),
-        Animated.timing(anim, { toValue: 1, duration: 500, useNativeDriver: true }),
-        Animated.timing(anim, { toValue: 0.3, duration: 500, useNativeDriver: true }),
-      ])
-    );
-    loop.start();
-    return () => loop.stop();
-  }, []);
-  return <Animated.View style={[styles.dot, { opacity: anim }]} />;
 }
 
 const styles = StyleSheet.create({
@@ -75,16 +54,13 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
   },
   inner: { alignItems: 'center', paddingHorizontal: 40 },
-  iconWrap: {
+  logoImg: {
     width: 72,
     height: 72,
-    borderRadius: 36,
-    backgroundColor: 'rgba(255,255,255,0.12)',
-    alignItems: 'center',
-    justifyContent: 'center',
-    marginBottom: 24,
+    resizeMode: 'contain',
+    tintColor: '#FFFFFF',
+    marginBottom: 28,
   },
-  icon: { fontSize: 36, color: C.gold },
   title: {
     fontFamily: F.semiBold,
     fontSize: 30,
@@ -99,17 +75,5 @@ const styles = StyleSheet.create({
     color: 'rgba(255,255,255,0.65)',
     textAlign: 'center',
     lineHeight: 22,
-    marginBottom: 24,
-  },
-  dotsRow: {
-    flexDirection: 'row',
-    gap: 8,
-    marginTop: 16,
-  },
-  dot: {
-    width: 7,
-    height: 7,
-    borderRadius: 3.5,
-    backgroundColor: C.white,
   },
 });

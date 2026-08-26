@@ -13,6 +13,7 @@ import { useNavigation } from '@react-navigation/native';
 import { Audio } from 'expo-av';
 import * as Haptics from 'expo-haptics';
 import { getCurrentUserId } from '../lib/auth';
+import { getAyahLocation } from '../lib/juzSurahMap';
 import { normalizeArabic } from '../lib/arabicUtils';
 import { getAyah } from '../lib/quranApi';
 import { supabase } from '../lib/supabase';
@@ -26,6 +27,7 @@ import { createLiveJudge } from '../lib/liveWordJudge';
 import { useSQLiteContext } from 'expo-sqlite';
 import MushafPage from '../components/MushafPage';
 import { getPageForAyah } from '../lib/mushafDb';
+import { colors, fonts } from '../lib/theme';
 
 // Remove consecutive duplicate words (stutters) before passing to the live judge.
 function dedupeConsecutiveWords(text) {
@@ -59,6 +61,22 @@ function isGoingBack(text, confirmedAyahWords) {
     }
   }
   return false;
+}
+
+// Tier 1 is a slip, tier 2 is a real gap in memorisation. The original flow
+// distinguished them with a retry: correct on the second attempt meant tier 1.
+// The realtime rewrite removed that retry, so severity stands in for it. A
+// single mispronounced word is a slip; two or more wrong words, or a word
+// omitted entirely, is treated as a genuine gap. The post-session quiz now
+// plays the role the retry used to, and checkMistakeHealing() already forgives
+// a tier 2 after two clean answers there.
+function classifyMistakeTier(wrongIndices, letterDiffByIndex) {
+  if (wrongIndices.length >= 2) return 2;
+  // spoken === null means the word was skipped rather than mispronounced.
+  const skippedEntirely = wrongIndices.some(
+    (i) => (letterDiffByIndex ?? {})[i] == null
+  );
+  return skippedEntirely ? 2 : 1;
 }
 
 function getTodayDateString() {
@@ -340,15 +358,23 @@ export default function RecitationScreen(props) {
           }
 
           if (mistakeInsert && sessionId) {
-            const { userId, ayahNumber, wrong_words, transcribed_text } = mistakeInsert;
-            await supabase.from('mistakes').insert({
+            const { userId, ayahNumber, tier, wrong_words, transcribed_text } = mistakeInsert;
+            // mistakes.tier is NOT NULL with no default, so omitting it makes
+            // every insert fail. The error used to be discarded here, which
+            // silently starved the post-session quiz, the tier-2 count and the
+            // juz gate for months. Surface it instead.
+            const { error: mistakeError } = await supabase.from('mistakes').insert({
               user_id: userId,
               session_id: sessionId,
               surah_number: surahNumber,
               ayah_number: ayahNumber,
+              tier,
               wrong_words,
               transcribed_text,
             });
+            if (mistakeError) {
+              console.error('[Recitation] failed to log mistake:', mistakeError.message);
+            }
             await supabase.from('quiz_queue').upsert(
               {
                 user_id: userId,
@@ -403,6 +429,7 @@ export default function RecitationScreen(props) {
           mistakeInsert = {
             userId,
             ayahNumber: startAyah + currentAyahIndexRef.current,
+            tier: classifyMistakeTier(wrongIndices, letterDiffByIndex),
             wrong_words: wrongIndices.map((i) => words[i]?.textDisplay ?? ''),
             transcribed_text: accumulatedText,
           };
@@ -648,6 +675,14 @@ export default function RecitationScreen(props) {
   const displayAyahNumber = Math.min(currentAyahIndex + 1, totalAyahs);
   const isListening = !isLoading && !error && !showTransition && !isRevisionComplete;
 
+  const surahName = useMemo(() => {
+    try {
+      return getAyahLocation(juzNumber, startAyah).surahName;
+    } catch {
+      return '';
+    }
+  }, [juzNumber, startAyah]);
+
   if (showTransition) {
     return (
       <Animated.View style={[styles.transitionOverlay, { opacity: fadeAnim }]}>
@@ -659,6 +694,16 @@ export default function RecitationScreen(props) {
   return (
     <View style={styles.screen}>
       {error ? <Text style={styles.error}>{error}</Text> : null}
+
+      <View style={styles.header}>
+        <Text style={styles.headerMode}>Recitation Portion</Text>
+        <Text style={styles.headerSub}>{surahName} · Ayahs {startAyah}–{endAyah}</Text>
+      </View>
+      <View style={styles.progressTrack}>
+        <View
+          style={[styles.progressFill, { width: `${(currentAyahIndex / totalAyahs) * 100}%` }]}
+        />
+      </View>
 
       <FlatList
         ref={pageListRef}
@@ -708,18 +753,21 @@ export default function RecitationScreen(props) {
           disabled={isLoading}
           activeOpacity={0.8}
         >
-          <Text style={styles.pauseBtnText}>Pause</Text>
+          <Text style={styles.pauseBtnText}>✕ Pause</Text>
         </TouchableOpacity>
 
         <View style={styles.micArea}>
           {isLoading ? (
-            <ActivityIndicator size="small" color="#8a6d2f" />
+            <ActivityIndicator size="small" color={colors.accent} />
           ) : (
-            <Animated.Text
-              style={[styles.micIcon, { opacity: isListening ? pulseAnim : 1 }]}
-            >
-              🎤
-            </Animated.Text>
+            <View style={styles.micWrap}>
+              <Animated.View
+                style={[styles.micRing, { opacity: isListening ? pulseAnim : 0.15, transform: [{ scale: isListening ? pulseAnim : 1 }] }]}
+              />
+              <View style={styles.micCircle}>
+                <Text style={styles.micEmoji}>🎙</Text>
+              </View>
+            </View>
           )}
         </View>
 
@@ -739,10 +787,43 @@ const styles = StyleSheet.create({
   screen: {
     flex: 1,
     paddingTop: 56,
-    backgroundColor: '#fff',
+    backgroundColor: colors.background,
+  },
+  header: {
+    alignItems: 'center',
+    paddingHorizontal: 16,
+    paddingBottom: 8,
+  },
+  headerMode: {
+    fontFamily: fonts.semiBold,
+    fontSize: 16,
+    color: colors.text,
+  },
+  headerSub: {
+    fontFamily: fonts.regular,
+    fontSize: 12,
+    color: colors.textMuted,
+    marginTop: 2,
+  },
+  headerProgress: {
+    fontFamily: fonts.medium,
+    fontSize: 13,
+    color: colors.accent,
+  },
+  progressTrack: {
+    height: 3,
+    backgroundColor: 'rgba(0,0,0,0.07)',
+    marginHorizontal: 16,
+    borderRadius: 2,
+    marginBottom: 6,
+  },
+  progressFill: {
+    height: 3,
+    backgroundColor: colors.primary,
+    borderRadius: 2,
   },
   error: {
-    color: '#c00',
+    color: colors.error,
     marginHorizontal: 16,
     marginBottom: 8,
   },
@@ -754,48 +835,50 @@ const styles = StyleSheet.create({
     paddingHorizontal: 16,
   },
   doneBtn: {
-    backgroundColor: '#1b5e20',
+    backgroundColor: colors.success,
     borderRadius: 10,
     paddingVertical: 14,
     alignItems: 'center',
   },
   doneBtnText: {
-    color: '#fff',
+    fontFamily: fonts.semiBold,
+    color: colors.white,
     fontSize: 16,
-    fontWeight: '700',
   },
   feedbackMessage: {
-    color: '#e65100',
+    fontFamily: fonts.medium,
+    color: colors.accent,
     fontSize: 15,
     textAlign: 'center',
     paddingVertical: 10,
     paddingHorizontal: 16,
-    fontWeight: '500',
   },
   pageNumber: {
+    fontFamily: fonts.regular,
     fontSize: 13,
-    color: '#a0916a',
+    color: colors.textMuted,
     textAlign: 'center',
     paddingTop: 8,
     paddingHorizontal: 16,
   },
   reciteHint: {
+    fontFamily: fonts.regular,
     fontSize: 13,
-    color: '#757575',
+    color: colors.textMuted,
     textAlign: 'center',
     paddingVertical: 8,
     paddingHorizontal: 16,
   },
   transitionOverlay: {
     flex: 1,
-    backgroundColor: '#fff',
+    backgroundColor: colors.background,
     justifyContent: 'center',
     alignItems: 'center',
   },
   transitionText: {
+    fontFamily: fonts.semiBold,
     fontSize: 32,
-    fontWeight: '700',
-    color: '#1b5e20',
+    color: colors.success,
     textAlign: 'center',
   },
   bottomBar: {
@@ -806,45 +889,52 @@ const styles = StyleSheet.create({
     paddingTop: 10,
     paddingBottom: 32,
     borderTopWidth: StyleSheet.hairlineWidth,
-    borderTopColor: '#d4c9a8',
-    backgroundColor: '#fff',
+    borderTopColor: colors.border,
+    backgroundColor: colors.white,
   },
   micArea: {
     alignItems: 'center',
     justifyContent: 'center',
   },
-  micIcon: {
-    fontSize: 38,
+  micWrap: { alignItems: 'center', justifyContent: 'center', width: 48, height: 48 },
+  micRing: {
+    position: 'absolute', width: 42, height: 42,
+    borderRadius: 21, backgroundColor: colors.primaryDim,
   },
+  micCircle: {
+    width: 34, height: 34, borderRadius: 17,
+    backgroundColor: colors.primary, alignItems: 'center', justifyContent: 'center',
+  },
+  micEmoji: { fontSize: 16 },
   revealBtn: {
-    backgroundColor: '#e8e0cc',
-    borderRadius: 7,
-    paddingVertical: 5,
-    paddingHorizontal: 11,
+    backgroundColor: colors.goldLight,
+    borderRadius: 20,
+    paddingVertical: 8,
+    paddingHorizontal: 14,
   },
   revealBtnText: {
+    fontFamily: fonts.semiBold,
     fontSize: 13,
-    color: '#5a4a1f',
-    fontWeight: '600',
+    color: colors.brown,
   },
   progress: {
+    fontFamily: fonts.medium,
     fontSize: 14,
-    color: '#8a6d2f',
-    fontWeight: '500',
+    color: colors.accent,
     textAlign: 'right',
   },
   pauseBtn: {
-    backgroundColor: '#c62828',
-    borderRadius: 8,
+    backgroundColor: 'rgba(6,21,44,0.07)',
+    borderRadius: 20,
     paddingVertical: 8,
-    paddingHorizontal: 16,
+    paddingHorizontal: 14,
   },
   pauseBtnDisabled: {
     opacity: 0.5,
   },
   pauseBtnText: {
-    color: '#fff',
-    fontSize: 14,
-    fontWeight: '700',
+    fontFamily: fonts.medium,
+    color: colors.textMid,
+    fontSize: 13,
   },
 });

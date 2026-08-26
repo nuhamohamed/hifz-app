@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from 'react';
 import {
   ActivityIndicator,
+  Animated,
   Button,
   Linking,
   StyleSheet,
@@ -10,7 +11,7 @@ import {
 } from 'react-native';
 import * as Notifications from 'expo-notifications';
 import { useNavigation } from '@react-navigation/native';
-import { Ionicons } from '@expo/vector-icons';
+import TabBar from '../components/TabBar';
 import { getCurrentUserId } from '../lib/auth';
 import { getAyahLocation, getJuzTotalAyahs } from '../lib/juzSurahMap';
 import { getTodayPortion } from '../lib/planEngine';
@@ -21,6 +22,7 @@ import {
   scheduleTestNotification,
 } from '../lib/notifications';
 import { supabase } from '../lib/supabase';
+import { colors, fonts, spacing } from '../lib/theme';
 
 function formatSessionDate(dateStr) {
   const [, month, day] = dateStr.split('-').map(Number);
@@ -68,53 +70,81 @@ function buildSessionParams(sessionId, resumeFromAyah, portion) {
   };
 }
 
-function formatPortionDisplay(todayPortion) {
-  if (!todayPortion) {
-    return null;
-  }
-  if (todayPortion.type === 'quiz_only') {
-    return 'Quiz only — no revision today';
-  }
+function portionSummary(todayPortion) {
+  if (!todayPortion || todayPortion.type === 'quiz_only') return null;
   const { juzNumber, portionStartAyah, portionEndAyah } = todayPortion;
   const start = getAyahLocation(juzNumber, portionStartAyah);
   const end = getAyahLocation(juzNumber, portionEndAyah);
-  if (start.surahNumber === end.surahNumber) {
-    return `Juz ${juzNumber}: ${start.surahName} ${start.ayahNumber}–${end.ayahNumber}`;
-  }
-  return `Juz ${juzNumber}: ${start.surahName} ${start.ayahNumber} to ${end.surahName} ${end.ayahNumber}`;
-}
-
-function estimateSessionMinutes(todayPortion, quizCount) {
-  let mins = 0;
-  if (todayPortion && todayPortion.type !== 'quiz_only') {
-    const ayahCount =
-      todayPortion.portionEndAyah - todayPortion.portionStartAyah + 1;
-    mins += ayahCount * 1;
-  }
-  mins += (quizCount ?? 0) * 1;
-  const rounded = Math.max(5, Math.ceil(mins / 5) * 5);
-  return `~${rounded} mins`;
+  return {
+    juzNumber,
+    surahName: start.surahName,
+    startAyah: start.ayahNumber,
+    endAyah: end.ayahNumber,
+    ayahCount: portionEndAyah - portionStartAyah + 1,
+  };
 }
 
 function getResumeHint(pausedSession) {
-  if (!pausedSession) {
-    return null;
-  }
+  if (!pausedSession) return null;
   const phase = pausedSession.phase ?? 'pre_quiz';
-  if (phase === 'pre_quiz') {
-    return 'Resuming pre-session quiz';
-  }
-  if (phase === 'revision') {
-    return `Resuming revision from Ayah ${(pausedSession.last_confirmed_ayah ?? 0) + 1}`;
-  }
-  if (phase === 'post_quiz') {
-    return 'Resuming post-session quiz';
-  }
+  if (phase === 'pre_quiz') return 'Resuming pre-session quiz';
+  if (phase === 'revision') return `Resuming revision from Ayah ${(pausedSession.last_confirmed_ayah ?? 0) + 1}`;
+  if (phase === 'post_quiz') return 'Resuming post-session quiz';
   return null;
+}
+
+// Two-half overlay technique: right clip shows 0→180°, left clip adds 180→360°.
+function SessionRing({ completedAyahs = 0, todayAyahs = 7, size = 80, stroke = 7 }) {
+  const fraction = Math.min(1, completedAyahs / Math.max(todayAyahs, 1));
+  const half = size / 2;
+  const angle = fraction * 360;
+
+  const rightRotation = `${Math.min(angle, 180) - 180}deg`;
+  const leftRotation = `${Math.max(0, angle - 180)}deg`;
+
+  const ringBase = {
+    position: 'absolute', width: size, height: size,
+    borderRadius: half, borderWidth: stroke,
+  };
+
+  return (
+    <View style={{ width: size, height: size, alignItems: 'center', justifyContent: 'center' }}>
+      <View style={[ringBase, { borderColor: colors.primaryDim }]} />
+      {angle > 0 && (
+        <View style={{ position: 'absolute', left: half, width: half, height: size, overflow: 'hidden' }}>
+          <View style={[ringBase, { left: -half, borderColor: colors.primary, transform: [{ rotate: rightRotation }] }]} />
+        </View>
+      )}
+      {angle > 180 && (
+        <View style={{ position: 'absolute', left: 0, width: half, height: size, overflow: 'hidden' }}>
+          <View style={[ringBase, { borderColor: colors.primary, transform: [{ rotate: leftRotation }] }]} />
+        </View>
+      )}
+      <Text style={{ fontFamily: fonts.regular, fontSize: 7.5, color: colors.textMuted, letterSpacing: 0.5, textTransform: 'uppercase', textAlign: 'center', lineHeight: 12 }}>{'Session\nProgress'}</Text>
+    </View>
+  );
+}
+
+function StepCard({ step, icon, title, desc, iconBg, iconColor }) {
+  return (
+    <View style={styles.stepCard}>
+      <View style={styles.stepNumCircle}>
+        <Text style={styles.stepNumText}>{step}</Text>
+      </View>
+      <View style={[styles.stepIconWrap, { backgroundColor: iconBg }]}>
+        <Text style={[styles.stepIcon, { color: iconColor }]}>{icon}</Text>
+      </View>
+      <View style={styles.stepBody}>
+        <Text style={styles.stepTitle}>{title}</Text>
+        <Text style={styles.stepDesc}>{desc}</Text>
+      </View>
+    </View>
+  );
 }
 
 export default function TodayScreen() {
   const navigation = useNavigation();
+  const [name, setName] = useState('');
   const [todayPortion, setTodayPortion] = useState(null);
   const [quizCount, setQuizCount] = useState(0);
   const [portionLoading, setPortionLoading] = useState(true);
@@ -125,6 +155,16 @@ export default function TodayScreen() {
   const [error, setError] = useState('');
   const [notifDenied, setNotifDenied] = useState(false);
   const notificationsScheduledRef = useRef(false);
+
+  const fadeAnim = useRef(new Animated.Value(0)).current;
+  const cardTranslate = useRef(new Animated.Value(20)).current;
+
+  useEffect(() => {
+    Animated.parallel([
+      Animated.timing(fadeAnim, { toValue: 1, duration: 700, useNativeDriver: true }),
+      Animated.timing(cardTranslate, { toValue: 0, duration: 600, delay: 100, useNativeDriver: true }),
+    ]).start();
+  }, [fadeAnim, cardTranslate]);
 
   useEffect(() => {
     let mounted = true;
@@ -137,13 +177,12 @@ export default function TodayScreen() {
         const today = getTodayDateString();
         const userId = await getCurrentUserId();
 
-        const [portion, pausedResult, quizResult, completedResult, tomorrowResult] = await Promise.all([
+        const [userResult, portion, pausedResult, quizResult, completedResult, tomorrowResult] = await Promise.all([
+          supabase.from('users').select('name, notification_time').eq('id', userId).maybeSingle(),
           getTodayPortion(userId),
           supabase
             .from('sessions')
-            .select(
-              'id, last_confirmed_ayah, phase, juz_number, portion_start_ayah, portion_end_ayah, date'
-            )
+            .select('id, last_confirmed_ayah, phase, juz_number, portion_start_ayah, portion_end_ayah, date')
             .eq('user_id', userId)
             .in('status', ['paused', 'in_progress'])
             .order('date', { ascending: false })
@@ -172,10 +211,9 @@ export default function TodayScreen() {
             .maybeSingle(),
         ]);
 
-        if (!mounted) {
-          return;
-        }
+        if (!mounted) return;
 
+        setName(userResult.data?.name ?? '');
         setTodayPortion(portion);
         setQuizCount(quizResult.count ?? 0);
 
@@ -188,14 +226,8 @@ export default function TodayScreen() {
         if (!notificationsScheduledRef.current) {
           notificationsScheduledRef.current = true;
           try {
-            // Fetch the user's saved reminder time
-            const { data: userData } = await supabase
-              .from('users')
-              .select('notification_time')
-              .eq('id', userId)
-              .maybeSingle();
-            const [remHour, remMin] = userData?.notification_time
-              ? userData.notification_time.split(':').map(Number)
+            const [remHour, remMin] = userResult.data?.notification_time
+              ? userResult.data.notification_time.split(':').map(Number)
               : [9, 0];
             await scheduleDailyNotification(remHour, remMin);
 
@@ -217,13 +249,9 @@ export default function TodayScreen() {
           setPausedSession(pausedResult.data);
         }
       } catch (err) {
-        if (mounted) {
-          setError(err.message ?? 'Failed to load today\'s plan.');
-        }
+        if (mounted) setError(err.message ?? "Failed to load today's plan.");
       } finally {
-        if (mounted) {
-          setPortionLoading(false);
-        }
+        if (mounted) setPortionLoading(false);
       }
     })();
 
@@ -262,25 +290,18 @@ export default function TodayScreen() {
 
       const { data: paused, error: fetchError } = await supabase
         .from('sessions')
-        .select(
-          'id, last_confirmed_ayah, phase, juz_number, portion_start_ayah, portion_end_ayah, date'
-        )
+        .select('id, last_confirmed_ayah, phase, juz_number, portion_start_ayah, portion_end_ayah, date')
         .eq('user_id', userId)
         .in('status', ['paused', 'in_progress'])
         .order('date', { ascending: false })
         .limit(1)
         .maybeSingle();
 
-      if (fetchError) {
-        throw new Error(fetchError.message);
-      }
+      if (fetchError) throw new Error(fetchError.message);
 
       if (paused) {
         if (paused.date !== today) {
-          await supabase
-            .from('sessions')
-            .update({ date: today })
-            .eq('id', paused.id);
+          await supabase.from('sessions').update({ date: today }).eq('id', paused.id);
         }
         navigateForPausedSession(paused);
         return;
@@ -303,25 +324,16 @@ export default function TodayScreen() {
           .select('id')
           .single();
 
-        if (insertError) {
-          throw new Error(insertError.message);
-        }
+        if (insertError) throw new Error(insertError.message);
 
         navigation.navigate(
           'PreSessionQuiz',
-          buildSessionParams(newSession.id, 1, {
-            juzNumber: 1,
-            portionStartAyah: 1,
-            portionEndAyah: 1,
-          })
+          buildSessionParams(newSession.id, 1, { juzNumber: 1, portionStartAyah: 1, portionEndAyah: 1 })
         );
         return;
       }
 
-      const startLoc = getAyahLocation(
-        todayPortion.juzNumber,
-        todayPortion.portionStartAyah
-      );
+      const startLoc = getAyahLocation(todayPortion.juzNumber, todayPortion.portionStartAyah);
 
       const { data: newSession, error: insertError } = await supabase
         .from('sessions')
@@ -339,13 +351,8 @@ export default function TodayScreen() {
         .select('id')
         .single();
 
-      if (insertError) {
-        throw new Error(insertError.message);
-      }
-      navigation.navigate(
-        'PreSessionQuiz',
-        buildSessionParams(newSession.id, startLoc.ayahNumber, todayPortion)
-      );
+      if (insertError) throw new Error(insertError.message);
+      navigation.navigate('PreSessionQuiz', buildSessionParams(newSession.id, startLoc.ayahNumber, todayPortion));
     } catch (err) {
       setError(err.message ?? 'Failed to start session.');
     } finally {
@@ -355,264 +362,245 @@ export default function TodayScreen() {
 
   const resumeHint = getResumeHint(pausedSession);
   const isCarriedOver = !!(pausedSession && pausedSession.date !== getTodayDateString());
-  const carriedOverPortion = isCarriedOver
-    ? {
-        juzNumber: pausedSession.juz_number,
-        portionStartAyah: pausedSession.portion_start_ayah,
-        portionEndAyah: pausedSession.portion_end_ayah,
-      }
-    : null;
-  const portionDisplay = formatPortionDisplay(carriedOverPortion ?? todayPortion);
+  const summary = portionSummary(todayPortion);
+  const quizOnly = todayPortion?.type === 'quiz_only';
 
   return (
-    <View style={styles.container}>
-      <View style={styles.header}>
-        <Text style={styles.title}>Today's Revision</Text>
-        <TouchableOpacity
-          onPress={() => navigation.navigate('Settings')}
-          activeOpacity={0.7}
-        >
-          <Ionicons name="settings-outline" size={24} color="#2e7d32" />
-        </TouchableOpacity>
-      </View>
-
-      {notifDenied && (
-        <TouchableOpacity
-          style={styles.notifBanner}
-          onPress={() => Linking.openSettings()}
-          activeOpacity={0.8}
-        >
-          <Text style={styles.notifBannerText}>
-            Notifications are off — tap to enable reminders in Settings.
-          </Text>
-        </TouchableOpacity>
-      )}
-
-      {sessionDoneToday ? (
-        <View style={styles.doneCard}>
-          <Text style={styles.doneTitle}>All done for today!</Text>
-          {tomorrowText ? (
-            <Text style={styles.tomorrowText}>{tomorrowText}</Text>
-          ) : null}
+    <View style={styles.screen}>
+      <Animated.View style={[styles.inner, { opacity: fadeAnim }]}>
+        <View style={styles.topRow}>
+          <Text style={styles.bismillah}>بِسْمِ ٱللَّهِ ٱلرَّحْمَـٰنِ ٱلرَّحِيمِ</Text>
+          <Text style={styles.greet}>As-salāmu ʿalaykum{name ? `, ${name}` : ''}</Text>
         </View>
-      ) : (
-        <>
-          <View style={styles.card}>
-            <Text style={styles.portionLabel}>
-              {isCarriedOver
-                ? `Unfinished session — ${formatSessionDate(pausedSession.date)}`
-                : "Today's portion"}
+
+        {notifDenied ? (
+          <TouchableOpacity style={styles.notifBanner} onPress={() => Linking.openSettings()} activeOpacity={0.8}>
+            <Text style={styles.notifBannerText}>
+              Notifications are off — tap to enable reminders in Settings.
             </Text>
-            {portionLoading ? (
-              <ActivityIndicator
-                size="small"
-                color="#2e7d32"
-                style={styles.portionLoader}
-              />
-            ) : (
-              <Text style={styles.portionText}>
-                {portionDisplay ?? 'Unable to load portion'}
-              </Text>
-            )}
-            <Text style={styles.timeText}>
-              {estimateSessionMinutes(todayPortion, quizCount)}
-            </Text>
+          </TouchableOpacity>
+        ) : null}
+
+        {sessionDoneToday ? (
+          <View style={styles.doneCard}>
+            <Text style={styles.doneTitle}>All done for today!</Text>
+            {tomorrowText ? <Text style={styles.tomorrowText}>{tomorrowText}</Text> : null}
           </View>
+        ) : (
+          <>
+            <Animated.View style={[styles.portionCard, { transform: [{ translateY: cardTranslate }] }]}>
+              <View style={styles.portionLeft}>
+                <SessionRing completedAyahs={0} todayAyahs={summary?.ayahCount ?? 7} />
+              </View>
+              <View style={styles.portionRight}>
+                <Text style={styles.portionEyebrow}>
+                  {isCarriedOver
+                    ? `UNFINISHED · ${formatSessionDate(pausedSession.date)}`
+                    : summary
+                    ? `JUZ ${summary.juzNumber} · TODAY'S PORTION`
+                    : "TODAY'S PORTION"}
+                </Text>
+                {portionLoading ? (
+                  <ActivityIndicator size="small" color={colors.primary} style={{ alignSelf: 'flex-start', marginVertical: 4 }} />
+                ) : quizOnly ? (
+                  <Text style={styles.portionTitle}>Quiz only today</Text>
+                ) : summary ? (
+                  <>
+                    <Text style={styles.portionTitle}>{summary.surahName} · {summary.startAyah}–{summary.endAyah}</Text>
+                    <Text style={styles.portionSub}>{summary.ayahCount} ayat</Text>
+                  </>
+                ) : (
+                  <Text style={styles.portionTitle}>Unable to load portion</Text>
+                )}
+              </View>
+            </Animated.View>
 
-          {resumeHint ? (
-            <Text style={styles.resumeHint}>{resumeHint}</Text>
-          ) : null}
-
-          {error ? <Text style={styles.error}>{error}</Text> : null}
-
-          {isStarting || portionLoading ? (
-            <ActivityIndicator size="large" style={styles.loader} />
-          ) : (
-            <View style={styles.buttonWrap}>
-              <Button
-                title={pausedSession ? 'Resume Session' : 'Start Session'}
-                onPress={handleStartSession}
+            <Text style={styles.sectionLabel}>TODAY'S AGENDA</Text>
+            <View style={styles.steps}>
+              <StepCard
+                step={1} icon="◈" title="Mistake Review"
+                desc="Primes what you'll revise"
+                iconBg={colors.ice} iconColor={colors.primary}
+              />
+              <StepCard
+                step={2}
+                icon="◉"
+                title={summary ? `Recite ${summary.surahName} · ${summary.startAyah}–${summary.endAyah}` : 'Recite today\'s portion'}
+                desc="We follow along as you go"
+                iconBg={colors.parchment} iconColor={colors.brown}
+              />
+              <StepCard
+                step={3} icon="◆" title="Recap quiz"
+                desc="Locks it in for next time"
+                iconBg={colors.parchment} iconColor={colors.accent}
               />
             </View>
-          )}
-        </>
-      )}
 
-      {/* DEV ONLY — remove before release */}
-      {__DEV__ && (
-        <View style={{ gap: 8, marginTop: 16 }}>
-          <Button
-            title="[Dev] Notify: scheduled reminder (5s)"
-            color="#888"
-            onPress={() => scheduleTestNotification('Hifz Revision', '⏰ Time for your Quran revision. Start now.')}
-          />
-          <Button
-            title="[Dev] Notify: evening nudge A (5s)"
-            color="#888"
-            onPress={() => scheduleTestNotification('Hifz Revision', "The day isn't over yet. A few minutes is all it takes.")}
-          />
-          <Button
-            title="[Dev] Notify: evening nudge B (5s)"
-            color="#888"
-            onPress={() => scheduleTestNotification('Hifz Revision', "Still time to revise. You got this.")}
-          />
-          <Button
-            title="[Dev] Notify: evening nudge overdue (5s)"
-            color="#888"
-            onPress={() => scheduleTestNotification('Hifz Revision', "You missed yesterday's revision, but you still have today. Start now.")}
-          />
-          <Button
-            title="[Dev] Onboarding (SignIn)"
-            color="#888"
-            onPress={() => navigation.navigate('SignIn')}
-          />
-          <Button
-            title="[Dev] Onboarding (MemorizedJuz)"
-            color="#888"
-            onPress={() => navigation.navigate('MemorizedJuz')}
-          />
-          <Button
-            title="[Dev] Onboarding (Schedule)"
-            color="#888"
-            onPress={() => navigation.navigate('Schedule')}
-          />
-          <Button
-            title="[Dev] PreSessionQuiz"
-            color="#888"
-            onPress={() => navigation.navigate('PreSessionQuiz', { sessionId: null, juzNumber: 1 })}
-          />
-          <Button
-            title="[Dev] Recitation (Al-Baqarah 1–7)"
-            color="#888"
-            onPress={() =>
-              navigation.navigate('Recitation', {
-                surahNumber: 2,
-                startAyah: 1,
-                endAyah: 7,
-                sessionId: null,
-                juzNumber: 1,
-                totalAyahsInJuz: 286,
-                resumeFromAyah: 1,
-              })
-            }
-          />
-          <Button
-            title="[Dev] PostSessionQuiz"
-            color="#888"
-            onPress={() => navigation.navigate('PostSessionQuiz', { sessionId: null, juzNumber: 1 })}
-          />
-          <Button
-            title="[Dev] SessionSummary"
-            color="#888"
-            onPress={() => navigation.navigate('SessionSummary', { sessionId: null, totalAyahsInJuz: 286 })}
-          />
-          <Button
-            title="[Dev] ✦ Design Mockups (Dawrah)"
-            color="#1E4090"
-            onPress={() => navigation.navigate('Mockups')}
-          />
-        </View>
-      )}
+            {resumeHint ? <Text style={styles.resumeHint}>{resumeHint}</Text> : null}
+            {error ? <Text style={styles.error}>{error}</Text> : null}
+            {quizCount > 0 ? (
+              <Text style={styles.quizCountHint}>{quizCount} item{quizCount === 1 ? '' : 's'} due for mistake review</Text>
+            ) : null}
+
+            <View style={styles.spacer} />
+
+            {isStarting || portionLoading ? (
+              <ActivityIndicator size="large" color={colors.primary} style={{ marginBottom: spacing.md }} />
+            ) : (
+              <TouchableOpacity style={styles.startBtn} onPress={handleStartSession} activeOpacity={0.88}>
+                <Text style={styles.startBtnIcon}>▶</Text>
+                <Text style={styles.startBtnText}>{pausedSession ? 'Resume session' : 'Start session'}</Text>
+              </TouchableOpacity>
+            )}
+          </>
+        )}
+
+        {/* DEV ONLY — remove before release */}
+        {__DEV__ && (
+          <View style={{ gap: 8, marginTop: 16 }}>
+            <Button
+              title="[Dev] Notify: scheduled reminder (5s)"
+              color="#888"
+              onPress={() => scheduleTestNotification('Hifz Revision', '⏰ Time for your Quran revision. Start now.')}
+            />
+            <Button
+              title="[Dev] PreSessionQuiz"
+              color="#888"
+              onPress={() => navigation.navigate('PreSessionQuiz', { sessionId: null, juzNumber: 1 })}
+            />
+            <Button
+              title="[Dev] Recitation (Al-Baqarah 1–7)"
+              color="#888"
+              onPress={() =>
+                navigation.navigate('Recitation', {
+                  surahNumber: 2, startAyah: 1, endAyah: 7, sessionId: null,
+                  juzNumber: 1, totalAyahsInJuz: 286, resumeFromAyah: 1,
+                })
+              }
+            />
+            <Button
+              title="[Dev] PostSessionQuiz"
+              color="#888"
+              onPress={() => navigation.navigate('PostSessionQuiz', { sessionId: null, juzNumber: 1 })}
+            />
+            <Button
+              title="[Dev] SessionSummary"
+              color="#888"
+              onPress={() => navigation.navigate('SessionSummary', { sessionId: null, totalAyahsInJuz: 286 })}
+            />
+            <Button
+              title="[Dev] ✦ Design Mockups (Dawrah)"
+              color={colors.primary}
+              onPress={() => navigation.navigate('Mockups')}
+            />
+          </View>
+        )}
+      </Animated.View>
+
+      <TabBar active="home" navigation={navigation} />
     </View>
   );
 }
 
 const styles = StyleSheet.create({
-  container: {
-    flex: 1,
-    padding: 24,
-    paddingTop: 64,
-    backgroundColor: '#fff',
-    justifyContent: 'center',
+  screen: { flex: 1, backgroundColor: colors.background },
+  inner: { flex: 1, paddingTop: 64, paddingHorizontal: spacing.lg },
+
+  topRow: { marginBottom: spacing.lg, paddingTop: spacing.xl },
+  bismillah: { fontSize: 18, color: colors.textMid, textAlign: 'center', marginBottom: 4, fontWeight: '300' },
+  greet: { fontFamily: fonts.regular, fontSize: 16, color: colors.textMid, textAlign: 'center' },
+
+  notifBanner: {
+    backgroundColor: colors.accentLight,
+    borderWidth: 1,
+    borderColor: colors.accent,
+    borderRadius: 10,
+    padding: 12,
+    marginBottom: spacing.md,
   },
-  title: {
-    fontSize: 28,
-    fontWeight: '700',
-    color: '#1b1b1b',
-  },
-  card: {
-    backgroundColor: '#fafaf8',
-    borderWidth: 2,
-    borderColor: '#2e7d32',
-    borderRadius: 12,
-    padding: 24,
-    marginBottom: 32,
-  },
+  notifBannerText: { fontFamily: fonts.regular, fontSize: 14, color: colors.accent, textAlign: 'center' },
+
   doneCard: {
-    backgroundColor: '#f1f8f1',
+    backgroundColor: colors.successLight,
     borderWidth: 2,
-    borderColor: '#2e7d32',
-    borderRadius: 12,
+    borderColor: colors.success,
+    borderRadius: 20,
     padding: 28,
     alignItems: 'center',
   },
-  doneTitle: {
-    fontSize: 22,
-    fontWeight: '700',
-    color: '#1b5e20',
-    marginBottom: 16,
-    textAlign: 'center',
+  doneTitle: { fontFamily: fonts.semiBold, fontSize: 22, color: colors.success, marginBottom: 16, textAlign: 'center' },
+  tomorrowText: { fontFamily: fonts.regular, fontSize: 16, color: colors.textMid, textAlign: 'center', lineHeight: 24 },
+
+  portionCard: {
+    backgroundColor: colors.ice,
+    borderRadius: 20, padding: spacing.md,
+    flexDirection: 'row', alignItems: 'center',
+    marginBottom: spacing.lg,
+    borderWidth: 1, borderColor: colors.primaryDim,
   },
-  tomorrowText: {
-    fontSize: 16,
-    color: '#555',
-    textAlign: 'center',
-    lineHeight: 24,
+  portionLeft: { marginRight: spacing.md },
+  portionRight: { flex: 1 },
+  portionEyebrow: {
+    fontFamily: fonts.semiBold, fontSize: 10, color: colors.textMuted,
+    letterSpacing: 1.2, textTransform: 'uppercase', marginBottom: 4,
   },
-  portionLabel: {
-    fontSize: 14,
-    color: '#666',
-    marginBottom: 8,
+  portionTitle: { fontFamily: fonts.semiBold, fontSize: 20, color: colors.text, letterSpacing: -0.3, marginBottom: 4 },
+  portionSub: { fontFamily: fonts.regular, fontSize: 13, color: colors.textMid },
+
+  sectionLabel: {
+    fontFamily: fonts.semiBold, fontSize: 11, color: colors.textMuted,
+    letterSpacing: 1.2, textTransform: 'uppercase', marginBottom: spacing.sm,
   },
-  portionText: {
-    fontSize: 22,
-    fontWeight: '600',
-    color: '#1b5e20',
-    marginBottom: 12,
+  steps: { gap: 8 },
+  stepCard: {
+    backgroundColor: colors.white, borderRadius: 14, padding: 14,
+    flexDirection: 'row', alignItems: 'center', gap: 12,
+    borderWidth: 1, borderColor: colors.border,
   },
-  portionLoader: {
-    alignSelf: 'flex-start',
-    marginBottom: 12,
+  stepNumCircle: {
+    width: 24, height: 24, borderRadius: 12,
+    alignItems: 'center', justifyContent: 'center',
+    backgroundColor: colors.primary,
   },
-  timeText: {
-    fontSize: 16,
-    color: '#757575',
-  },
+  stepNumText: { fontFamily: fonts.semiBold, fontSize: 13, color: colors.white },
+  stepIconWrap: { width: 40, height: 40, borderRadius: 12, alignItems: 'center', justifyContent: 'center' },
+  stepIcon: { fontSize: 18 },
+  stepBody: { flex: 1 },
+  stepTitle: { fontFamily: fonts.semiBold, fontSize: 15, color: colors.text, marginBottom: 2 },
+  stepDesc: { fontFamily: fonts.regular, fontSize: 13, color: colors.textMid },
+
   resumeHint: {
-    fontSize: 15,
-    color: '#e65100',
-    textAlign: 'center',
-    marginBottom: 16,
-    fontWeight: '500',
+    fontFamily: fonts.medium, fontSize: 14, color: colors.accent,
+    textAlign: 'center', marginTop: spacing.md,
+  },
+  quizCountHint: {
+    fontFamily: fonts.regular, fontSize: 13, color: colors.textMuted,
+    textAlign: 'center', marginTop: spacing.sm,
   },
   error: {
-    color: '#c00',
-    textAlign: 'center',
-    marginBottom: 16,
+    fontFamily: fonts.regular, color: colors.error,
+    textAlign: 'center', marginTop: spacing.md,
   },
-  loader: {
-    marginTop: 8,
-  },
-  buttonWrap: {
-    paddingHorizontal: 16,
-  },
-  header: {
+
+  spacer: { flex: 1, minHeight: spacing.lg },
+
+  startBtn: {
+    backgroundColor: 'rgba(26,61,138,0.92)',
+    borderRadius: 18,
+    paddingVertical: 18,
     flexDirection: 'row',
-    justifyContent: 'space-between',
     alignItems: 'center',
-    marginBottom: 32,
+    justifyContent: 'center',
+    gap: 10,
+    marginBottom: spacing.md,
+    borderWidth: 1.5,
+    borderColor: 'rgba(255,255,255,0.22)',
+    shadowColor: colors.primary,
+    shadowOffset: { width: 0, height: 6 },
+    shadowOpacity: 0.45,
+    shadowRadius: 18,
+    elevation: 8,
   },
-  notifBanner: {
-    backgroundColor: '#fff3e0',
-    borderWidth: 1,
-    borderColor: '#e65100',
-    borderRadius: 10,
-    padding: 12,
-    marginBottom: 16,
-  },
-  notifBannerText: {
-    fontSize: 14,
-    color: '#e65100',
-    textAlign: 'center',
-  },
+  startBtnIcon: { fontSize: 14, color: colors.white },
+  startBtnText: { fontFamily: fonts.semiBold, fontSize: 17, color: colors.white, letterSpacing: 0.2 },
 });

@@ -1,38 +1,34 @@
-import { useEffect, useRef } from 'react';
-import {
-  Animated,
-  StyleSheet,
-  Text,
-  TouchableOpacity,
-  View,
-} from 'react-native';
+import { useEffect, useRef, useState } from 'react';
+import { Animated, StyleSheet, Text, TouchableOpacity, View } from 'react-native';
+import { useSQLiteContext } from 'expo-sqlite';
 import { C, F, S } from './design';
+import { useMockup } from './MockupContext';
+import MushafPage from '../../components/MushafPage';
+import { getPageForAyah } from '../../lib/mushafDb';
 
-const MOCK_LINE = [
-  { id: 1, text: 'تَبَٰرَكَ', isMarker: false, status: 'cue' },
-  { id: 2, text: 'ٱلَّذِى', isMarker: false, status: 'cue' },
-  { id: 3, text: 'بِيَدِهِ', isMarker: false, status: 'cue' },
-  { id: 4, text: 'ٱلۡمُلۡكُ', isMarker: false, status: 'cue' },
-  { id: 5, text: 'وَهُوَ', isMarker: false, status: 'hidden' },
-  { id: 6, text: '١', isMarker: true },
+const QUESTIONS = [
+  {
+    id: 1,
+    ayah: 3,
+    surahName: 'Al-Mulk',
+    mistakeWord: 'سَبۡعَ',
+    recitedWord: 'ثَلَٰثَ',
+    recitedPhrase: 'خَلَقَ ثَلَٰثَ سَمَـٰوَٰتٍ',
+    expectedPhrase: 'خَلَقَ سَبۡعَ سَمَـٰوَٰتٍ',
+  },
+  {
+    id: 2,
+    ayah: 5,
+    surahName: 'Al-Mulk',
+    mistakeWord: 'مَصَـٰبِيحَ',
+    recitedWord: 'نُجُومًا',
+    recitedPhrase: 'زَيَّنَّا ٱلسَّمَآءَ بِنُجُومٍ',
+    expectedPhrase: 'زَيَّنَّا ٱلسَّمَآءَ بِمَصَـٰبِيحَ',
+  },
 ];
 
-const MOCK_LINE_2 = [
-  { id: 7, text: 'عَلَىٰ', isMarker: false, status: 'hidden' },
-  { id: 8, text: 'كُلِّ', isMarker: false, status: 'hidden' },
-  { id: 9, text: 'شَيۡءٍ', isMarker: false, status: 'hidden' },
-  { id: 10, text: 'قَدِيرٌ', isMarker: false, status: 'hidden' },
-];
-
-function wordStyle(status) {
-  switch (status) {
-    case 'correct': return { color: '#2E7D32' };
-    case 'wrong': return { color: '#C62828' };
-    case 'cue': return { color: '#BDBDBD' };
-    case 'hidden': return { color: 'transparent' };
-    default: return { color: C.navy };
-  }
-}
+// Covers any ayah up to 25 words — marks all words red on reveal
+const ALL_WORD_INDICES = Array.from({ length: 25 }, (_, i) => i);
 
 function MicPulse() {
   const pulse = useRef(new Animated.Value(1)).current;
@@ -56,83 +52,104 @@ function MicPulse() {
   );
 }
 
+const MOCK_SURAH = 67;
+
 export default function PostSessionMockup({ navigation }) {
+  const { addMistake, sessionMistakes } = useMockup();
+  const db = useSQLiteContext();
+  const [qIdx, setQIdx] = useState(0);
+  const [revealed, setRevealed] = useState(false);
+  const [currentPage, setCurrentPage] = useState(null);
   const opacity = useRef(new Animated.Value(0)).current;
+  const fadeQ = useRef(new Animated.Value(1)).current;
 
   useEffect(() => {
     Animated.timing(opacity, { toValue: 1, duration: 500, useNativeDriver: true }).start();
   }, []);
 
+  const q = QUESTIONS[qIdx];
+
+  useEffect(() => {
+    getPageForAyah(db, MOCK_SURAH, q.ayah)
+      .then((p) => { if (p != null) setCurrentPage(p); })
+      .catch(() => {});
+  }, [db, qIdx]);
+
+  const isLast = qIdx === QUESTIONS.length - 1;
+
+  const handleReveal = () => setRevealed(true);
+
+  const advanceQuestion = () => {
+    if (isLast) {
+      navigation.navigate('MockupSummary', { mistakes: sessionMistakes });
+      return;
+    }
+    Animated.timing(fadeQ, { toValue: 0, duration: 150, useNativeDriver: true }).start(() => {
+      setQIdx((i) => i + 1);
+      setRevealed(false);
+      Animated.timing(fadeQ, { toValue: 1, duration: 200, useNativeDriver: true }).start();
+    });
+  };
+
+  const handleMissed = () => {
+    addMistake({
+      ayah: q.ayah, surahName: q.surahName, type: 'mistake',
+      mistakeWord: q.mistakeWord, recitedWord: q.recitedWord,
+      recitedPhrase: q.recitedPhrase, expectedPhrase: q.expectedPhrase,
+    });
+    advanceQuestion();
+  };
+
   return (
     <Animated.View style={[styles.screen, { opacity }]}>
-      {/* Header */}
       <View style={styles.header}>
-        <TouchableOpacity
-          style={styles.pauseBtn}
-          onPress={() => navigation.goBack()}
-          activeOpacity={0.8}
-        >
-          <Text style={styles.pauseBtnText}>✕ Pause</Text>
-        </TouchableOpacity>
-        <View style={styles.headerCenter}>
-          <Text style={styles.headerTitle}>Recap Quiz</Text>
-          <Text style={styles.headerSub}>Question 1 of 2</Text>
-        </View>
-        <TouchableOpacity style={styles.revealBtn} activeOpacity={0.8}>
-          <Text style={styles.revealBtnText}>Reveal</Text>
-        </TouchableOpacity>
+        <Text style={styles.headerTitle}>Recap Quiz</Text>
+        <Text style={styles.headerSub}>Question {qIdx + 1} of {QUESTIONS.length}</Text>
       </View>
 
-      {/* Progress */}
       <View style={styles.progressTrack}>
-        <View style={[styles.progressFill, { width: '50%' }]} />
+        <View style={[styles.progressFill, { width: `${((qIdx + 1) / QUESTIONS.length) * 100}%` }]} />
       </View>
 
-      {/* Context chip */}
-      <View style={styles.contextChip}>
-        <Text style={styles.contextText}>From today's session — locking it in 🔒</Text>
-      </View>
-
-      {/* Mushaf */}
-      <View style={styles.mushafArea}>
-        <View style={styles.mushafCard}>
-          <View style={[styles.mushafLine]}>
-            {MOCK_LINE.map((w) =>
-              w.isMarker ? (
-                <Text key={w.id} style={styles.marker}>{w.text}</Text>
-              ) : (
-                <Text key={w.id} style={[styles.mushafWord, wordStyle(w.status)]}>
-                  {w.text}
-                </Text>
-              )
-            )}
-          </View>
-          <View style={styles.mushafLine}>
-            {MOCK_LINE_2.map((w) => (
-              <Text key={w.id} style={[styles.mushafWord, wordStyle(w.status)]}>
-                {w.text}
-              </Text>
-            ))}
-          </View>
-        </View>
-      </View>
-
-      <View style={styles.hintBar}>
-        <Text style={styles.hintText}>Recite the complete ayah from the beginning</Text>
-      </View>
-
-      <View style={styles.micSection}>
-        <MicPulse />
-      </View>
+      <Animated.View style={[styles.mushafArea, { opacity: fadeQ }]}>
+        {currentPage != null && (
+          <MushafPage
+            pageNumber={currentPage}
+            ayahStatuses={{
+              [`${MOCK_SURAH}:${q.ayah}`]: revealed
+                ? { wrongIndices: ALL_WORD_INDICES }
+                : { wrongIndices: [], cue: true },
+            }}
+          />
+        )}
+      </Animated.View>
 
       <View style={styles.bottomBar}>
-        <TouchableOpacity
-          style={styles.doneBtn}
-          onPress={() => navigation.navigate('MockupSummary')}
-          activeOpacity={0.88}
-        >
-          <Text style={styles.doneBtnText}>Finish session →</Text>
-        </TouchableOpacity>
+        {revealed ? (
+          <>
+            <TouchableOpacity style={[styles.sideBtn, styles.missedBtn]} onPress={handleMissed} activeOpacity={0.8}>
+              <Text style={styles.missedBtnText}>✕ Missed</Text>
+            </TouchableOpacity>
+            <TouchableOpacity style={[styles.sideBtn, styles.gotItBtn]} onPress={advanceQuestion} activeOpacity={0.8}>
+              <Text style={styles.gotItBtnText}>✓ Got it</Text>
+            </TouchableOpacity>
+          </>
+        ) : (
+          <>
+            <TouchableOpacity style={styles.sideBtn} onPress={() => navigation.goBack()} activeOpacity={0.8}>
+              <Text style={styles.sideBtnText}>✕ Pause</Text>
+            </TouchableOpacity>
+            <View style={styles.micCol}>
+              <MicPulse />
+              <TouchableOpacity onPress={() => navigation.navigate('MockupSummary', { mistakes: sessionMistakes })} activeOpacity={0.7}>
+                <Text style={styles.skipText}>Skip to summary</Text>
+              </TouchableOpacity>
+            </View>
+            <TouchableOpacity style={[styles.sideBtn, styles.revealBtn]} onPress={handleReveal} activeOpacity={0.8}>
+              <Text style={styles.revealBtnText}>Reveal</Text>
+            </TouchableOpacity>
+          </>
+        )}
       </View>
     </Animated.View>
   );
@@ -140,132 +157,35 @@ export default function PostSessionMockup({ navigation }) {
 
 const styles = StyleSheet.create({
   screen: { flex: 1, backgroundColor: C.background },
-  header: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'space-between',
-    paddingTop: 60,
-    paddingHorizontal: S.md,
-    paddingBottom: S.sm,
-  },
-  pauseBtn: {
-    backgroundColor: 'rgba(10,20,40,0.07)',
-    borderRadius: 20,
-    paddingVertical: 6,
-    paddingHorizontal: 12,
-  },
-  pauseBtnText: { fontFamily: F.medium, fontSize: 13, color: C.navyMid },
-  headerCenter: { alignItems: 'center' },
+  header: { alignItems: 'center', paddingTop: 60, paddingBottom: S.sm },
   headerTitle: { fontFamily: F.semiBold, fontSize: 16, color: C.navy },
   headerSub: { fontFamily: F.regular, fontSize: 12, color: C.navyLight, marginTop: 2 },
-  revealBtn: {
-    backgroundColor: C.goldLight,
-    borderRadius: 20,
-    paddingVertical: 6,
-    paddingHorizontal: 14,
-  },
-  revealBtnText: { fontFamily: F.semiBold, fontSize: 13, color: C.gold },
   progressTrack: {
-    height: 3,
-    backgroundColor: 'rgba(10,20,40,0.08)',
-    marginHorizontal: S.md,
-    borderRadius: 2,
-    marginBottom: S.sm,
+    height: 3, backgroundColor: 'rgba(6,21,44,0.08)',
+    marginHorizontal: S.md, borderRadius: 2, marginBottom: S.md,
   },
-  progressFill: {
-    height: 3,
-    backgroundColor: C.cobalt,
-    borderRadius: 2,
-  },
-  contextChip: {
-    backgroundColor: C.cobaltDim,
-    borderRadius: 20,
-    paddingVertical: 6,
-    paddingHorizontal: 14,
-    alignSelf: 'center',
-    marginBottom: S.md,
-  },
-  contextText: {
-    fontFamily: F.medium,
-    fontSize: 12,
-    color: C.cobalt,
-  },
-  mushafArea: {
-    flex: 1,
-    paddingHorizontal: S.md,
-  },
-  mushafCard: {
-    backgroundColor: C.white,
-    borderRadius: 16,
-    padding: S.md,
-    gap: 4,
-    borderWidth: 1,
-    borderColor: C.cardBorder,
-  },
-  mushafLine: {
-    flexDirection: 'row-reverse',
-    justifyContent: 'space-between',
-    flexWrap: 'nowrap',
-    alignItems: 'center',
-    paddingVertical: 6,
-    borderBottomWidth: StyleSheet.hairlineWidth,
-    borderBottomColor: 'rgba(0,0,0,0.05)',
-  },
-  mushafWord: {
-    fontFamily: 'UthmanicHafs',
-    fontSize: 20,
-    color: C.navy,
-    lineHeight: 34,
-  },
-  marker: {
-    fontFamily: 'UthmanicHafs',
-    fontSize: 18,
-    color: C.gold,
-  },
-  hintBar: {
-    paddingVertical: S.sm,
-    alignItems: 'center',
-  },
-  hintText: {
-    fontFamily: F.regular,
-    fontSize: 13,
-    color: C.navyLight,
-  },
-  micSection: {
-    alignItems: 'center',
-    paddingVertical: S.md,
-  },
-  micWrap: { alignItems: 'center', justifyContent: 'center', width: 80, height: 80 },
-  micRing: {
-    position: 'absolute',
-    width: 72,
-    height: 72,
-    borderRadius: 36,
-    backgroundColor: C.cobaltDim,
-  },
-  micCircle: {
-    width: 56,
-    height: 56,
-    borderRadius: 28,
-    backgroundColor: C.cobalt,
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
-  micEmoji: { fontSize: 24 },
+  progressFill: { height: 3, backgroundColor: C.cobalt, borderRadius: 2 },
+  mushafArea: { flex: 1 },
+  micCol: { alignItems: 'center', gap: 6 },
+  skipText: { fontFamily: F.regular, fontSize: 11, color: C.navyLight },
   bottomBar: {
-    paddingHorizontal: S.lg,
-    paddingBottom: 48,
-    paddingTop: S.sm,
+    flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between',
+    paddingHorizontal: 20, paddingTop: 10, paddingBottom: 16,
+    borderTopWidth: StyleSheet.hairlineWidth, borderTopColor: C.cardBorder, backgroundColor: C.white,
   },
-  doneBtn: {
-    backgroundColor: '#1E7A4A',
-    borderRadius: 14,
-    paddingVertical: 16,
-    alignItems: 'center',
+  sideBtn: {
+    backgroundColor: 'rgba(6,21,44,0.07)', borderRadius: 20,
+    paddingVertical: 8, paddingHorizontal: 14,
   },
-  doneBtnText: {
-    fontFamily: F.semiBold,
-    fontSize: 16,
-    color: C.white,
-  },
+  sideBtnText: { fontFamily: F.medium, fontSize: 13, color: C.navyMid },
+  revealBtn: { backgroundColor: C.goldLight },
+  revealBtnText: { fontFamily: F.semiBold, fontSize: 13, color: C.brown },
+  missedBtn: { backgroundColor: '#FFEBEE', flex: 1, marginRight: 8, alignItems: 'center', paddingVertical: 14 },
+  missedBtnText: { fontFamily: F.semiBold, fontSize: 14, color: '#C62828' },
+  gotItBtn: { backgroundColor: C.cobaltDim, flex: 1, marginLeft: 8, alignItems: 'center', paddingVertical: 14 },
+  gotItBtnText: { fontFamily: F.semiBold, fontSize: 14, color: C.cobalt },
+  micWrap: { alignItems: 'center', justifyContent: 'center', width: 48, height: 48 },
+  micRing: { position: 'absolute', width: 42, height: 42, borderRadius: 21, backgroundColor: C.cobaltDim },
+  micCircle: { width: 34, height: 34, borderRadius: 17, backgroundColor: C.cobalt, alignItems: 'center', justifyContent: 'center' },
+  micEmoji: { fontSize: 16 },
 });

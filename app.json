@@ -38,13 +38,14 @@
         "expo-notifications",
         {
           "icon": "./assets/icon.png",
-          "color": "#2e7d32"
+          "color": "#1A3D8A"
         }
       ],
       "@react-native-community/datetimepicker",
       "expo-sqlite",
       "expo-asset",
-      "expo-font"
+      "expo-font",
+      "expo-web-browser"
     ]
   }
 }

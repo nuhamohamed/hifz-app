@@ -1,7 +1,9 @@
 import { useEffect, useState } from 'react';
 import {
   ActivityIndicator,
+  Alert,
   Platform,
+  ScrollView,
   StyleSheet,
   Text,
   TouchableOpacity,
@@ -10,9 +12,11 @@ import {
 import DateTimePicker from '@react-native-community/datetimepicker';
 import Slider from '@react-native-community/slider';
 import { useNavigation } from '@react-navigation/native';
-import { getCurrentUserId } from '../lib/auth';
+import TabBar from '../components/TabBar';
+import { getCurrentUserId, isAnonymous } from '../lib/auth';
 import { scheduleDailyNotification } from '../lib/notifications';
 import { supabase } from '../lib/supabase';
+import { colors, fonts, radius, spacing } from '../lib/theme';
 
 function formatNotificationTime(date) {
   const hours = String(date.getHours()).padStart(2, '0');
@@ -41,6 +45,9 @@ export default function SettingsScreen() {
   const [isSaving, setIsSaving] = useState(false);
   const [error, setError] = useState('');
   const [saved, setSaved] = useState(false);
+  const [isSigningOut, setIsSigningOut] = useState(false);
+  // null = still checking; gates the sign-out button
+  const [anonymous, setAnonymous] = useState(null);
 
   useEffect(() => {
     (async () => {
@@ -93,10 +100,7 @@ export default function SettingsScreen() {
 
       if (updateError) throw new Error(updateError.message);
 
-      await scheduleDailyNotification(
-        reminderTime.getHours(),
-        reminderTime.getMinutes()
-      );
+      await scheduleDailyNotification(reminderTime.getHours(), reminderTime.getMinutes());
 
       setSaved(true);
     } catch (err) {
@@ -106,177 +110,186 @@ export default function SettingsScreen() {
     }
   };
 
+  useEffect(() => {
+    let mounted = true;
+    isAnonymous().then((value) => {
+      if (mounted) setAnonymous(value);
+    });
+    return () => {
+      mounted = false;
+    };
+  }, []);
+
+  const handleSignOut = () => {
+    Alert.alert('Sign out?', 'You can sign back in any time.', [
+      { text: 'Cancel', style: 'cancel' },
+      {
+        text: 'Sign out',
+        style: 'destructive',
+        onPress: async () => {
+          setIsSigningOut(true);
+          // No manual navigation — App.js reacts to the auth state change.
+          await supabase.auth.signOut();
+        },
+      },
+    ]);
+  };
+
   if (isLoading) {
     return (
       <View style={styles.centered}>
-        <ActivityIndicator size="large" color="#2e7d32" />
+        <ActivityIndicator size="large" color={colors.primary} />
       </View>
     );
   }
 
   return (
-    <View style={styles.container}>
-      <TouchableOpacity style={styles.backButton} onPress={() => navigation.goBack()}>
-        <Text style={styles.backButtonText}>← Back</Text>
-      </TouchableOpacity>
-
-      <Text style={styles.title}>Edit Settings</Text>
-
-      <Text style={styles.label}>Session length</Text>
-      <Text style={styles.valueText}>{sessionMinutes} minutes</Text>
-      <Slider
-        style={styles.slider}
-        minimumValue={15}
-        maximumValue={120}
-        step={5}
-        value={sessionMinutes}
-        onValueChange={setSessionMinutes}
-        minimumTrackTintColor="#2e7d32"
-        maximumTrackTintColor="#e0e0e0"
-        thumbTintColor="#2e7d32"
-      />
-      <View style={styles.sliderLabels}>
-        <Text style={styles.sliderLabel}>15 min</Text>
-        <Text style={styles.sliderLabel}>120 min</Text>
+    <View style={styles.screen}>
+      <View style={styles.header}>
+        <Text style={styles.title}>Settings</Text>
       </View>
 
-      <Text style={[styles.label, styles.labelSpaced]}>Daily reminder</Text>
+      <ScrollView contentContainerStyle={styles.scrollContent} showsVerticalScrollIndicator={false}>
+        <View style={styles.card}>
+          <Text style={styles.label}>Session length</Text>
+          <Text style={styles.valueText}>{sessionMinutes} minutes</Text>
+          <Slider
+            style={styles.slider}
+            minimumValue={15}
+            maximumValue={120}
+            step={5}
+            value={sessionMinutes}
+            onValueChange={setSessionMinutes}
+            minimumTrackTintColor={colors.primary}
+            maximumTrackTintColor={colors.border}
+            thumbTintColor={colors.primary}
+          />
+          <View style={styles.sliderLabels}>
+            <Text style={styles.sliderLabel}>15 min</Text>
+            <Text style={styles.sliderLabel}>120 min</Text>
+          </View>
+        </View>
 
-      {Platform.OS === 'android' ? (
-        <TouchableOpacity
-          style={styles.timeButton}
-          onPress={() => setShowTimePicker(true)}
-          activeOpacity={0.8}
-        >
-          <Text style={styles.timeButtonText}>{formatTimeDisplay(reminderTime)}</Text>
-        </TouchableOpacity>
-      ) : null}
+        <View style={styles.card}>
+          <Text style={styles.label}>Daily reminder</Text>
 
-      {showTimePicker ? (
-        <DateTimePicker
-          value={reminderTime}
-          mode="time"
-          display={Platform.OS === 'ios' ? 'spinner' : 'default'}
-          onChange={onTimeChange}
-        />
-      ) : null}
+          {Platform.OS === 'android' ? (
+            <TouchableOpacity style={styles.timeButton} onPress={() => setShowTimePicker(true)} activeOpacity={0.8}>
+              <Text style={styles.timeButtonText}>{formatTimeDisplay(reminderTime)}</Text>
+            </TouchableOpacity>
+          ) : null}
 
-      {error ? <Text style={styles.error}>{error}</Text> : null}
-      {saved ? <Text style={styles.savedText}>Saved.</Text> : null}
+          {showTimePicker ? (
+            <DateTimePicker
+              value={reminderTime}
+              mode="time"
+              display={Platform.OS === 'ios' ? 'spinner' : 'default'}
+              onChange={onTimeChange}
+              themeVariant="light"
+            />
+          ) : null}
+        </View>
 
-      {isSaving ? (
-        <ActivityIndicator size="large" color="#2e7d32" style={styles.loader} />
-      ) : (
-        <TouchableOpacity
-          style={styles.saveButton}
-          onPress={handleSave}
-          activeOpacity={0.8}
-        >
-          <Text style={styles.saveButtonText}>Save</Text>
-        </TouchableOpacity>
-      )}
+        {error ? <Text style={styles.error}>{error}</Text> : null}
+        {saved ? <Text style={styles.savedText}>Saved.</Text> : null}
+
+        {isSaving ? (
+          <ActivityIndicator size="large" color={colors.primary} style={styles.loader} />
+        ) : (
+          <TouchableOpacity style={styles.saveButton} onPress={handleSave} activeOpacity={0.88}>
+            <Text style={styles.saveButtonText}>Save</Text>
+          </TouchableOpacity>
+        )}
+
+        {/* Anonymous users have no credentials to sign back in with, so
+            signing out would strand their history behind an unreachable
+            UUID. Shown again once accounts are reintroduced. */}
+        {anonymous === false ? (
+          <TouchableOpacity
+            style={styles.signOutButton}
+            onPress={handleSignOut}
+            disabled={isSigningOut}
+            activeOpacity={0.7}
+          >
+            <Text style={styles.signOutButtonText}>
+              {isSigningOut ? 'Signing out…' : 'Sign out'}
+            </Text>
+          </TouchableOpacity>
+        ) : null}
+      </ScrollView>
+
+      <TabBar active="settings" navigation={navigation} />
     </View>
   );
 }
 
 const styles = StyleSheet.create({
-  container: {
-    flex: 1,
-    backgroundColor: '#fff',
-    paddingTop: 64,
-    paddingHorizontal: 24,
-    paddingBottom: 32,
+  screen: { flex: 1, backgroundColor: colors.background },
+  centered: { flex: 1, justifyContent: 'center', alignItems: 'center', backgroundColor: colors.background },
+  header: {
+    paddingTop: 68, paddingHorizontal: spacing.lg, paddingBottom: spacing.md,
+    borderBottomWidth: 1, borderBottomColor: colors.border,
   },
-  centered: {
-    flex: 1,
-    justifyContent: 'center',
-    alignItems: 'center',
-    backgroundColor: '#fff',
-  },
-  backButton: {
-    marginBottom: 16,
-  },
-  backButtonText: {
-    fontSize: 16,
-    color: '#2e7d32',
-    fontWeight: '600',
-  },
-  title: {
-    fontSize: 26,
-    fontWeight: '700',
-    color: '#1b1b1b',
-    marginBottom: 32,
+  title: { fontFamily: fonts.semiBold, fontSize: 28, color: colors.text, letterSpacing: -0.5 },
+  scrollContent: { paddingHorizontal: spacing.lg, paddingTop: spacing.lg, paddingBottom: spacing.lg },
+  card: {
+    backgroundColor: colors.card,
+    borderRadius: radius.md,
+    borderWidth: 1,
+    borderColor: colors.border,
+    padding: spacing.md,
+    marginBottom: spacing.md,
   },
   label: {
-    fontSize: 16,
-    fontWeight: '600',
-    color: '#333',
-    marginBottom: 8,
-  },
-  labelSpaced: {
-    marginTop: 28,
+    fontFamily: fonts.semiBold,
+    fontSize: 15,
+    color: colors.text,
+    marginBottom: 6,
   },
   valueText: {
+    fontFamily: fonts.semiBold,
     fontSize: 22,
-    fontWeight: '600',
-    color: '#1b5e20',
-    marginBottom: 8,
+    color: colors.primary,
+    marginBottom: spacing.sm,
   },
-  slider: {
-    width: '100%',
-    height: 40,
-  },
-  sliderLabels: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    marginBottom: 8,
-  },
-  sliderLabel: {
-    fontSize: 13,
-    color: '#757575',
-  },
+  slider: { width: '100%', height: 40 },
+  sliderLabels: { flexDirection: 'row', justifyContent: 'space-between' },
+  sliderLabel: { fontFamily: fonts.regular, fontSize: 12, color: colors.textMuted },
   timeButton: {
     alignSelf: 'flex-start',
-    borderWidth: 1,
-    borderColor: '#2e7d32',
-    borderRadius: 10,
+    borderWidth: 1.5,
+    borderColor: colors.primary,
+    borderRadius: radius.sm,
     paddingVertical: 12,
     paddingHorizontal: 20,
-    marginBottom: 8,
   },
-  timeButtonText: {
-    fontSize: 18,
-    fontWeight: '600',
-    color: '#1b5e20',
-  },
+  timeButtonText: { fontFamily: fonts.semiBold, fontSize: 18, color: colors.primary },
   error: {
-    color: '#c62828',
+    fontFamily: fonts.regular,
+    color: colors.error,
     fontSize: 14,
     textAlign: 'center',
-    marginTop: 16,
-    marginBottom: 8,
+    marginBottom: spacing.sm,
   },
   savedText: {
-    color: '#2e7d32',
+    fontFamily: fonts.medium,
+    color: colors.primary,
     fontSize: 14,
     textAlign: 'center',
-    marginTop: 16,
-    marginBottom: 8,
-    fontWeight: '600',
+    marginBottom: spacing.sm,
   },
-  loader: {
-    marginTop: 24,
-  },
+  loader: { marginTop: spacing.sm },
   saveButton: {
-    backgroundColor: '#2e7d32',
-    borderRadius: 12,
-    paddingVertical: 16,
+    backgroundColor: colors.primary,
+    borderRadius: radius.md,
+    paddingVertical: 17,
     alignItems: 'center',
-    marginTop: 'auto',
   },
-  saveButtonText: {
-    color: '#fff',
-    fontSize: 17,
-    fontWeight: '700',
+  saveButtonText: { fontFamily: fonts.semiBold, color: colors.white, fontSize: 17 },
+  signOutButton: {
+    alignItems: 'center',
+    paddingVertical: spacing.md,
+    marginTop: spacing.xs,
   },
+  signOutButtonText: { fontFamily: fonts.medium, color: colors.error, fontSize: 15 },
 });

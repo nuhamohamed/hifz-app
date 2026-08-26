@@ -1,75 +1,48 @@
-import { useEffect, useRef } from 'react';
-import {
-  Animated,
-  StyleSheet,
-  Text,
-  TouchableOpacity,
-  View,
-} from 'react-native';
+import { useEffect, useRef, useState } from 'react';
+import { Animated, StyleSheet, Text, TouchableOpacity, View } from 'react-native';
+import { useSQLiteContext } from 'expo-sqlite';
 import { C, F, S } from './design';
+import { useMockup } from './MockupContext';
+import MushafPage from '../../components/MushafPage';
+import { getPageForAyah } from '../../lib/mushafDb';
 
-// Simulated mushaf words for the mockup
-const MOCK_WORDS = [
-  { text: 'بِسۡمِ', surah: 67, ayah: 0, word: 1, isMarker: false, isCue: true },
-  { text: 'ٱللَّهِ', surah: 67, ayah: 0, word: 2, isMarker: false, isCue: true },
-  { text: 'ٱلرَّحۡمَٰنِ', surah: 67, ayah: 0, word: 3, isMarker: false, isCue: true },
-  { text: 'ٱلرَّحِيمِ', surah: 67, ayah: 0, word: 4, isMarker: false, isCue: true },
+const QUESTIONS = [
+  {
+    id: 1,
+    ayah: 3,
+    surahName: 'Al-Mulk',
+    mistakeWord: 'سَبۡعَ',
+    recitedWord: 'ثَلَٰثَ',
+  },
+  {
+    id: 2,
+    ayah: 5,
+    surahName: 'Al-Mulk',
+    mistakeWord: 'مَصَـٰبِيحَ',
+    recitedWord: 'نُجُومًا',
+  },
+  {
+    id: 3,
+    ayah: 7,
+    surahName: 'Al-Mulk',
+    mistakeWord: 'شَهِيقًا',
+    recitedWord: 'زَفِيرًا',
+  },
 ];
 
-const MOCK_LINE_1 = [
-  { text: 'تَبَٰرَكَ', id: 1, surah: 67, ayah: 1, word: 1, isMarker: false, revealed: true, wrong: false },
-  { text: 'ٱلَّذِى', id: 2, surah: 67, ayah: 1, word: 2, isMarker: false, revealed: true, wrong: false },
-  { text: 'بِيَدِهِ', id: 3, surah: 67, ayah: 1, word: 3, isMarker: false, revealed: false, wrong: false },
-  { text: 'ٱلۡمُلۡكُ', id: 4, surah: 67, ayah: 1, word: 4, isMarker: false, revealed: false, wrong: false },
-  { text: 'وَهُوَ', id: 5, surah: 67, ayah: 1, word: 5, isMarker: false, revealed: false, wrong: false },
-  { text: '١', id: 6, surah: 67, ayah: 1, word: 6, isMarker: true },
-];
 
-const MOCK_LINE_2 = [
-  { text: 'عَلَىٰ', id: 7, surah: 67, ayah: 2, word: 1, isMarker: false, revealed: false, wrong: false },
-  { text: 'كُلِّ', id: 8, surah: 67, ayah: 2, word: 2, isMarker: false, revealed: false, wrong: false },
-  { text: 'شَيۡءٍ', id: 9, surah: 67, ayah: 2, word: 3, isMarker: false, revealed: false, wrong: false },
-  { text: 'قَدِيرٌ', id: 10, surah: 67, ayah: 2, word: 4, isMarker: false, revealed: false, wrong: false },
-  { text: '٢', id: 11, surah: 67, ayah: 2, word: 5, isMarker: true },
-];
-
-function MushafWord({ word, cue = false }) {
-  if (word.isMarker) {
-    return <Text style={styles.marker}>{word.text}</Text>;
-  }
-  const textStyle = [
-    styles.word,
-    cue && styles.wordCue,
-    !cue && !word.revealed && styles.wordHidden,
-    word.wrong && styles.wordWrong,
-    word.revealed && !word.wrong && styles.wordRevealed,
-  ];
-  return <Text style={textStyle}>{word.text}</Text>;
-}
-
-function MushafLine({ words, isCue = false }) {
-  return (
-    <View style={styles.mushafLine}>
-      {words.map((w) => (
-        <MushafWord key={w.id} word={w} cue={isCue} />
-      ))}
-    </View>
-  );
-}
-
-function MicPulse({ isListening }) {
+function MicPulse() {
   const pulse = useRef(new Animated.Value(1)).current;
   useEffect(() => {
-    if (!isListening) { pulse.setValue(1); return; }
     const loop = Animated.loop(
       Animated.sequence([
-        Animated.timing(pulse, { toValue: 0.3, duration: 700, useNativeDriver: true }),
-        Animated.timing(pulse, { toValue: 1, duration: 700, useNativeDriver: true }),
+        Animated.timing(pulse, { toValue: 0.25, duration: 800, useNativeDriver: true }),
+        Animated.timing(pulse, { toValue: 1, duration: 800, useNativeDriver: true }),
       ])
     );
     loop.start();
     return () => loop.stop();
-  }, [isListening]);
+  }, []);
   return (
     <View style={styles.micWrap}>
       <Animated.View style={[styles.micRing, { opacity: pulse, transform: [{ scale: pulse }] }]} />
@@ -80,70 +53,109 @@ function MicPulse({ isListening }) {
   );
 }
 
+const MOCK_SURAH = 67;
+
 export default function PreSessionMockup({ navigation }) {
+  const { addMistake } = useMockup();
+  const db = useSQLiteContext();
+  const [qIdx, setQIdx] = useState(0);
+  const [revealed, setRevealed] = useState(false);
+  const [currentPage, setCurrentPage] = useState(null);
   const opacity = useRef(new Animated.Value(0)).current;
+  const fadeQ = useRef(new Animated.Value(1)).current;
 
   useEffect(() => {
     Animated.timing(opacity, { toValue: 1, duration: 500, useNativeDriver: true }).start();
   }, []);
 
+  const q = QUESTIONS[qIdx];
+
+  useEffect(() => {
+    getPageForAyah(db, MOCK_SURAH, q.ayah)
+      .then((p) => { if (p != null) setCurrentPage(p); })
+      .catch(() => {});
+  }, [db, qIdx]);
+  const isLast = qIdx === QUESTIONS.length - 1;
+  const progress = `${qIdx + 1} / ${QUESTIONS.length}`;
+
+  const advanceQuestion = () => {
+    if (isLast) {
+      navigation.navigate('MockupRecitation');
+      return;
+    }
+    Animated.timing(fadeQ, { toValue: 0, duration: 150, useNativeDriver: true }).start(() => {
+      setQIdx((i) => i + 1);
+      setRevealed(false);
+      Animated.timing(fadeQ, { toValue: 1, duration: 200, useNativeDriver: true }).start();
+    });
+  };
+
+  const handleGotIt = () => advanceQuestion();
+
+  const handleMissed = () => {
+    addMistake({ ayah: q.ayah, surahName: q.surahName, type: 'mistake', mistakeWord: q.mistakeWord, recitedWord: q.recitedWord });
+    advanceQuestion();
+  };
+
   return (
     <Animated.View style={[styles.screen, { opacity }]}>
       {/* Header */}
       <View style={styles.header}>
-        <TouchableOpacity
-          style={styles.pauseBtn}
-          onPress={() => navigation.goBack()}
-          activeOpacity={0.8}
-        >
-          <Text style={styles.pauseBtnText}>✕ Pause</Text>
-        </TouchableOpacity>
-        <View style={styles.headerCenter}>
-          <Text style={styles.headerTitle}>Warm-up Quiz</Text>
-          <Text style={styles.headerSub}>Question 1 of 3</Text>
-        </View>
-        <TouchableOpacity style={styles.revealBtn} activeOpacity={0.8}>
-          <Text style={styles.revealBtnText}>Reveal</Text>
-        </TouchableOpacity>
+        <Text style={styles.headerTitle}>Mistake Review</Text>
+        <Text style={styles.headerSub}>Question {progress}</Text>
       </View>
 
-      {/* Progress bar */}
+      {/* Progress */}
       <View style={styles.progressTrack}>
-        <View style={[styles.progressFill, { width: '33%' }]} />
+        <View style={[styles.progressFill, { width: `${((qIdx + 1) / QUESTIONS.length) * 100}%` }]} />
       </View>
 
-      {/* Mushaf area */}
-      <View style={styles.mushafArea}>
-        <View style={styles.surahNameBar}>
-          <Text style={styles.surahNameText}>سورة الملك</Text>
-        </View>
-
-        <View style={styles.mushafCard}>
-          <MushafLine words={MOCK_WORDS} isCue />
-          <MushafLine words={MOCK_LINE_1} />
-          <MushafLine words={MOCK_LINE_2} />
-        </View>
-      </View>
+      {/* Mushaf */}
+      <Animated.View style={[styles.mushafArea, { opacity: fadeQ }]}>
+        {currentPage != null && (
+          <MushafPage
+            pageNumber={currentPage}
+            ayahStatuses={{
+              [`${MOCK_SURAH}:${q.ayah}`]: revealed
+                ? { wrongIndices: [] }
+                : { wrongIndices: [], cue: true },
+            }}
+          />
+        )}
+      </Animated.View>
 
       {/* Hint */}
-      <View style={styles.hintBar}>
-        <Text style={styles.hintText}>Recite from the grey text above</Text>
+      <View style={styles.hintPanel}>
+        <Text style={styles.hintText}>Recite from the grey ayah</Text>
       </View>
 
-      {/* Mic */}
-      <View style={styles.micSection}>
-        <MicPulse isListening />
-      </View>
-
-      {/* Bottom CTA */}
+      {/* Bottom bar */}
       <View style={styles.bottomBar}>
-        <TouchableOpacity
-          style={styles.nextBtn}
-          onPress={() => navigation.navigate('MockupRecitation')}
-          activeOpacity={0.88}
-        >
-          <Text style={styles.nextBtnText}>Continue to recitation →</Text>
-        </TouchableOpacity>
+        {revealed ? (
+          <>
+            <TouchableOpacity style={[styles.sideBtn, styles.missedBtn]} onPress={handleMissed} activeOpacity={0.8}>
+              <Text style={styles.missedBtnText}>✕ Missed</Text>
+            </TouchableOpacity>
+            <TouchableOpacity style={[styles.sideBtn, styles.gotItBtn]} onPress={handleGotIt} activeOpacity={0.8}>
+              <Text style={styles.gotItBtnText}>✓ Got it</Text>
+            </TouchableOpacity>
+          </>
+        ) : (
+          <>
+            <TouchableOpacity style={styles.sideBtn} onPress={() => navigation.goBack()} activeOpacity={0.8}>
+              <Text style={styles.sideBtnText}>✕ Pause</Text>
+            </TouchableOpacity>
+            <View style={styles.micCol}>
+              <MicPulse />
+              <TouchableOpacity onPress={() => navigation.navigate('MockupRecitation')} activeOpacity={0.7}>
+                <Text style={styles.skipText}>Skip to recitation</Text>
+              </TouchableOpacity>
+            </View>
+            <TouchableOpacity style={[styles.sideBtn, styles.revealBtn]} onPress={() => setRevealed(true)} activeOpacity={0.8}>
+              <Text style={styles.revealBtnText}>Reveal</Text>
+            </TouchableOpacity>
+          </>
+        )}
       </View>
     </Animated.View>
   );
@@ -151,135 +163,43 @@ export default function PreSessionMockup({ navigation }) {
 
 const styles = StyleSheet.create({
   screen: { flex: 1, backgroundColor: C.background },
-  header: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'space-between',
-    paddingTop: 60,
-    paddingHorizontal: S.md,
-    paddingBottom: S.sm,
-  },
-  pauseBtn: {
-    backgroundColor: 'rgba(10,20,40,0.07)',
-    borderRadius: 20,
-    paddingVertical: 6,
-    paddingHorizontal: 12,
-  },
-  pauseBtnText: { fontFamily: F.medium, fontSize: 13, color: C.navyMid },
-  headerCenter: { alignItems: 'center' },
+  header: { alignItems: 'center', paddingTop: 60, paddingBottom: S.sm },
   headerTitle: { fontFamily: F.semiBold, fontSize: 16, color: C.navy },
   headerSub: { fontFamily: F.regular, fontSize: 12, color: C.navyLight, marginTop: 2 },
-  revealBtn: {
-    backgroundColor: C.goldLight,
-    borderRadius: 20,
-    paddingVertical: 6,
-    paddingHorizontal: 14,
-  },
-  revealBtnText: { fontFamily: F.semiBold, fontSize: 13, color: C.gold },
   progressTrack: {
-    height: 3,
-    backgroundColor: 'rgba(10,20,40,0.08)',
-    marginHorizontal: S.md,
-    borderRadius: 2,
-    marginBottom: S.md,
+    height: 3, backgroundColor: 'rgba(6,21,44,0.08)',
+    marginHorizontal: S.md, borderRadius: 2, marginBottom: S.md,
   },
-  progressFill: {
-    height: 3,
-    backgroundColor: C.cobalt,
-    borderRadius: 2,
+  progressFill: { height: 3, backgroundColor: C.cobalt, borderRadius: 2 },
+  mushafArea: { flex: 1 },
+  bottomBar: {
+    flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between',
+    paddingHorizontal: 20, paddingTop: 10, paddingBottom: 32,
+    borderTopWidth: StyleSheet.hairlineWidth, borderTopColor: '#d4c9a8', backgroundColor: C.white,
   },
-  mushafArea: {
-    flex: 1,
-    paddingHorizontal: S.md,
+  sideBtn: {
+    backgroundColor: 'rgba(6,21,44,0.07)', borderRadius: 20,
+    paddingVertical: 8, paddingHorizontal: 14,
   },
-  surahNameBar: {
-    backgroundColor: '#EDE9DE',
-    borderRadius: 8,
-    paddingVertical: 8,
-    alignItems: 'center',
-    marginBottom: S.sm,
-  },
-  surahNameText: {
-    fontFamily: 'UthmanicHafs',
-    fontSize: 16,
-    color: '#5d4a1f',
-  },
-  mushafCard: {
-    backgroundColor: C.white,
-    borderRadius: 16,
-    padding: S.md,
-    gap: 4,
-    borderWidth: 1,
-    borderColor: C.cardBorder,
-  },
-  mushafLine: {
-    flexDirection: 'row-reverse',
-    justifyContent: 'space-between',
-    flexWrap: 'nowrap',
-    alignItems: 'center',
-    paddingVertical: 4,
-    borderBottomWidth: StyleSheet.hairlineWidth,
-    borderBottomColor: 'rgba(0,0,0,0.05)',
-  },
-  word: {
-    fontFamily: 'UthmanicHafs',
-    fontSize: 20,
-    color: C.navy,
-    lineHeight: 34,
-  },
-  wordCue: { color: '#BDBDBD' },
-  wordHidden: { color: 'transparent' },
-  wordRevealed: { color: '#2E7D32' },
-  wordWrong: { color: '#C62828' },
-  marker: {
-    fontFamily: 'UthmanicHafs',
-    fontSize: 18,
-    color: C.gold,
-  },
-  hintBar: {
-    paddingVertical: S.sm,
-    alignItems: 'center',
-  },
-  hintText: {
-    fontFamily: F.regular,
-    fontSize: 13,
-    color: C.navyLight,
-  },
-  micSection: {
-    alignItems: 'center',
-    paddingVertical: S.md,
-  },
-  micWrap: { alignItems: 'center', justifyContent: 'center', width: 80, height: 80 },
+  sideBtnText: { fontFamily: F.medium, fontSize: 13, color: C.navyMid },
+  revealBtn: { backgroundColor: C.goldLight },
+  revealBtnText: { fontFamily: F.semiBold, fontSize: 13, color: C.brown },
+  missedBtn: { backgroundColor: '#FFEBEE', flex: 1, marginRight: 8, alignItems: 'center', paddingVertical: 14 },
+  missedBtnText: { fontFamily: F.semiBold, fontSize: 14, color: '#C62828' },
+  gotItBtn: { backgroundColor: C.cobaltDim, flex: 1, marginLeft: 8, alignItems: 'center', paddingVertical: 14 },
+  gotItBtnText: { fontFamily: F.semiBold, fontSize: 14, color: C.cobalt },
+  micWrap: { alignItems: 'center', justifyContent: 'center', width: 48, height: 48 },
   micRing: {
-    position: 'absolute',
-    width: 72,
-    height: 72,
-    borderRadius: 36,
-    backgroundColor: C.cobaltDim,
+    position: 'absolute', width: 42, height: 42,
+    borderRadius: 21, backgroundColor: C.cobaltDim,
   },
   micCircle: {
-    width: 56,
-    height: 56,
-    borderRadius: 28,
-    backgroundColor: C.cobalt,
-    alignItems: 'center',
-    justifyContent: 'center',
+    width: 34, height: 34, borderRadius: 17,
+    backgroundColor: C.cobalt, alignItems: 'center', justifyContent: 'center',
   },
-  micEmoji: { fontSize: 24 },
-  bottomBar: {
-    paddingHorizontal: S.lg,
-    paddingBottom: 48,
-    paddingTop: S.sm,
-  },
-  nextBtn: {
-    backgroundColor: C.cobalt,
-    borderRadius: 14,
-    paddingVertical: 16,
-    alignItems: 'center',
-  },
-  nextBtnText: {
-    fontFamily: F.semiBold,
-    fontSize: 16,
-    color: C.white,
-  },
+  micEmoji: { fontSize: 16 },
+  hintPanel: { paddingVertical: 8, paddingHorizontal: S.lg },
+  hintText: { fontFamily: F.regular, fontSize: 13, color: C.navyLight, textAlign: 'center' },
+  micCol: { alignItems: 'center', gap: 6 },
+  skipText: { fontFamily: F.regular, fontSize: 11, color: C.navyLight },
 });

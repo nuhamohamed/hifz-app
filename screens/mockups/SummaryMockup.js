@@ -1,4 +1,4 @@
-import { useEffect, useRef } from 'react';
+import { useEffect, useRef, useState, useCallback } from 'react';
 import {
   Animated,
   ScrollView,
@@ -8,14 +8,27 @@ import {
   View,
 } from 'react-native';
 import { C, F, S } from './design';
+import { useMockup } from './MockupContext';
+import { getTodayPortion } from './TodayMockup';
 
-const MOCK_MISTAKES = [
+const DEMO_MISTAKES = [
   {
-    ayah: 2,
+    ayah: 3,
     surahName: 'Al-Mulk',
-    type: 'slip',
-    wrongWord: 'ٱلۡمَوۡتَ',
-    correctWord: 'ٱلۡحَيَوٰةَ',
+    type: 'mistake',
+    mistakeWord: 'سَبۡعَ',
+    recitedWord: 'ثَلَٰثَ',
+    recitedPhrase: 'خَلَقَ ثَلَٰثَ سَمَـٰوَٰتٍ',
+    expectedPhrase: 'خَلَقَ سَبۡعَ سَمَـٰوَٰتٍ',
+  },
+  {
+    ayah: 5,
+    surahName: 'Al-Mulk',
+    type: 'mistake',
+    mistakeWord: 'مَصَـٰبِيحَ',
+    recitedWord: 'نُجُومًا',
+    recitedPhrase: 'زَيَّنَّا ٱلسَّمَآءَ بِنُجُومٍ',
+    expectedPhrase: 'زَيَّنَّا ٱلسَّمَآءَ بِمَصَـٰبِيحَ',
   },
 ];
 
@@ -28,45 +41,62 @@ function StatPill({ value, label, color }) {
   );
 }
 
-function MistakeCard({ mistake }) {
+function MistakeCard({ mistake, onDismiss }) {
   return (
     <View style={styles.mistakeCard}>
       <View style={styles.mistakeHeader}>
         <Text style={styles.mistakeAyah}>{mistake.surahName} · Ayah {mistake.ayah}</Text>
-        <View style={[styles.badge, mistake.type === 'slip' ? styles.badgeSlip : styles.badgeFull]}>
-          <Text style={[styles.badgeText, mistake.type === 'slip' ? styles.badgeSlipText : styles.badgeFullText]}>
-            {mistake.type === 'slip' ? 'Slip' : 'Mistake'}
+        <View style={styles.badgeFull}>
+          <Text style={styles.badgeFullText}>Mistake</Text>
+        </View>
+      </View>
+      <View style={styles.compRow}>
+        <View style={styles.compCol}>
+          <Text style={styles.compLabel}>What you said</Text>
+          <Text style={[styles.compWord, styles.compWrong]}>
+            {mistake.recitedPhrase ?? mistake.recitedWord ?? mistake.mistakeWord}
+          </Text>
+        </View>
+        <View style={styles.compDivider} />
+        <View style={styles.compCol}>
+          <Text style={styles.compLabel}>Expected</Text>
+          <Text style={[styles.compWord, styles.compCorrect]}>
+            {mistake.expectedPhrase ?? mistake.mistakeWord}
           </Text>
         </View>
       </View>
-      <View style={styles.mistakeDiff}>
-        <Text style={styles.diffWrong}>{mistake.wrongWord}</Text>
-        <Text style={styles.diffArrow}>→</Text>
-        <Text style={styles.diffCorrect}>{mistake.correctWord}</Text>
-      </View>
-      <Text style={styles.mistakeNote}>Added to your spaced repetition queue</Text>
+      <TouchableOpacity style={styles.notMistakeBtn} onPress={onDismiss} activeOpacity={0.7}>
+        <Text style={styles.notMistakeBtnText}>Not a mistake</Text>
+      </TouchableOpacity>
     </View>
   );
 }
 
-function TomorrowCard() {
+function TomorrowCard({ surahName, nextStart, nextEnd }) {
   return (
     <View style={styles.tomorrowCard}>
       <View style={styles.tomorrowLeft}>
         <Text style={styles.tomorrowLabel}>TOMORROW</Text>
-        <Text style={styles.tomorrowTitle}>Al-Mulk · 8–14</Text>
+        <Text style={styles.tomorrowTitle}>{surahName} · {nextStart}–{nextEnd}</Text>
         <Text style={styles.tomorrowSub}>~10 min · 7 ayat</Text>
       </View>
-      <View style={styles.tomorrowRight}>
-        <Text style={styles.tomorrowIcon}>→</Text>
-      </View>
+      <View style={styles.tomorrowRight} />
     </View>
   );
 }
 
-export default function SummaryMockup({ navigation }) {
+export default function SummaryMockup({ route, navigation }) {
+  const { profile } = useMockup();
+  const portion = getTodayPortion(profile);
+  const [localMistakes, setLocalMistakes] = useState(DEMO_MISTAKES);
   const opacity = useRef(new Animated.Value(0)).current;
   const checkScale = useRef(new Animated.Value(0.5)).current;
+  const nextStart = portion.endAyah + 1;
+  const nextEnd = portion.endAyah + 7;
+
+  const handleDismiss = useCallback((idx) => {
+    setLocalMistakes((prev) => prev.filter((_, i) => i !== idx));
+  }, []);
 
   useEffect(() => {
     Animated.parallel([
@@ -87,40 +117,34 @@ export default function SummaryMockup({ navigation }) {
             <Text style={styles.checkIcon}>✓</Text>
           </Animated.View>
           <Text style={styles.successTitle}>Session complete</Text>
-          <Text style={styles.successSub}>Al-Mulk · Ayahs 1–7 · Thursday</Text>
+          <Text style={styles.successSub}>{portion.surahName} · Ayahs {portion.startAyah}–{portion.endAyah}</Text>
         </View>
 
         {/* Stats row */}
         <View style={styles.statsRow}>
           <StatPill value="7" label="ayat recited" color={C.cobalt} />
           <View style={styles.statDivider} />
-          <StatPill value="1" label="slip" color="#E65100" />
-          <View style={styles.statDivider} />
-          <StatPill value="0" label="mistakes" color={C.success} />
-        </View>
-
-        {/* Streak */}
-        <View style={styles.streakCard}>
-          <Text style={styles.streakIcon}>🔥</Text>
-          <View>
-            <Text style={styles.streakValue}>4-day streak</Text>
-            <Text style={styles.streakSub}>Keep going — consistency is everything</Text>
-          </View>
+          <StatPill value={String(localMistakes.length)} label={localMistakes.length === 1 ? 'mistake' : 'mistakes'} color={localMistakes.length === 0 ? C.success : '#C62828'} />
         </View>
 
         {/* Mistakes */}
-        {MOCK_MISTAKES.length > 0 ? (
+        {localMistakes.length > 0 ? (
           <>
-            <Text style={styles.sectionLabel}>SLIPS & MISTAKES</Text>
-            {MOCK_MISTAKES.map((m, i) => (
-              <MistakeCard key={i} mistake={m} />
+            <Text style={styles.sectionLabel}>MISTAKES</Text>
+            {localMistakes.map((m, i) => (
+              <MistakeCard key={i} mistake={m} onDismiss={() => handleDismiss(i)} />
             ))}
           </>
-        ) : null}
+        ) : (
+          <View style={styles.cleanCard}>
+            <Text style={styles.cleanIcon}>✦</Text>
+            <Text style={styles.cleanText}>No mistakes this session. Excellent work.</Text>
+          </View>
+        )}
 
         {/* Tomorrow preview */}
         <Text style={styles.sectionLabel}>UP NEXT</Text>
-        <TomorrowCard />
+        <TomorrowCard surahName={portion.surahName} nextStart={nextStart} nextEnd={nextEnd} />
 
         <View style={{ height: 100 }} />
       </ScrollView>
@@ -204,29 +228,6 @@ const styles = StyleSheet.create({
     height: 32,
     backgroundColor: C.cardBorder,
   },
-  streakCard: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 14,
-    backgroundColor: C.goldLight,
-    borderRadius: 14,
-    padding: S.md,
-    marginBottom: S.lg,
-    borderWidth: 1,
-    borderColor: C.gold + '40',
-  },
-  streakIcon: { fontSize: 28 },
-  streakValue: {
-    fontFamily: F.semiBold,
-    fontSize: 16,
-    color: C.navy,
-    marginBottom: 2,
-  },
-  streakSub: {
-    fontFamily: F.regular,
-    fontSize: 12,
-    color: C.navyMid,
-  },
   sectionLabel: {
     fontFamily: F.semiBold,
     fontSize: 11,
@@ -254,43 +255,52 @@ const styles = StyleSheet.create({
     fontSize: 15,
     color: C.navy,
   },
-  badge: {
-    borderRadius: 8,
-    paddingVertical: 3,
-    paddingHorizontal: 9,
+  badgeFull: { backgroundColor: '#FFEBEE', borderRadius: 8, paddingVertical: 3, paddingHorizontal: 9 },
+  badgeFullText: { fontFamily: F.semiBold, fontSize: 11, color: '#C62828' },
+  compRow: {
+    flexDirection: 'row',
+    marginBottom: S.sm,
+    gap: S.sm,
   },
-  badgeSlip: { backgroundColor: '#FFF3E0' },
-  badgeFull: { backgroundColor: '#FFEBEE' },
-  badgeText: { fontFamily: F.semiBold, fontSize: 11 },
-  badgeSlipText: { color: '#E65100' },
-  badgeFullText: { color: '#C62828' },
-  mistakeDiff: {
-    flexDirection: 'row-reverse',
-    gap: 10,
-    alignItems: 'center',
-    marginBottom: 8,
-  },
-  diffWrong: {
-    fontFamily: 'UthmanicHafs',
-    fontSize: 18,
-    color: '#C62828',
-  },
-  diffArrow: {
+  compCol: { flex: 1 },
+  compDivider: { width: 1, backgroundColor: C.cardBorder, alignSelf: 'stretch' },
+  compLabel: {
     fontFamily: F.regular,
-    fontSize: 14,
+    fontSize: 11,
     color: C.navyLight,
-    transform: [{ scaleX: -1 }],
+    marginBottom: 4,
+    textTransform: 'uppercase',
+    letterSpacing: 0.6,
   },
-  diffCorrect: {
+  compWord: {
     fontFamily: 'UthmanicHafs',
     fontSize: 18,
-    color: '#1E7A4A',
+    writingDirection: 'rtl',
+    lineHeight: 30,
   },
-  mistakeNote: {
+  compWrong: { color: '#C62828' },
+  compCorrect: { color: '#1E7A4A' },
+  notMistakeBtn: {
+    alignSelf: 'flex-start',
+    borderWidth: 1,
+    borderColor: C.cardBorder,
+    borderRadius: 10,
+    paddingVertical: 5,
+    paddingHorizontal: 12,
+    marginTop: 4,
+  },
+  notMistakeBtnText: {
     fontFamily: F.regular,
     fontSize: 12,
-    color: C.navyLight,
+    color: C.navyMid,
   },
+  cleanCard: {
+    flexDirection: 'row', alignItems: 'center', gap: 12,
+    backgroundColor: '#F0FAF5', borderRadius: 14, padding: S.md,
+    marginBottom: S.md, borderWidth: 1, borderColor: '#A8D5BC',
+  },
+  cleanIcon: { fontSize: 18, color: C.success },
+  cleanText: { fontFamily: F.medium, fontSize: 14, color: C.success, flex: 1 },
   tomorrowCard: {
     backgroundColor: C.cobalt,
     borderRadius: 16,

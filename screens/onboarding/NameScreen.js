@@ -9,22 +9,15 @@ import {
   TouchableOpacity,
   View,
 } from 'react-native';
-import { C, F, S } from './design';
-import { useMockup } from './MockupContext';
+import OnboardingProgressDots from '../../components/OnboardingProgressDots';
+import { getCurrentUserId } from '../../lib/auth';
+import { supabase } from '../../lib/supabase';
+import { colors, fonts, spacing } from '../../lib/theme';
 
-function ProgressDots({ current, total }) {
-  return (
-    <View style={styles.dots}>
-      {Array.from({ length: total }).map((_, i) => (
-        <View key={i} style={[styles.dot, i === current && styles.dotActive]} />
-      ))}
-    </View>
-  );
-}
-
-export default function OnboardingNameMockup({ navigation }) {
+export default function NameScreen({ navigation }) {
   const [name, setName] = useState('');
-  const { updateProfile } = useMockup();
+  const [isSaving, setIsSaving] = useState(false);
+  const [error, setError] = useState('');
   const opacity = useRef(new Animated.Value(0)).current;
   const translateY = useRef(new Animated.Value(20)).current;
 
@@ -33,14 +26,28 @@ export default function OnboardingNameMockup({ navigation }) {
       Animated.timing(opacity, { toValue: 1, duration: 600, useNativeDriver: true }),
       Animated.timing(translateY, { toValue: 0, duration: 500, useNativeDriver: true }),
     ]).start();
-  }, []);
+  }, [opacity, translateY]);
 
-  const canContinue = name.trim().length > 0;
+  const canContinue = name.trim().length > 0 && !isSaving;
 
-  const handleContinue = () => {
+  const handleContinue = async () => {
     if (!canContinue) return;
-    updateProfile({ name: name.trim() });
-    navigation.navigate('MockupOnboardingMemorization', { name: name.trim() });
+    setIsSaving(true);
+    setError('');
+    try {
+      const trimmed = name.trim();
+      const userId = await getCurrentUserId();
+      const { error: updateError } = await supabase
+        .from('users')
+        .update({ name: trimmed })
+        .eq('id', userId);
+      if (updateError) throw new Error(updateError.message);
+      navigation.navigate('Memorization', { name: trimmed });
+    } catch (err) {
+      setError(err.message ?? 'Failed to save your name.');
+    } finally {
+      setIsSaving(false);
+    }
   };
 
   return (
@@ -49,10 +56,7 @@ export default function OnboardingNameMockup({ navigation }) {
       behavior={Platform.OS === 'ios' ? 'padding' : undefined}
     >
       <Animated.View style={[styles.inner, { opacity, transform: [{ translateY }] }]}>
-        <TouchableOpacity style={styles.backBtn} onPress={() => navigation.goBack()} activeOpacity={0.7}>
-          <Text style={styles.backBtnText}>← Back</Text>
-        </TouchableOpacity>
-        <ProgressDots current={0} total={6} />
+        <OnboardingProgressDots current={0} total={6} />
 
         <View style={styles.content}>
           <Text style={styles.step}>Step 1 of 6</Text>
@@ -62,13 +66,14 @@ export default function OnboardingNameMockup({ navigation }) {
           <TextInput
             style={[styles.input, name.length > 0 && styles.inputFocused]}
             placeholder="Your first name"
-            placeholderTextColor={C.navyLight}
+            placeholderTextColor={colors.textMuted}
             value={name}
             onChangeText={setName}
             autoCapitalize="words"
             returnKeyType="done"
             onSubmitEditing={handleContinue}
           />
+          {error ? <Text style={styles.error}>{error}</Text> : null}
         </View>
 
         <TouchableOpacity
@@ -77,7 +82,7 @@ export default function OnboardingNameMockup({ navigation }) {
           activeOpacity={0.88}
           disabled={!canContinue}
         >
-          <Text style={styles.primaryBtnText}>Continue</Text>
+          <Text style={styles.primaryBtnText}>{isSaving ? 'Saving…' : 'Continue'}</Text>
         </TouchableOpacity>
       </Animated.View>
     </KeyboardAvoidingView>
@@ -85,60 +90,61 @@ export default function OnboardingNameMockup({ navigation }) {
 }
 
 const styles = StyleSheet.create({
-  screen: { flex: 1, backgroundColor: C.background },
+  screen: { flex: 1, backgroundColor: colors.background },
   inner: {
     flex: 1,
     paddingTop: 64,
-    paddingHorizontal: S.lg,
+    paddingHorizontal: spacing.lg,
     paddingBottom: 48,
   },
-  backBtn: { paddingBottom: S.sm, alignSelf: 'flex-start' },
-  backBtnText: { fontFamily: F.medium, fontSize: 14, color: C.navyMid },
-  dots: { flexDirection: 'row', gap: 6, marginBottom: S.xl },
-  dot: { width: 6, height: 6, borderRadius: 3, backgroundColor: C.navyLight, opacity: 0.3 },
-  dotActive: { backgroundColor: C.cobalt, opacity: 1, width: 20 },
   content: { flex: 1 },
   step: {
-    fontFamily: F.medium,
+    fontFamily: fonts.medium,
     fontSize: 13,
-    color: C.navyLight,
+    color: colors.textMuted,
     textTransform: 'uppercase',
     letterSpacing: 1,
-    marginBottom: S.sm,
+    marginBottom: spacing.sm,
   },
   question: {
-    fontFamily: F.semiBold,
+    fontFamily: fonts.semiBold,
     fontSize: 28,
-    color: C.navy,
+    color: colors.text,
     letterSpacing: -0.3,
-    marginBottom: S.sm,
+    marginBottom: spacing.sm,
     lineHeight: 36,
   },
   sub: {
-    fontFamily: F.regular,
+    fontFamily: fonts.regular,
     fontSize: 15,
-    color: C.navyMid,
-    marginBottom: S.xl,
+    color: colors.textMid,
+    marginBottom: spacing.xl,
     lineHeight: 22,
   },
   input: {
-    backgroundColor: C.white,
+    backgroundColor: colors.card,
     borderWidth: 1.5,
-    borderColor: C.cardBorder,
+    borderColor: colors.border,
     borderRadius: 14,
-    paddingHorizontal: S.md,
+    paddingHorizontal: spacing.md,
     paddingVertical: 16,
-    fontFamily: F.medium,
+    fontFamily: fonts.medium,
     fontSize: 18,
-    color: C.navy,
+    color: colors.text,
   },
-  inputFocused: { borderColor: C.brown },
+  inputFocused: { borderColor: colors.brown },
+  error: {
+    fontFamily: fonts.regular,
+    fontSize: 13,
+    color: colors.error,
+    marginTop: spacing.sm,
+  },
   primaryBtn: {
-    backgroundColor: C.cobalt,
+    backgroundColor: colors.primary,
     borderRadius: 14,
     paddingVertical: 17,
     alignItems: 'center',
   },
   primaryBtnDisabled: { opacity: 0.4 },
-  primaryBtnText: { fontFamily: F.semiBold, fontSize: 17, color: C.white },
+  primaryBtnText: { fontFamily: fonts.semiBold, fontSize: 17, color: colors.white },
 });

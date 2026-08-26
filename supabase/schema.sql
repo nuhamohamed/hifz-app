@@ -8,16 +8,27 @@
 -- -----------------------------------------------------------------------------
 CREATE TABLE public.users (
   id uuid PRIMARY KEY REFERENCES auth.users (id) ON DELETE CASCADE,
-  email text NOT NULL,
+  email text,  -- null for anonymous users; backfilled when they link an account
   created_at timestamptz NOT NULL DEFAULT now(),
   session_minutes integer,
   notification_time time,
-  avg_minutes_per_page double precision NOT NULL DEFAULT 2.0
+  avg_minutes_per_page double precision NOT NULL DEFAULT 2.0,
+  name text,
+  gender text CHECK (gender IN ('male', 'female')),
+  onboarding_completed boolean NOT NULL DEFAULT false
 );
 
 CREATE UNIQUE INDEX users_email_key ON public.users (email);
 
 ALTER TABLE public.users ENABLE ROW LEVEL SECURITY;
+
+-- Anonymous auth users get the `authenticated` role, so auth.uid() works for
+-- them too -- beta users run without signing in and stay isolated from each
+-- other. See supabase/migrations/003_enable_rls.sql.
+CREATE POLICY users_own ON public.users
+  FOR ALL TO authenticated
+  USING (auth.uid() = id)
+  WITH CHECK (auth.uid() = id);
 
 -- Auto-create public.users row when someone signs up via Supabase Auth
 CREATE OR REPLACE FUNCTION public.handle_new_user()
@@ -28,7 +39,7 @@ SET search_path = public
 AS $$
 BEGIN
   INSERT INTO public.users (id, email)
-  VALUES (NEW.id, NEW.email);
+  VALUES (NEW.id, NULLIF(NEW.email, ''));
   RETURN NEW;
 END;
 $$;

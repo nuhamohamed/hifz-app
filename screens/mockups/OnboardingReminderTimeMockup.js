@@ -1,12 +1,6 @@
 import { useEffect, useRef, useState } from 'react';
-import {
-  Animated,
-  StyleSheet,
-  Text,
-  TouchableOpacity,
-  View,
-} from 'react-native';
-import Slider from '@react-native-community/slider';
+import { Animated, Platform, StyleSheet, Text, TouchableOpacity, View } from 'react-native';
+import DateTimePicker from '@react-native-community/datetimepicker';
 import { C, F, R, S } from './design';
 import { useMockup } from './MockupContext';
 
@@ -20,10 +14,23 @@ function ProgressDots({ current, total }) {
   );
 }
 
-export default function OnboardingTimeMockup({ route, navigation }) {
+function getDefault() {
+  const d = new Date();
+  d.setHours(8, 0, 0, 0);
+  return d;
+}
+
+function formatTime(date) {
+  const h = date.getHours();
+  const m = date.getMinutes();
+  const period = h >= 12 ? 'PM' : 'AM';
+  return `${h % 12 || 12}:${String(m).padStart(2, '0')} ${period}`;
+}
+
+export default function OnboardingReminderTimeMockup({ route, navigation }) {
   const name = route?.params?.name ?? 'there';
   const { updateProfile } = useMockup();
-  const [sessionMinutes, setSessionMinutes] = useState(30);
+  const [time, setTime] = useState(getDefault);
   const opacity = useRef(new Animated.Value(0)).current;
   const translateY = useRef(new Animated.Value(16)).current;
 
@@ -34,9 +41,9 @@ export default function OnboardingTimeMockup({ route, navigation }) {
     ]).start();
   }, []);
 
-  const handleContinue = () => {
-    updateProfile({ sessionMinutes });
-    navigation.navigate('MockupOnboardingGender', { name });
+  const handleConfirm = () => {
+    updateProfile({ reminderTime: time });
+    navigation.navigate('MockupAllSet', { name });
   };
 
   return (
@@ -45,37 +52,29 @@ export default function OnboardingTimeMockup({ route, navigation }) {
         <TouchableOpacity style={styles.backBtn} onPress={() => navigation.goBack()} activeOpacity={0.7}>
           <Text style={styles.backBtnText}>← Back</Text>
         </TouchableOpacity>
-        <ProgressDots current={2} total={6} />
-        <Text style={styles.step}>Step 3 of 6</Text>
-        <Text style={styles.question}>How much time can you spend each day?</Text>
-        <Text style={styles.sub}>We'll plan your sessions to fit within this window.</Text>
+        <ProgressDots current={5} total={6} />
+        <Text style={styles.step}>Step 6 of 6</Text>
+        <Text style={styles.question}>When should we remind you?</Text>
+        <Text style={styles.sub}>We'll send a daily nudge at this time to keep your revision on track.</Text>
       </View>
 
-      <View style={styles.sliderSection}>
-        <View style={styles.valueRow}>
-          <Text style={styles.valueLabel}>Session length</Text>
-          <Text style={styles.valueDisplay}>{sessionMinutes} min</Text>
+      <View style={styles.pickerSection}>
+        <View style={styles.timeDisplay}>
+          <Text style={styles.timeValue}>{formatTime(time)}</Text>
         </View>
-        <Slider
-          style={styles.slider}
-          minimumValue={15}
-          maximumValue={120}
-          step={5}
-          value={sessionMinutes}
-          onValueChange={setSessionMinutes}
-          minimumTrackTintColor={C.cobalt}
-          maximumTrackTintColor={C.cardBorder}
-          thumbTintColor={C.cobalt}
+        <DateTimePicker
+          value={time}
+          mode="time"
+          display={Platform.OS === 'ios' ? 'spinner' : 'default'}
+          onChange={(_, selected) => { if (selected) setTime(selected); }}
+          style={styles.picker}
+          themeVariant="light"
         />
-        <View style={styles.sliderLabels}>
-          <Text style={styles.sliderLabel}>15 min</Text>
-          <Text style={styles.sliderLabel}>120 min</Text>
-        </View>
       </View>
 
       <View style={styles.footer}>
-        <TouchableOpacity style={styles.primaryBtn} onPress={handleContinue} activeOpacity={0.88}>
-          <Text style={styles.primaryBtnText}>Continue</Text>
+        <TouchableOpacity style={styles.primaryBtn} onPress={handleConfirm} activeOpacity={0.88}>
+          <Text style={styles.primaryBtnText}>Confirm</Text>
         </TouchableOpacity>
       </View>
     </Animated.View>
@@ -100,13 +99,10 @@ const styles = StyleSheet.create({
     letterSpacing: -0.3, marginBottom: S.sm, lineHeight: 34,
   },
   sub: { fontFamily: F.regular, fontSize: 14, color: C.navyMid, lineHeight: 21 },
-  sliderSection: { flex: 1, paddingHorizontal: S.lg, paddingTop: S.xl },
-  valueRow: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: S.sm },
-  valueLabel: { fontFamily: F.medium, fontSize: 15, color: C.navyMid },
-  valueDisplay: { fontFamily: F.semiBold, fontSize: 28, color: C.cobalt, letterSpacing: -0.5 },
-  slider: { width: '100%', height: 40 },
-  sliderLabels: { flexDirection: 'row', justifyContent: 'space-between', marginTop: 2 },
-  sliderLabel: { fontFamily: F.regular, fontSize: 12, color: C.navyLight },
+  pickerSection: { flex: 1, paddingHorizontal: S.lg, paddingTop: S.md, alignItems: 'center' },
+  timeDisplay: { marginBottom: S.sm },
+  timeValue: { fontFamily: F.semiBold, fontSize: 48, color: C.cobalt, letterSpacing: -1 },
+  picker: { width: '100%' },
   footer: { paddingHorizontal: S.lg, paddingBottom: 48, paddingTop: S.md },
   primaryBtn: { backgroundColor: C.cobalt, borderRadius: R.md, paddingVertical: 17, alignItems: 'center' },
   primaryBtnText: { fontFamily: F.semiBold, fontSize: 17, color: C.white },

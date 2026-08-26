@@ -1,6 +1,6 @@
-import { useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import {
-  ActivityIndicator,
+  Animated,
   ScrollView,
   StyleSheet,
   Text,
@@ -8,16 +8,26 @@ import {
   View,
 } from 'react-native';
 import Slider from '@react-native-community/slider';
+import OnboardingProgressDots from '../../components/OnboardingProgressDots';
 import { getCurrentUserId } from '../../lib/auth';
 import { JUZ_DATA, getJuzRangeLabel, getJuzSurahRange } from '../../lib/juzSurahMap';
 import { supabase } from '../../lib/supabase';
+import { colors, fonts, radius, spacing } from '../../lib/theme';
 
 const JUZ_NUMBERS = Array.from({ length: 30 }, (_, i) => i + 1);
 
 function Checkbox({ checked, onPress }) {
   return (
-    <TouchableOpacity onPress={onPress} style={styles.checkbox} activeOpacity={0.7}>
+    <TouchableOpacity onPress={onPress} style={[styles.checkbox, checked && styles.checkboxChecked]} activeOpacity={0.7}>
       {checked ? <Text style={styles.checkboxTick}>✓</Text> : null}
+    </TouchableOpacity>
+  );
+}
+
+function HalfCheckbox({ onPress }) {
+  return (
+    <TouchableOpacity onPress={onPress} style={[styles.checkbox, styles.halfCheckbox]} activeOpacity={0.7}>
+      <View style={styles.halfFill} />
     </TouchableOpacity>
   );
 }
@@ -26,7 +36,8 @@ function Chevron({ expanded }) {
   return <Text style={styles.chevron}>{expanded ? '▾' : '▸'}</Text>;
 }
 
-export default function MemorizedJuzScreen({ navigation }) {
+export default function MemorizedJuzScreen({ route, navigation }) {
+  const name = route?.params?.name ?? 'there';
   // Set of juz numbers selected as fully memorized
   const [fullJuz, setFullJuz] = useState(new Set());
   // Set of juz numbers whose surah list is expanded
@@ -40,6 +51,11 @@ export default function MemorizedJuzScreen({ navigation }) {
 
   const [error, setError] = useState('');
   const [isSaving, setIsSaving] = useState(false);
+  const opacity = useRef(new Animated.Value(0)).current;
+
+  useEffect(() => {
+    Animated.timing(opacity, { toValue: 1, duration: 500, useNativeDriver: true }).start();
+  }, [opacity]);
 
   const toggleFullJuz = (juzNumber) => {
     setFullJuz((prev) => {
@@ -88,17 +104,31 @@ export default function MemorizedJuzScreen({ navigation }) {
     setAyahUpTo((prev) => ({ ...prev, [surahKey]: value }));
   };
 
+  const handleSelectAll = () => {
+    if (fullJuz.size === 30) {
+      setFullJuz(new Set());
+    } else {
+      setFullJuz(new Set(JUZ_NUMBERS));
+      setExpandedJuz(new Set());
+    }
+  };
+
+  const allSelected = fullJuz.size === 30;
+
+  const hasPartialSelection = (juzNumber) => {
+    const prefix = `${juzNumber}-`;
+    for (const key of fullSurah) { if (key.startsWith(prefix)) return true; }
+    for (const key of Object.keys(ayahUpTo)) { if (key.startsWith(prefix)) return true; }
+    return false;
+  };
+
   const hasSelection =
     fullJuz.size > 0 ||
     fullSurah.size > 0 ||
     Object.keys(ayahUpTo).length > 0;
 
-  const validate = () => null; // slider values are always in range
-
   const handleContinue = async () => {
     setError('');
-    const validationError = validate();
-    if (validationError) { setError(validationError); return; }
     if (!hasSelection) { setError('Please select at least one juz, surah, or ayah range.'); return; }
 
     setIsSaving(true);
@@ -150,7 +180,7 @@ export default function MemorizedJuzScreen({ navigation }) {
         await insertPortion(juzNumber, seg.surahNumber, seg.startAyah, seg.surahNumber, ayahNum);
       }
 
-      navigation.navigate('Schedule');
+      navigation.navigate('Time', { name });
     } catch (err) {
       setError(err.message ?? 'Failed to save your selection.');
     } finally {
@@ -159,13 +189,32 @@ export default function MemorizedJuzScreen({ navigation }) {
   };
 
   return (
-    <View style={styles.container}>
-      <Text style={styles.title}>What have you memorized?</Text>
-      <Text style={styles.subtitle}>
-        Check a juz to mark it fully memorized, or expand it to select surahs and ayahs.
-      </Text>
+    <Animated.View style={[styles.screen, { opacity }]}>
+      <View style={styles.header}>
+        <TouchableOpacity style={styles.backBtn} onPress={() => navigation.goBack()} activeOpacity={0.7}>
+          <Text style={styles.backBtnText}>← Back</Text>
+        </TouchableOpacity>
+        <OnboardingProgressDots current={1} total={6} />
+        <Text style={styles.step}>Step 2 of 6</Text>
+        <Text style={styles.question}>What have you memorized, {name}?</Text>
+        <Text style={styles.sub}>Check a juz to mark it fully memorized, or expand it to select surahs and ayahs.</Text>
+      </View>
 
-      <ScrollView style={styles.scroll} contentContainerStyle={styles.scrollContent}>
+      <ScrollView style={styles.scroll} contentContainerStyle={styles.scrollContent} showsVerticalScrollIndicator={false}>
+        <TouchableOpacity style={[styles.juzRow, styles.selectAllRow, allSelected && styles.rowSelected]} onPress={handleSelectAll} activeOpacity={0.8}>
+          <Checkbox checked={allSelected} onPress={handleSelectAll} />
+          <View style={styles.rowBody}>
+            <Text style={[styles.juzLabel, allSelected && styles.labelSelected]}>
+              {allSelected ? 'Deselect all' : 'Select all juz'}
+            </Text>
+            <Text style={[styles.rowSub, allSelected && styles.subSelected]}>
+              {allSelected ? 'All 30 juz selected' : 'Juz 1–30'}
+            </Text>
+          </View>
+        </TouchableOpacity>
+
+        <View style={styles.divider} />
+
         {JUZ_NUMBERS.map((juzNumber) => {
           const isFull = fullJuz.has(juzNumber);
           const isExpanded = expandedJuz.has(juzNumber);
@@ -173,16 +222,14 @@ export default function MemorizedJuzScreen({ navigation }) {
 
           return (
             <View key={juzNumber}>
-              {/* Juz row */}
-              <View style={[styles.row, isFull && styles.rowSelected]}>
-                <Checkbox checked={isFull} onPress={() => toggleFullJuz(juzNumber)} />
+              <View style={[styles.juzRow, isFull && styles.rowSelected, !isFull && hasPartialSelection(juzNumber) && styles.rowPartial]}>
+                {!isFull && hasPartialSelection(juzNumber)
+                  ? <HalfCheckbox onPress={() => toggleExpandJuz(juzNumber)} />
+                  : <Checkbox checked={isFull} onPress={() => toggleFullJuz(juzNumber)} />
+                }
                 <View style={styles.rowBody}>
-                  <Text style={[styles.rowTitle, isFull && styles.rowTitleSelected]}>
-                    Juz {juzNumber}
-                  </Text>
-                  <Text style={[styles.rowSub, isFull && styles.rowSubSelected]}>
-                    {getJuzRangeLabel(juzNumber)}
-                  </Text>
+                  <Text style={[styles.juzLabel, isFull && styles.labelSelected]}>Juz {juzNumber}</Text>
+                  <Text style={[styles.rowSub, isFull && styles.subSelected]}>{getJuzRangeLabel(juzNumber)}</Text>
                 </View>
                 {!isFull ? (
                   <TouchableOpacity onPress={() => toggleExpandJuz(juzNumber)} style={styles.chevronBtn} activeOpacity={0.7}>
@@ -191,25 +238,20 @@ export default function MemorizedJuzScreen({ navigation }) {
                 ) : null}
               </View>
 
-              {/* Surah rows */}
               {!isFull && isExpanded
                 ? juzData.surahs.map((seg) => {
                     const surahKey = `${juzNumber}-${seg.surahNumber}`;
                     const isSurahFull = fullSurah.has(surahKey);
                     const isSurahExpanded = expandedSurah.has(surahKey);
-                    const ayahVal = ayahUpTo[surahKey] ?? '';
+                    const ayahVal = ayahUpTo[surahKey] ?? seg.startAyah;
 
                     return (
                       <View key={surahKey}>
-                        <View style={[styles.surahRow, isSurahFull && styles.surahRowSelected]}>
+                        <View style={[styles.surahRow, isSurahFull && styles.rowSelected]}>
                           <Checkbox checked={isSurahFull} onPress={() => toggleFullSurah(surahKey)} />
                           <View style={styles.rowBody}>
-                            <Text style={[styles.surahTitle, isSurahFull && styles.rowTitleSelected]}>
-                              {seg.surahName}
-                            </Text>
-                            <Text style={[styles.rowSub, isSurahFull && styles.rowSubSelected]}>
-                              Ayahs {seg.startAyah}–{seg.endAyah}
-                            </Text>
+                            <Text style={[styles.surahLabel, isSurahFull && styles.labelSelected]}>{seg.surahName}</Text>
+                            <Text style={[styles.rowSub, isSurahFull && styles.subSelected]}>Ayahs {seg.startAyah}–{seg.endAyah}</Text>
                           </View>
                           {!isSurahFull ? (
                             <TouchableOpacity onPress={() => toggleExpandSurah(surahKey)} style={styles.chevronBtn} activeOpacity={0.7}>
@@ -218,25 +260,22 @@ export default function MemorizedJuzScreen({ navigation }) {
                           ) : null}
                         </View>
 
-                        {/* Ayah range picker */}
                         {!isSurahFull && isSurahExpanded ? (
                           <View style={styles.ayahRow}>
                             <View style={styles.ayahHeader}>
-                              <Text style={styles.ayahLabel}>Up to ayah:</Text>
-                              <Text style={styles.ayahValue}>
-                                {ayahVal || seg.startAyah} / {seg.endAyah}
-                              </Text>
+                              <Text style={styles.ayahLabel}>Up to ayah</Text>
+                              <Text style={styles.ayahValue}>{ayahVal} / {seg.endAyah}</Text>
                             </View>
                             <Slider
                               style={styles.slider}
                               minimumValue={seg.startAyah}
                               maximumValue={seg.endAyah}
                               step={1}
-                              value={ayahVal || seg.startAyah}
+                              value={ayahVal}
                               onValueChange={(v) => setAyahForKey(surahKey, v)}
-                              minimumTrackTintColor="#2e7d32"
-                              maximumTrackTintColor="#e0e0e0"
-                              thumbTintColor="#2e7d32"
+                              minimumTrackTintColor={colors.primary}
+                              maximumTrackTintColor={colors.border}
+                              thumbTintColor={colors.primary}
                             />
                           </View>
                         ) : null}
@@ -247,104 +286,85 @@ export default function MemorizedJuzScreen({ navigation }) {
             </View>
           );
         })}
-
         <View style={{ height: 24 }} />
       </ScrollView>
 
       {error ? <Text style={styles.error}>{error}</Text> : null}
 
-      {isSaving ? (
-        <ActivityIndicator size="large" color="#2e7d32" style={styles.loader} />
-      ) : (
+      <View style={styles.footer}>
         <TouchableOpacity
-          style={[styles.continueButton, !hasSelection && styles.continueButtonDisabled]}
+          style={[styles.primaryBtn, !hasSelection && styles.primaryBtnDisabled]}
           onPress={handleContinue}
-          disabled={!hasSelection}
-          activeOpacity={0.8}
+          activeOpacity={0.88}
+          disabled={!hasSelection || isSaving}
         >
-          <Text style={styles.continueButtonText}>Continue</Text>
+          <Text style={styles.primaryBtnText}>{isSaving ? 'Saving…' : 'Continue'}</Text>
         </TouchableOpacity>
-      )}
-    </View>
+      </View>
+    </Animated.View>
   );
 }
 
 const styles = StyleSheet.create({
-  container: { flex: 1, backgroundColor: '#fff', paddingTop: 64, paddingHorizontal: 24, paddingBottom: 24 },
-  title: { fontSize: 26, fontWeight: '700', color: '#1b1b1b', marginBottom: 8 },
-  subtitle: { fontSize: 14, color: '#666', marginBottom: 20, lineHeight: 20 },
+  screen: { flex: 1, backgroundColor: colors.background },
+  header: { paddingTop: 64, paddingHorizontal: spacing.lg, paddingBottom: spacing.md },
+  backBtn: { paddingBottom: spacing.sm, alignSelf: 'flex-start' },
+  backBtnText: { fontFamily: fonts.medium, fontSize: 14, color: colors.textMid },
+  step: {
+    fontFamily: fonts.medium, fontSize: 13, color: colors.textMuted,
+    textTransform: 'uppercase', letterSpacing: 1, marginBottom: spacing.sm,
+  },
+  question: {
+    fontFamily: fonts.semiBold, fontSize: 26, color: colors.text,
+    letterSpacing: -0.3, marginBottom: spacing.sm, lineHeight: 34,
+  },
+  sub: { fontFamily: fonts.regular, fontSize: 14, color: colors.textMid, lineHeight: 21 },
   scroll: { flex: 1 },
-  scrollContent: { paddingBottom: 8 },
+  scrollContent: { paddingHorizontal: spacing.lg, paddingTop: spacing.sm, paddingBottom: spacing.md, gap: 6 },
 
-  // Juz row
-  row: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    borderWidth: 1,
-    borderColor: '#e0e0e0',
-    borderRadius: 10,
-    paddingVertical: 10,
-    paddingHorizontal: 12,
-    marginBottom: 6,
-    backgroundColor: '#fafafa',
+  selectAllRow: { marginBottom: 0 },
+  divider: { height: 1, backgroundColor: colors.border, marginVertical: 8 },
+
+  juzRow: {
+    flexDirection: 'row', alignItems: 'center',
+    backgroundColor: colors.card, borderRadius: radius.sm,
+    borderWidth: 1.5, borderColor: colors.border,
+    paddingVertical: 12, paddingHorizontal: spacing.md,
   },
-  rowSelected: { borderColor: '#2e7d32', backgroundColor: '#e8f5e9' },
-  rowBody: { flex: 1, marginHorizontal: 10 },
-  rowTitle: { fontSize: 16, fontWeight: '600', color: '#333' },
-  rowTitleSelected: { color: '#1b5e20' },
-  rowSub: { fontSize: 13, color: '#888', marginTop: 1 },
-  rowSubSelected: { color: '#388e3c' },
-  chevronBtn: { paddingHorizontal: 6, paddingVertical: 4 },
-  chevron: { fontSize: 16, color: '#555' },
-
-  // Surah row (indented)
   surahRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    borderWidth: 1,
-    borderColor: '#e8e8e8',
-    borderRadius: 8,
-    paddingVertical: 8,
-    paddingHorizontal: 12,
-    marginBottom: 4,
-    marginLeft: 28,
-    backgroundColor: '#fff',
+    flexDirection: 'row', alignItems: 'center',
+    backgroundColor: colors.card, borderRadius: radius.sm,
+    borderWidth: 1.5, borderColor: colors.border,
+    paddingVertical: 10, paddingHorizontal: spacing.md,
+    marginLeft: 28, marginTop: 4,
   },
-  surahRowSelected: { borderColor: '#2e7d32', backgroundColor: '#e8f5e9' },
-  surahTitle: { fontSize: 15, fontWeight: '600', color: '#333' },
-
-  // Ayah picker (double-indented)
-  ayahRow: {
-    marginLeft: 56,
-    marginBottom: 8,
-    marginRight: 12,
-  },
-  ayahHeader: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    alignItems: 'center',
-    marginBottom: 2,
-  },
-  ayahLabel: { fontSize: 13, color: '#555' },
-  ayahValue: { fontSize: 13, fontWeight: '700', color: '#1b5e20' },
-  slider: { width: '100%', height: 36 },
-
-  // Checkbox (circle)
+  rowSelected: { borderColor: colors.primary, backgroundColor: colors.primaryDim },
+  rowBody: { flex: 1, marginHorizontal: 10 },
+  juzLabel: { fontFamily: fonts.semiBold, fontSize: 15, color: colors.text },
+  surahLabel: { fontFamily: fonts.medium, fontSize: 14, color: colors.text },
+  labelSelected: { color: colors.primary },
+  rowSub: { fontFamily: fonts.regular, fontSize: 12, color: colors.textMuted, marginTop: 1 },
+  subSelected: { color: colors.primary },
+  chevronBtn: { paddingHorizontal: 4 },
+  chevron: { fontSize: 16, color: colors.textMuted },
   checkbox: {
-    width: 24,
-    height: 24,
-    borderRadius: 12,
-    borderWidth: 2,
-    borderColor: '#2e7d32',
-    alignItems: 'center',
-    justifyContent: 'center',
-    backgroundColor: '#fff',
+    width: 22, height: 22, borderRadius: 11,
+    borderWidth: 2, borderColor: colors.textMuted,
+    alignItems: 'center', justifyContent: 'center', backgroundColor: colors.card,
   },
-  checkboxTick: { fontSize: 14, color: '#2e7d32', fontWeight: '700', lineHeight: 16 },
-
-  error: { color: '#c62828', fontSize: 14, textAlign: 'center', marginBottom: 10 },
-  loader: { marginBottom: 8 },
-  continueButton: { backgroundColor: '#2e7d32', borderRadius: 12, paddingVertical: 16, alignItems: 'center', marginTop: 8 },
-  continueButtonDisabled: { opacity: 0.45 },
-  continueButtonText: { color: '#fff', fontSize: 17, fontWeight: '700' },
+  checkboxChecked: { borderColor: colors.primary, backgroundColor: colors.primary },
+  checkboxTick: { fontSize: 13, color: colors.white, fontWeight: '700', lineHeight: 15 },
+  halfCheckbox: { borderColor: colors.primary, backgroundColor: colors.card, overflow: 'hidden' },
+  halfFill: { position: 'absolute', right: 0, top: 0, width: 11, height: 22, backgroundColor: colors.primary },
+  rowPartial: { borderColor: colors.cobaltLight, backgroundColor: 'rgba(26,61,138,0.04)' },
+  ayahRow: { marginLeft: 56, marginRight: spacing.md, marginTop: 4, marginBottom: 4 },
+  ayahHeader: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 2 },
+  ayahLabel: { fontFamily: fonts.regular, fontSize: 12, color: colors.textMid },
+  ayahValue: { fontFamily: fonts.semiBold, fontSize: 13, color: colors.primary },
+  slider: { width: '100%', height: 36 },
+  error: { color: colors.error, fontSize: 13, textAlign: 'center', paddingHorizontal: spacing.lg, marginBottom: 4 },
+  footer: { paddingHorizontal: spacing.lg, paddingBottom: 48, paddingTop: spacing.md },
+  primaryBtn: { backgroundColor: colors.primary, borderRadius: radius.md, paddingVertical: 17, alignItems: 'center' },
+  primaryBtnDisabled: { opacity: 0.4 },
+  primaryBtnText: { fontFamily: fonts.semiBold, fontSize: 17, color: colors.white },
 });
