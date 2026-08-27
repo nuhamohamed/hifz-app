@@ -122,6 +122,12 @@ export default function RecitationScreen(props) {
   // setup lives in one effect, so re-running it is the honest way back in
   // rather than duplicating the connection logic.
   const [listenAttempt, setListenAttempt] = useState(0);
+  // When recitation actually began, so its duration can be recorded separately
+  // from the quizzes either side of it. Deliberately NOT reset when the silence
+  // cutoff resumes: a pause is part of how long the portion took, and sessions
+  // that imply an implausible pace are discarded later rather than corrected
+  // for here.
+  const recitationStartedAt = useRef(null);
 
   const resumeAfterAutoStop = useCallback(() => {
     setMicClosedReason(null);
@@ -180,9 +186,15 @@ export default function RecitationScreen(props) {
   const finishRevisionAndNavigate = useCallback(async () => {
     await stopListening();
     if (sessionId) {
+      const startedAt = recitationStartedAt.current;
       await supabase
         .from('sessions')
-        .update({ phase: 'post_quiz' })
+        .update({
+          phase: 'post_quiz',
+          recitation_seconds: startedAt
+            ? Math.round((Date.now() - startedAt) / 1000)
+            : null,
+        })
         .eq('id', sessionId);
     }
     setShowTransition(true);
@@ -471,6 +483,7 @@ export default function RecitationScreen(props) {
   useEffect(() => {
     if (startedRef.current) return;
     startedRef.current = true;
+    recitationStartedAt.current = Date.now();
 
     let mounted = true;
 

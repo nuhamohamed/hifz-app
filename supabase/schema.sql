@@ -110,6 +110,11 @@ CREATE TABLE public.sessions (
   phase text NOT NULL DEFAULT 'pre_quiz',
   started_at timestamptz,
   completed_at timestamptz,
+  -- Wall clock for the RECITATION phase alone. started_at to completed_at
+  -- spans both quizzes too, which would make everyone look slower than
+  -- they read. Feeds avg_minutes_per_page once five plausible sessions
+  -- exist; implausible values are discarded rather than averaged.
+  recitation_seconds integer,
   CONSTRAINT sessions_status_check CHECK (
     status IN ('in_progress', 'paused', 'complete')
   ),
