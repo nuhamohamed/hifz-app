@@ -73,10 +73,21 @@ CREATE TABLE public.juz_progress (
   id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
   user_id uuid NOT NULL REFERENCES public.users (id) ON DELETE CASCADE,
   juz_number integer NOT NULL,
-  cumulative_tier2_mistakes integer NOT NULL DEFAULT 0,
-  gate_passed boolean NOT NULL DEFAULT false,
+  -- Every mistake made during the current pass. Resets to 0 when the pass
+  -- completes, so it cannot climb across visits.
+  pass_mistakes integer NOT NULL DEFAULT 0,
+  -- Has this juz been through at least one full pass. Separates "waiting for
+  -- its review date" from "not reached yet"; carries no pass/fail meaning.
+  first_pass_complete boolean NOT NULL DEFAULT false,
   next_full_review_date date,
-  current_portion_ayahs integer
+  -- The gap the spaced repetition schedule is currently multiplying, in days.
+  -- Null until the first pass completes.
+  interval_days integer,
+  -- Two portion sizes exist, full or half. Nothing ever grows: the minutes
+  -- the person chose are the ceiling.
+  portion_halved boolean NOT NULL DEFAULT false,
+  -- Whether the one permitted repeat has been spent on the current stretch.
+  repeat_used boolean NOT NULL DEFAULT false
 );
 
 CREATE INDEX juz_progress_user_id_idx ON public.juz_progress (user_id);
@@ -168,5 +179,10 @@ CREATE TABLE public.scheduled_portions (
 );
 
 CREATE INDEX scheduled_portions_user_id_idx ON public.scheduled_portions (user_id);
+
+-- Several juz can legitimately have portions due on the same date, so the
+-- guard against duplicate writes keys on the juz and its starting offset.
+CREATE UNIQUE INDEX scheduled_portions_unique_slot
+  ON public.scheduled_portions (user_id, juz_number, portion_start_ayah, scheduled_date);
 
 ALTER TABLE public.scheduled_portions ENABLE ROW LEVEL SECURITY;

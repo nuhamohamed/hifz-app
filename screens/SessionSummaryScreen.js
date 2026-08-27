@@ -138,7 +138,7 @@ export default function SessionSummaryScreen({ route }) {
   const [mistakes, setMistakes] = useState([]);
   const [tomorrowText, setTomorrowText] = useState(null);
   const [juzComplete, setJuzComplete] = useState(false);
-  const [gatePassed, setGatePassed] = useState(null);
+  const [returnsInDays, setReturnsInDays] = useState(null);
   const planUpdatedRef = useRef(false);
   const opacity = useRef(new Animated.Value(0)).current;
   const checkScale = useRef(new Animated.Value(0.5)).current;
@@ -188,15 +188,18 @@ export default function SessionSummaryScreen({ route }) {
           );
         }
 
-        let gate = null;
+        // The pass/fail gate is gone. Finishing a juz is finishing a juz; what
+        // is worth telling someone is when it comes back, which the spaced
+        // repetition schedule has just worked out.
+        let returnsIn = null;
         if (isJuzComplete) {
           const { data: progressData } = await supabase
             .from('juz_progress')
-            .select('gate_passed')
+            .select('interval_days')
             .eq('user_id', userId)
             .eq('juz_number', sessionData.juz_number)
             .maybeSingle();
-          gate = progressData?.gate_passed ?? null;
+          returnsIn = progressData?.interval_days ?? null;
         }
 
         const { data: tomorrow, error: tomorrowError } = await supabase
@@ -250,7 +253,7 @@ export default function SessionSummaryScreen({ route }) {
         setMistakes(enrichedMistakes);
         setTomorrowText(nextTomorrowText);
         setJuzComplete(isJuzComplete);
-        setGatePassed(gate);
+        setReturnsInDays(returnsIn);
       } catch (err) {
         if (mounted) {
           setError(err.message ?? 'Failed to load session summary.');
@@ -334,10 +337,10 @@ export default function SessionSummaryScreen({ route }) {
           <View style={styles.juzCompleteCard}>
             <Text style={styles.juzCompleteTitle}>Juz {session?.juz_number} Complete!</Text>
             <Text style={styles.gateText}>
-              {gatePassed === true
-                ? 'You passed. Strong work keeping your mistakes low.'
-                : gatePassed === false
-                ? "You'll redo this juz — too many mistakes this round. Keep at it."
+              {returnsInDays
+                ? returnsInDays === 1
+                  ? 'You will see it again tomorrow.'
+                  : `You will see it again in ${returnsInDays} days.`
                 : ''}
             </Text>
           </View>

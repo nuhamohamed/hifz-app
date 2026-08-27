@@ -62,9 +62,10 @@ export default function DevMenuScreen() {
         {
           user_id: userId,
           juz_number: SKIP_JUZ,
-          cumulative_tier2_mistakes: 0,
-          gate_passed: false,
-          current_portion_ayahs: SKIP_PORTION_AYAHS,
+          pass_mistakes: 0,
+          first_pass_complete: false,
+          portion_halved: false,
+          repeat_used: false,
         },
         { onConflict: 'user_id,juz_number' }
       );

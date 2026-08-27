@@ -63,13 +63,14 @@ function isGoingBack(text, confirmedAyahWords) {
   return false;
 }
 
-// Tier 1 is a slip, tier 2 is a real gap in memorisation. The original flow
-// distinguished them with a retry: correct on the second attempt meant tier 1.
-// The realtime rewrite removed that retry, so severity stands in for it. A
-// single mispronounced word is a slip; two or more wrong words, or a word
-// omitted entirely, is treated as a genuine gap. The post-session quiz now
-// plays the role the retry used to, and checkMistakeHealing() already forgives
-// a tier 2 after two clean answers there.
+// Tiers are dropped: every mistake now counts equally everywhere. The app
+// reveals the correct word the instant you err, so there is no unaided
+// recovery to observe and the slip-versus-gap split was guesswork.
+//
+// mistakes.tier is NOT NULL, so something has to go in it. This still writes
+// the old severity heuristic, which drives nothing. It is due to be repurposed
+// to record whether Reveal was pressed, which is a real signal worth having a
+// few weeks of beta data on.
 function classifyMistakeTier(wrongIndices, letterDiffByIndex) {
   if (wrongIndices.length >= 2) return 2;
   // spoken === null means the word was skipped rather than mispronounced.

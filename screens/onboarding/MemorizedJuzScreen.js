@@ -140,7 +140,13 @@ export default function MemorizedJuzScreen({ route, navigation }) {
         if (savedJuzProgress.has(juzNumber)) return;
         savedJuzProgress.add(juzNumber);
         const { error: e } = await supabase.from('juz_progress').upsert(
-          { user_id: userId, juz_number: juzNumber, cumulative_tier2_mistakes: 0, gate_passed: false, current_portion_ayahs: 7 },
+          // No portion size written here. This screen runs before the app has
+          // asked how many minutes they have, so any number set now is a guess.
+          // It used to write 7, which then overrode the real calculation for
+          // ever: someone asking for 30 minutes got a 90-second session, every
+          // day. Portion size is derived from session_minutes and their pace
+          // each time getTodayPortion() runs.
+          { user_id: userId, juz_number: juzNumber, pass_mistakes: 0, first_pass_complete: false },
           { onConflict: 'user_id,juz_number' }
         );
         if (e) throw new Error(e.message);

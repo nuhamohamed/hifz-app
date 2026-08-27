@@ -3,16 +3,45 @@ import { Animated, StyleSheet, Text, TouchableOpacity, View } from 'react-native
 import Slider from '@react-native-community/slider';
 import OnboardingProgressDots from '../../components/OnboardingProgressDots';
 import { getCurrentUserId } from '../../lib/auth';
+import { recommendedSessionMinutes } from '../../lib/portionMath';
 import { supabase } from '../../lib/supabase';
 import { colors, fonts, radius, spacing } from '../../lib/theme';
 
 export default function TimeScreen({ route, navigation }) {
   const name = route?.params?.name ?? 'there';
   const [sessionMinutes, setSessionMinutes] = useState(30);
+  const [recommended, setRecommended] = useState(null);
   const [isSaving, setIsSaving] = useState(false);
   const [error, setError] = useState('');
   const opacity = useRef(new Animated.Value(0)).current;
   const translateY = useRef(new Animated.Value(16)).current;
+
+  // The previous screen has already recorded what they know, so the slider can
+  // arrive on the right number instead of correcting them afterwards. A full
+  // round of everything memorised is about 20 pages a day, and no arrangement
+  // of 20 minutes covers 20 pages: 1 to 8 juz needs 15 minutes, 30 juz needs 55.
+  // Rounded up, because too much time is a day that ends early while too little
+  // is a backlog that never clears.
+  useEffect(() => {
+    let mounted = true;
+    (async () => {
+      try {
+        const userId = await getCurrentUserId();
+        const { count } = await supabase
+          .from('juz_progress')
+          .select('juz_number', { count: 'exact', head: true })
+          .eq('user_id', userId);
+        if (!mounted || !count) return;
+        const suggestion = recommendedSessionMinutes(count);
+        setRecommended(suggestion);
+        setSessionMinutes(suggestion);
+      } catch {
+        // A failed lookup just leaves the default in place. Not worth blocking
+        // onboarding over a suggestion.
+      }
+    })();
+    return () => { mounted = false; };
+  }, []);
 
   useEffect(() => {
     Animated.parallel([
@@ -70,6 +99,15 @@ export default function TimeScreen({ route, navigation }) {
           <Text style={styles.sliderLabel}>15 min</Text>
           <Text style={styles.sliderLabel}>120 min</Text>
         </View>
+        {recommended ? (
+          <Text style={styles.recommendation}>
+            {sessionMinutes === recommended
+              ? `${recommended} minutes covers everything you have memorised on a monthly round.`
+              : sessionMinutes < recommended
+                ? `We suggest ${recommended} minutes. Less than that and a full round takes longer than a month.`
+                : `We suggest ${recommended} minutes. More is fine, you will simply come round again sooner.`}
+          </Text>
+        ) : null}
         {error ? <Text style={styles.error}>{error}</Text> : null}
       </View>
 
@@ -108,6 +146,13 @@ const styles = StyleSheet.create({
   slider: { width: '100%', height: 40 },
   sliderLabels: { flexDirection: 'row', justifyContent: 'space-between', marginTop: 2 },
   sliderLabel: { fontFamily: fonts.regular, fontSize: 12, color: colors.textMuted },
+  recommendation: {
+    fontFamily: fonts.regular,
+    fontSize: 13,
+    lineHeight: 19,
+    color: colors.textMid,
+    marginTop: spacing.lg,
+  },
   error: { fontFamily: fonts.regular, fontSize: 13, color: colors.error, marginTop: spacing.md },
   footer: { paddingHorizontal: spacing.lg, paddingBottom: 48, paddingTop: spacing.md },
   primaryBtn: { backgroundColor: colors.primary, borderRadius: radius.md, paddingVertical: 17, alignItems: 'center' },

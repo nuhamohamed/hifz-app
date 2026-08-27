@@ -16,7 +16,6 @@ import { getCurrentUserId } from '../lib/auth';
 import { getSurahName } from '../lib/juzSurahMap';
 import { createLiveJudge } from '../lib/liveWordJudge';
 import {
-  checkMistakeHealing,
   fetchDueQuizItems,
   flagContextAyahIfNeeded,
   updateQuizResult,
@@ -227,10 +226,6 @@ export default function PreSessionQuizScreen(props) {
       const item = quizItems[currentItemIndexRef.current];
       const result = targetAyahResultRef.current ?? 'wrong';
       await updateQuizResult(item.id, result);
-      if (result === 'correct_first') {
-        const userId = await getCurrentUserId();
-        await checkMistakeHealing(userId, item.surah_number, item.ayah_number, sessionJuzNumber);
-      }
 
       const nextItemIndex = currentItemIndexRef.current + 1;
       if (nextItemIndex >= quizItems.length) {
