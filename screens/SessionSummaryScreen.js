@@ -8,6 +8,7 @@ import {
   TouchableOpacity,
   View,
 } from 'react-native';
+import { useSQLiteContext } from 'expo-sqlite';
 import { CommonActions, useNavigation } from '@react-navigation/native';
 import { getCurrentUserId } from '../lib/auth';
 import { getAyahLocation, getJuzTotalAyahs } from '../lib/juzSurahMap';
@@ -125,6 +126,9 @@ function MistakeCard({ mistake, onDismiss }) {
 
 export default function SessionSummaryScreen({ route }) {
   const navigation = useNavigation();
+  // Tomorrow's portion is sized from the real mushaf, so scheduling it needs
+  // the bundled page data. Provided by SQLiteProvider in App.js.
+  const db = useSQLiteContext();
   const sessionId = route?.params?.sessionId;
   const totalAyahsInJuzParam = route?.params?.totalAyahsInJuz;
 
@@ -175,6 +179,7 @@ export default function SessionSummaryScreen({ route }) {
         if (sessionData.status === 'complete' && !planUpdatedRef.current) {
           planUpdatedRef.current = true;
           await updateJuzProgressAfterSession(
+            db,
             userId,
             sessionId,
             sessionData.juz_number,

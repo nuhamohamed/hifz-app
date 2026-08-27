@@ -90,19 +90,32 @@ function getTodayDateString() {
 export default function RecitationScreen(props) {
   const params = props.route?.params ?? props;
   const {
-    surahNumber,
-    startAyah,
-    endAyah,
+    startOffset,
+    endOffset,
     sessionId,
     juzNumber = 1,
     totalAyahsInJuz,
-    resumeFromAyah = startAyah,
+    resumeFromOffset = startOffset,
   } = params;
 
   const navigation = useNavigation();
   const db = useSQLiteContext();
-  const totalAyahs = endAyah - startAyah + 1;
-  const initialAyahIndex = resumeFromAyah - startAyah;
+  // Portions are juz-relative offsets, not surah-relative ayah numbers. A juz
+  // holds up to eleven surahs, so a portion routinely starts in one and ends in
+  // another: juz 1 day one runs Al-Fatiha 1 to Al-Baqarah 88. The old params
+  // carried the *start's* surah with the *end's* ayah number, which produced
+  // either a nonsensical count (Al-Fatiha, ayahs 1 to 88, when it has 7) or a
+  // negative one (Al-Baqarah 282 to Ali Imran 83 gives -198, ending the session
+  // after a single ayah). Offsets have no such ambiguity: every ayah resolves
+  // its own surah, one at a time.
+  const totalAyahs = endOffset - startOffset + 1;
+  const initialAyahIndex = resumeFromOffset - startOffset;
+
+  /** Surah and ayah for the nth ayah of this portion, counting from 0. */
+  const locationAt = useCallback(
+    (index) => getAyahLocation(juzNumber, startOffset + index),
+    [juzNumber, startOffset]
+  );
   const [currentAyahIndex, setCurrentAyahIndex] = useState(initialAyahIndex);
   const [confirmedAyahs, setConfirmedAyahs] = useState([]);
   const [currentAyahDisplay, setCurrentAyahDisplay] = useState('');
@@ -175,18 +188,16 @@ export default function RecitationScreen(props) {
     await new Promise((resolve) => setTimeout(resolve, 4000));
     navigation.replace('PostSessionQuiz', {
       sessionId,
-      surahNumber,
-      startAyah,
-      endAyah,
+      startOffset,
+      endOffset,
       juzNumber,
       totalAyahsInJuz,
     });
   }, [
     navigation,
     sessionId,
-    surahNumber,
-    startAyah,
-    endAyah,
+    startOffset,
+    endOffset,
     juzNumber,
     totalAyahsInJuz,
     fadeAnim,
@@ -213,7 +224,7 @@ export default function RecitationScreen(props) {
   }, []);
 
   const loadAyah = useCallback(async (ayahIndex) => {
-    const ayahNumber = startAyah + ayahIndex;
+    const { surahNumber, ayahNumber } = locationAt(ayahIndex);
 
     let data;
     if (nextAyahCacheRef.current?.index === ayahIndex) {
@@ -231,13 +242,15 @@ export default function RecitationScreen(props) {
 
     const prefetchIndex = ayahIndex + 1;
     if (prefetchIndex < totalAyahs) {
-      getAyah(surahNumber, startAyah + prefetchIndex)
+      // Resolved separately: the next ayah may belong to the next surah.
+      const next = locationAt(prefetchIndex);
+      getAyah(next.surahNumber, next.ayahNumber)
         .then((d) => {
           nextAyahCacheRef.current = { index: prefetchIndex, data: d };
         })
         .catch(() => {});
     }
-  }, [surahNumber, startAyah, totalAyahs]);
+  }, [locationAt, totalAyahs]);
 
   const buzzAndTone = useCallback(async () => {
     try {
@@ -358,7 +371,8 @@ export default function RecitationScreen(props) {
           }
 
           if (mistakeInsert && sessionId) {
-            const { userId, ayahNumber, tier, wrong_words, transcribed_text } = mistakeInsert;
+            const { userId, surahNumber, ayahNumber, tier, wrong_words, transcribed_text } =
+              mistakeInsert;
             // mistakes.tier is NOT NULL with no default, so omitting it makes
             // every insert fail. The error used to be discarded here, which
             // silently starved the post-session quiz, the tier-2 count and the
@@ -388,7 +402,10 @@ export default function RecitationScreen(props) {
           }
           await supabase
             .from('sessions')
-            .update({ last_confirmed_ayah: startAyah + completedIndex })
+            // A juz offset, matching sessions.portion_start_ayah. It used to be
+            // a surah-relative ayah number, so resuming a portion that crossed a
+            // surah restarted it in the wrong place.
+            .update({ last_confirmed_ayah: startOffset + completedIndex })
             .eq('id', sessionId);
 
           await loadAyah(nextIndex);
@@ -428,7 +445,8 @@ export default function RecitationScreen(props) {
           const userId = await getCurrentUserId();
           mistakeInsert = {
             userId,
-            ayahNumber: startAyah + currentAyahIndexRef.current,
+            // Carries its own surah, because the portion may span several.
+            ...locationAt(currentAyahIndexRef.current),
             tier: classifyMistakeTier(wrongIndices, letterDiffByIndex),
             wrong_words: wrongIndices.map((i) => words[i]?.textDisplay ?? ''),
             transcribed_text: accumulatedText,
@@ -441,7 +459,7 @@ export default function RecitationScreen(props) {
         setError(err?.message ?? 'Failed to process ayah completion.');
       }
     },
-    [loadAyah, recreateJudge, startAyah, sessionId, totalAyahs, surahNumber]
+    [loadAyah, recreateJudge, locationAt, startOffset, sessionId, totalAyahs]
   );
 
   useEffect(() => {
@@ -454,22 +472,25 @@ export default function RecitationScreen(props) {
       try {
         setIsLoading(true);
 
-        if (resumeFromAyah > startAyah) {
+        if (resumeFromOffset > startOffset) {
           const { data: priorMistakes } = await supabase
             .from('mistakes')
-            .select('ayah_number, wrong_words')
+            .select('surah_number, ayah_number, wrong_words')
             .eq('session_id', sessionId)
             .order('ayah_number', { ascending: true });
 
+          // Keyed on surah *and* ayah. Keyed on ayah alone, a portion spanning
+          // two surahs would let Al-Baqarah 5's mistake mark Ali Imran 5.
           const mistakesByAyah = {};
           for (const m of priorMistakes ?? []) {
-            mistakesByAyah[m.ayah_number] = m;
+            mistakesByAyah[`${m.surah_number}:${m.ayah_number}`] = m;
           }
 
           const priorConfirmed = [];
-          for (let ayah = startAyah; ayah < resumeFromAyah; ayah++) {
-            const data = await getAyah(surahNumber, ayah);
-            const mistake = mistakesByAyah[ayah];
+          for (let offset = startOffset; offset < resumeFromOffset; offset++) {
+            const loc = getAyahLocation(juzNumber, offset);
+            const data = await getAyah(loc.surahNumber, loc.ayahNumber);
+            const mistake = mistakesByAyah[`${loc.surahNumber}:${loc.ayahNumber}`];
             let wrongIndices = [];
             if (mistake?.wrong_words?.length) {
               wrongIndices = mistake.wrong_words
@@ -574,9 +595,9 @@ export default function RecitationScreen(props) {
     onAyahComplete,
     recreateJudge,
     initialAyahIndex,
-    resumeFromAyah,
-    startAyah,
-    surahNumber,
+    resumeFromOffset,
+    startOffset,
+    juzNumber,
   ]);
 
   useEffect(() => {
@@ -614,8 +635,8 @@ export default function RecitationScreen(props) {
 
   useEffect(() => {
     let mounted = true;
-    const ayahNumber = startAyah + Math.min(currentAyahIndex, totalAyahs - 1);
-    getPageForAyah(db, surahNumber, ayahNumber)
+    const loc = locationAt(Math.min(currentAyahIndex, totalAyahs - 1));
+    getPageForAyah(db, loc.surahNumber, loc.ayahNumber)
       .then((page) => {
         if (!mounted || page == null) return;
         setCurrentPage(page);
@@ -626,7 +647,7 @@ export default function RecitationScreen(props) {
       })
       .catch(() => {});
     return () => { mounted = false; };
-  }, [db, surahNumber, startAyah, currentAyahIndex, totalAyahs]);
+  }, [db, locationAt, currentAyahIndex, totalAyahs]);
 
   // Auto-advance to the latest page whenever allPages grows.
   // useEffect runs after render so the FlatList layout is ready.
@@ -641,12 +662,14 @@ export default function RecitationScreen(props) {
   const ayahStatuses = useMemo(() => {
     const map = {};
     confirmedAyahs.forEach((ayah, index) => {
-      map[`${surahNumber}:${startAyah + index}`] = {
+      const loc = locationAt(index);
+      map[`${loc.surahNumber}:${loc.ayahNumber}`] = {
         wrongIndices: ayah.wrongIndices ?? [],
         letterDiffByIndex: ayah.letterDiffByIndex,
       };
     });
-    const currentKey = `${surahNumber}:${startAyah + currentAyahIndex}`;
+    const cur = locationAt(currentAyahIndex);
+    const currentKey = `${cur.surahNumber}:${cur.ayahNumber}`;
     if (!map[currentKey]) {
       if (revealedWordCount > 0) {
         map[currentKey] = {
@@ -663,8 +686,7 @@ export default function RecitationScreen(props) {
     return map;
   }, [
     confirmedAyahs,
-    surahNumber,
-    startAyah,
+    locationAt,
     currentAyahIndex,
     liveWrongIndices,
     liveLetterDiff,
@@ -675,13 +697,19 @@ export default function RecitationScreen(props) {
   const displayAyahNumber = Math.min(currentAyahIndex + 1, totalAyahs);
   const isListening = !isLoading && !error && !showTransition && !isRevisionComplete;
 
-  const surahName = useMemo(() => {
+  // "Al-Baqarah 142-252", or "Al-Baqarah 282 to Ali Imran 83" when the portion
+  // spans two surahs, which most portions in most juz do.
+  const portionLabel = useMemo(() => {
     try {
-      return getAyahLocation(juzNumber, startAyah).surahName;
+      const a = getAyahLocation(juzNumber, startOffset);
+      const b = getAyahLocation(juzNumber, endOffset);
+      return a.surahNumber === b.surahNumber
+        ? `${a.surahName} ${a.ayahNumber}\u2013${b.ayahNumber}`
+        : `${a.surahName} ${a.ayahNumber} to ${b.surahName} ${b.ayahNumber}`;
     } catch {
       return '';
     }
-  }, [juzNumber, startAyah]);
+  }, [juzNumber, startOffset, endOffset]);
 
   if (showTransition) {
     return (
@@ -697,7 +725,7 @@ export default function RecitationScreen(props) {
 
       <View style={styles.header}>
         <Text style={styles.headerMode}>Recitation Portion</Text>
-        <Text style={styles.headerSub}>{surahName} · Ayahs {startAyah}–{endAyah}</Text>
+        <Text style={styles.headerSub}>{portionLabel}</Text>
       </View>
       <View style={styles.progressTrack}>
         <View

@@ -10,6 +10,7 @@ import {
   View,
 } from 'react-native';
 import * as Notifications from 'expo-notifications';
+import { useSQLiteContext } from 'expo-sqlite';
 import { useNavigation } from '@react-navigation/native';
 import TabBar from '../components/TabBar';
 import { getCurrentUserId } from '../lib/auth';
@@ -55,18 +56,19 @@ function formatTomorrowLine(tomorrow) {
   return `Tomorrow: Juz ${tomorrow.juz_number} — ${start.surahName} ${start.ayahNumber} to ${end.surahName} ${end.ayahNumber}`;
 }
 
-function buildSessionParams(sessionId, resumeFromAyah, portion) {
+// Passes juz-relative offsets straight through. It used to flatten them into a
+// single surah, taking the surah of the *start* and the ayah number of the
+// *end*, which silently corrupted every portion spanning two surahs. 28 of the
+// 30 juz contain more than one surah, so that was most portions.
+function buildSessionParams(sessionId, resumeFromOffset, portion) {
   const juzNumber = portion.juzNumber ?? 1;
-  const start = getAyahLocation(juzNumber, portion.portionStartAyah);
-  const end = getAyahLocation(juzNumber, portion.portionEndAyah);
   return {
-    surahNumber: start.surahNumber,
-    startAyah: start.ayahNumber,
-    endAyah: end.ayahNumber,
     juzNumber,
+    startOffset: portion.portionStartAyah,
+    endOffset: portion.portionEndAyah,
     totalAyahsInJuz: getJuzTotalAyahs(juzNumber),
     sessionId,
-    resumeFromAyah,
+    resumeFromOffset,
   };
 }
 
@@ -77,9 +79,13 @@ function portionSummary(todayPortion) {
   const end = getAyahLocation(juzNumber, portionEndAyah);
   return {
     juzNumber,
-    surahName: start.surahName,
-    startAyah: start.ayahNumber,
-    endAyah: end.ayahNumber,
+    // One label rather than a surah name and a pair of numbers. Reading the
+    // start's surah beside the end's ayah number produced "Al-Fatiha 1-88"
+    // for a portion that actually ends in Al-Baqarah.
+    label:
+      start.surahNumber === end.surahNumber
+        ? `${start.surahName} ${start.ayahNumber}\u2013${end.ayahNumber}`
+        : `${start.surahName} ${start.ayahNumber} to ${end.surahName} ${end.ayahNumber}`,
     ayahCount: portionEndAyah - portionStartAyah + 1,
   };
 }
@@ -88,7 +94,19 @@ function getResumeHint(pausedSession) {
   if (!pausedSession) return null;
   const phase = pausedSession.phase ?? 'pre_quiz';
   if (phase === 'pre_quiz') return 'Resuming pre-session quiz';
-  if (phase === 'revision') return `Resuming revision from Ayah ${(pausedSession.last_confirmed_ayah ?? 0) + 1}`;
+  if (phase === 'revision') {
+    // last_confirmed_ayah is a juz offset, so it has to be resolved to a real
+    // surah and ayah before it means anything to a person.
+    try {
+      const at = getAyahLocation(
+        pausedSession.juz_number ?? 1,
+        (pausedSession.last_confirmed_ayah ?? 0) + 1
+      );
+      return `Resuming revision from ${at.surahName} ${at.ayahNumber}`;
+    } catch {
+      return 'Resuming revision';
+    }
+  }
   if (phase === 'post_quiz') return 'Resuming post-session quiz';
   return null;
 }
@@ -143,6 +161,9 @@ function StepCard({ step, icon, title, desc, iconBg, iconColor }) {
 }
 
 export default function TodayScreen() {
+  // Portion size is read off the real mushaf, so the planner needs the
+  // bundled page data. Provided by SQLiteProvider in App.js.
+  const db = useSQLiteContext();
   const navigation = useNavigation();
   const [name, setName] = useState('');
   const [todayPortion, setTodayPortion] = useState(null);
@@ -179,7 +200,7 @@ export default function TodayScreen() {
 
         const [userResult, portion, pausedResult, quizResult, completedResult, tomorrowResult] = await Promise.all([
           supabase.from('users').select('name, notification_time').eq('id', userId).maybeSingle(),
-          getTodayPortion(userId),
+          getTodayPortion(db, userId),
           supabase
             .from('sessions')
             .select('id, last_confirmed_ayah, phase, juz_number, portion_start_ayah, portion_end_ayah, date')
@@ -261,8 +282,8 @@ export default function TodayScreen() {
   }, []);
 
   const navigateForPausedSession = (session) => {
-    const resumeFromAyah = (session.last_confirmed_ayah ?? 0) + 1;
-    const params = buildSessionParams(session.id, resumeFromAyah, {
+    const resumeFromOffset = (session.last_confirmed_ayah ?? 0) + 1;
+    const params = buildSessionParams(session.id, resumeFromOffset, {
       juzNumber: session.juz_number ?? 1,
       portionStartAyah: session.portion_start_ayah,
       portionEndAyah: session.portion_end_ayah,
@@ -333,8 +354,6 @@ export default function TodayScreen() {
         return;
       }
 
-      const startLoc = getAyahLocation(todayPortion.juzNumber, todayPortion.portionStartAyah);
-
       const { data: newSession, error: insertError } = await supabase
         .from('sessions')
         .insert({
@@ -345,14 +364,20 @@ export default function TodayScreen() {
           juz_number: todayPortion.juzNumber,
           portion_start_ayah: todayPortion.portionStartAyah,
           portion_end_ayah: todayPortion.portionEndAyah,
-          last_confirmed_ayah: startLoc.ayahNumber - 1,
+          // A juz offset, matching portion_start_ayah above. It used to be a
+          // surah-relative ayah number, which made resume restart a
+          // cross-surah portion in the wrong place.
+          last_confirmed_ayah: todayPortion.portionStartAyah - 1,
           started_at: new Date().toISOString(),
         })
         .select('id')
         .single();
 
       if (insertError) throw new Error(insertError.message);
-      navigation.navigate('PreSessionQuiz', buildSessionParams(newSession.id, startLoc.ayahNumber, todayPortion));
+      navigation.navigate(
+        'PreSessionQuiz',
+        buildSessionParams(newSession.id, todayPortion.portionStartAyah, todayPortion)
+      );
     } catch (err) {
       setError(err.message ?? 'Failed to start session.');
     } finally {
@@ -406,7 +431,7 @@ export default function TodayScreen() {
                   <Text style={styles.portionTitle}>Quiz only today</Text>
                 ) : summary ? (
                   <>
-                    <Text style={styles.portionTitle}>{summary.surahName} · {summary.startAyah}–{summary.endAyah}</Text>
+                    <Text style={styles.portionTitle}>{summary.label}</Text>
                     <Text style={styles.portionSub}>{summary.ayahCount} ayat</Text>
                   </>
                 ) : (
@@ -425,7 +450,7 @@ export default function TodayScreen() {
               <StepCard
                 step={2}
                 icon="◉"
-                title={summary ? `Recite ${summary.surahName} · ${summary.startAyah}–${summary.endAyah}` : 'Recite today\'s portion'}
+                title={summary ? `Recite ${summary.label}` : 'Recite today\'s portion'}
                 desc="We follow along as you go"
                 iconBg={colors.parchment} iconColor={colors.brown}
               />
@@ -473,8 +498,11 @@ export default function TodayScreen() {
               color="#888"
               onPress={() =>
                 navigation.navigate('Recitation', {
-                  surahNumber: 2, startAyah: 1, endAyah: 7, sessionId: null,
-                  juzNumber: 1, totalAyahsInJuz: 286, resumeFromAyah: 1,
+                  // Offsets 1-14 of juz 1: Al-Fatiha 1-7 then Al-Baqarah 1-7,
+                  // deliberately spanning the surah boundary so this dev jump
+                  // exercises the case that used to break.
+                  startOffset: 1, endOffset: 14, sessionId: null,
+                  juzNumber: 1, totalAyahsInJuz: 148, resumeFromOffset: 1,
                 })
               }
             />

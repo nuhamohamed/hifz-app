@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from 'react';
 import { ActivityIndicator, Animated, ScrollView, StyleSheet, Text, View } from 'react-native';
+import { useSQLiteContext } from 'expo-sqlite';
 import { useNavigation } from '@react-navigation/native';
 import TabBar from '../components/TabBar';
 import { getCurrentUserId } from '../lib/auth';
@@ -53,6 +54,9 @@ function formatPortionLabel(juzNumber, startAyah, endAyah) {
 }
 
 export default function SessionReviewScreen() {
+  // Portion size is read off the real mushaf, so the planner needs the
+  // bundled page data. Provided by SQLiteProvider in App.js.
+  const db = useSQLiteContext();
   const navigation = useNavigation();
   const [isLoading, setIsLoading] = useState(true);
   const [lastSession, setLastSession] = useState(null);
@@ -76,7 +80,7 @@ export default function SessionReviewScreen() {
             .order('completed_at', { ascending: false })
             .limit(1)
             .maybeSingle(),
-          getTodayPortion(userId),
+          getTodayPortion(db, userId),
         ]);
 
         if (!mounted) return;
