@@ -512,9 +512,24 @@ export default function TodayScreen() {
               onPress={() => navigation.navigate('PostSessionQuiz', { sessionId: null, juzNumber: 1 })}
             />
             <Button
-              title="[Dev] SessionSummary"
+              title="[Dev] SessionSummary (latest session)"
               color="#888"
-              onPress={() => navigation.navigate('SessionSummary', { sessionId: null, totalAyahsInJuz: 286 })}
+              onPress={async () => {
+                // Uses the most recent session rather than a null id, so the
+                // mistake cards actually have something to render.
+                const userId = await getCurrentUserId();
+                const { data } = await supabase
+                  .from('sessions')
+                  .select('id, juz_number')
+                  .eq('user_id', userId)
+                  .order('date', { ascending: false })
+                  .limit(1)
+                  .maybeSingle();
+                navigation.navigate('SessionSummary', {
+                  sessionId: data?.id ?? null,
+                  totalAyahsInJuz: getJuzTotalAyahs(data?.juz_number ?? 1),
+                });
+              }}
             />
             <Button
               title="[Dev] ✦ Design Mockups (Dawrah)"

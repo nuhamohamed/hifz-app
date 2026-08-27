@@ -154,6 +154,10 @@ CREATE TABLE public.quiz_queue (
   context_wrong_count integer NOT NULL DEFAULT 0,
   last_result text,
   times_correct_first integer NOT NULL DEFAULT 0,
+  -- Times this ayah has been failed. Flagged as a leech at 8, which is
+  -- Anki's threshold. Counted only; no more than 3 flagged items may
+  -- appear in one quiz, so they cannot crowd out everything else due.
+  lapses integer NOT NULL DEFAULT 0,
   created_at timestamptz NOT NULL DEFAULT now(),
   updated_at timestamptz NOT NULL DEFAULT now()
 );

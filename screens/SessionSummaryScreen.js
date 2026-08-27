@@ -11,10 +11,11 @@ import {
 import { useSQLiteContext } from 'expo-sqlite';
 import { CommonActions, useNavigation } from '@react-navigation/native';
 import { getCurrentUserId } from '../lib/auth';
-import { getAyahLocation, getJuzTotalAyahs } from '../lib/juzSurahMap';
+import { getAyahLocation, getJuzTotalAyahs, getSurahName } from '../lib/juzSurahMap';
 import { cancelEveningNudge } from '../lib/notifications';
 import { getAyah } from '../lib/quranApi';
 import { updateJuzProgressAfterSession } from '../lib/planEngine';
+import { removeFromQuizQueue } from '../lib/quizEngine';
 import { supabase } from '../lib/supabase';
 import { colors, fonts, spacing } from '../lib/theme';
 
@@ -53,7 +54,7 @@ function buildWrongWordIndices(words, wrongWords) {
   return indices;
 }
 
-function AyahTextWithHighlights({ words, wrongWords, isDisconnectedLetters }) {
+function AyahTextWithHighlights({ words, wrongWords, isDisconnectedLetters, onClearWord }) {
   if (isDisconnectedLetters) {
     const text = words.map((w) => w.textCompare).join(' ');
     return <Text style={styles.compWord}>{text}</Text>;
@@ -64,14 +65,25 @@ function AyahTextWithHighlights({ words, wrongWords, isDisconnectedLetters }) {
 
   return (
     <Text style={styles.compWord}>
-      {displayWords.map((word, i) => (
-        <Text
-          key={i}
-          style={wrongIndices.has(i) ? styles.ayahWordWrong : styles.compCorrect}
-        >
-          {word}{' '}
-        </Text>
-      ))}
+      {displayWords.map((word, i) =>
+        wrongIndices.has(i) ? (
+          // Each flagged word clears on its own. The app cannot tell a real
+          // memory slip from the recogniser mishearing a word; the person
+          // reading the transcript beside the expected text can.
+          <Text
+            key={i}
+            style={styles.ayahWordWrong}
+            onPress={onClearWord ? () => onClearWord(word) : undefined}
+            suppressHighlighting={false}
+          >
+            {word}{' '}
+          </Text>
+        ) : (
+          <Text key={i} style={styles.compCorrect}>
+            {word}{' '}
+          </Text>
+        )
+      )}
     </Text>
   );
 }
@@ -85,16 +97,21 @@ function StatPill({ value, label, color }) {
   );
 }
 
-function MistakeCard({ mistake, onDismiss }) {
-  const isSlip = mistake.tier === 1;
+function MistakeCard({ mistake, onDismiss, onClearWord }) {
+  const wrongCount = mistake.wrong_words?.length ?? 0;
 
   return (
     <View style={styles.mistakeCard}>
       <View style={styles.mistakeCardHeader}>
-        <Text style={styles.mistakeAyahLabel}>Ayah {mistake.ayah_number}</Text>
-        <View style={[styles.badge, isSlip ? styles.badgeSlip : styles.badgeConfirmed]}>
-          <Text style={[styles.badgeText, isSlip ? styles.badgeTextSlip : styles.badgeTextConfirmed]}>
-            {isSlip ? 'Slip' : 'Confirmed mistake'}
+        <Text style={styles.mistakeAyahLabel}>
+          {getSurahName(mistake.surah_number)} {mistake.ayah_number}
+        </Text>
+        {/* Tiers are gone: every mistake counts the same. The count of flagged
+            words is the useful detail now, since clearing them all is what
+            removes the ayah. */}
+        <View style={[styles.badge, styles.badgeConfirmed]}>
+          <Text style={[styles.badgeText, styles.badgeTextConfirmed]}>
+            {wrongCount === 1 ? '1 word' : `${wrongCount} words`}
           </Text>
         </View>
       </View>
@@ -113,12 +130,15 @@ function MistakeCard({ mistake, onDismiss }) {
             words={mistake.words}
             wrongWords={mistake.wrong_words}
             isDisconnectedLetters={mistake.isDisconnectedLetters}
+            onClearWord={onClearWord}
           />
         </View>
       </View>
 
+      <Text style={styles.tapHint}>Tap a red word if the app misheard you.</Text>
+
       <TouchableOpacity style={styles.notMistakeBtn} onPress={onDismiss} activeOpacity={0.7}>
-        <Text style={styles.notMistakeBtnText}>Not a mistake</Text>
+        <Text style={styles.notMistakeBtnText}>Not a mistake at all</Text>
       </TouchableOpacity>
     </View>
   );
@@ -226,7 +246,7 @@ export default function SessionSummaryScreen({ route }) {
 
         const { data: mistakesData, error: mistakesError } = await supabase
           .from('mistakes')
-          .select('tier, ayah_number, surah_number, wrong_words, transcribed_text')
+          .select('ayah_number, surah_number, wrong_words, transcribed_text')
           .eq('session_id', sessionId)
           .order('ayah_number', { ascending: true });
 
@@ -274,20 +294,74 @@ export default function SessionSummaryScreen({ route }) {
     };
   }, [sessionId, totalAyahsInJuzParam]);
 
-  const confirmedCount = mistakes.filter((m) => m.tier === 2).length;
-  const slipCount = mistakes.filter((m) => m.tier === 1).length;
+  // Tiers are dropped, so there is one count, not two.
+  const mistakeCount = mistakes.length;
+
+  /**
+   * Stops an ayah being a mistake at all: removes the record that feeds the juz
+   * count AND the review queue entry.
+   *
+   * The old version deleted only the mistake row, so a misflagged ayah kept
+   * being quizzed every morning after the person had said it was fine. It also
+   * matched on ayah number with no surah filter, so dismissing Al-Baqarah 5
+   * removed Ali Imran 5 from the same session, and filtered on tier, which no
+   * longer means anything.
+   */
+  const removeMistakeEntirely = useCallback(async (mistake) => {
+    if (!sessionId) return;
+    await supabase
+      .from('mistakes')
+      .delete()
+      .eq('session_id', sessionId)
+      .eq('surah_number', mistake.surah_number)
+      .eq('ayah_number', mistake.ayah_number);
+
+    try {
+      const userId = await getCurrentUserId();
+      await removeFromQuizQueue(userId, mistake.surah_number, mistake.ayah_number);
+    } catch (err) {
+      console.error('[Summary] failed to clear the review queue:', err.message);
+    }
+  }, [sessionId]);
 
   const handleDismissMistake = useCallback(async (index, mistake) => {
     setMistakes((prev) => prev.filter((_, i) => i !== index));
-    if (sessionId) {
-      await supabase
-        .from('mistakes')
-        .delete()
-        .eq('session_id', sessionId)
-        .eq('ayah_number', mistake.ayah_number)
-        .eq('tier', mistake.tier);
+    await removeMistakeEntirely(mistake);
+  }, [removeMistakeEntirely]);
+
+  /**
+   * Clears one misheard word. A mistake is still one ayah however many words
+   * are wrong in it, so clearing some words leaves the ayah counted. Only when
+   * every flagged word is gone does the ayah stop being a mistake.
+   */
+  const handleClearWord = useCallback(async (index, mistake, word) => {
+    const remaining = [...(mistake.wrong_words ?? [])];
+    const at = remaining.indexOf(word);
+    if (at < 0) return;
+    remaining.splice(at, 1);
+
+    setMistakes((prev) =>
+      remaining.length === 0
+        ? prev.filter((_, i) => i !== index)
+        : prev.map((m, i) => (i === index ? { ...m, wrong_words: remaining } : m))
+    );
+
+    if (remaining.length === 0) {
+      await removeMistakeEntirely(mistake);
+      return;
     }
-  }, [sessionId]);
+
+    if (!sessionId) return;
+    const { error } = await supabase
+      .from('mistakes')
+      .update({ wrong_words: remaining })
+      .eq('session_id', sessionId)
+      .eq('surah_number', mistake.surah_number)
+      .eq('ayah_number', mistake.ayah_number);
+    if (error) {
+      console.error('[Summary] failed to clear a word:', error.message);
+    }
+  }, [sessionId, removeMistakeEntirely]);
 
   const handleBackToHome = () => {
     cancelEveningNudge().catch(() => {});
@@ -367,13 +441,14 @@ export default function SessionSummaryScreen({ route }) {
         {mistakes.length > 0 ? (
           <>
             <Text style={styles.sectionLabel}>
-              {confirmedCount} confirmed · {slipCount} slip{slipCount === 1 ? '' : 's'}
+              {mistakeCount} {mistakeCount === 1 ? 'ayah' : 'ayahs'} to review
             </Text>
             {mistakes.map((mistake, index) => (
               <MistakeCard
-                key={`${mistake.surah_number}-${mistake.ayah_number}-${mistake.tier}-${index}`}
+                key={`${mistake.surah_number}-${mistake.ayah_number}-${index}`}
                 mistake={mistake}
                 onDismiss={() => handleDismissMistake(index, mistake)}
+                onClearWord={(word) => handleClearWord(index, mistake, word)}
               />
             ))}
           </>
@@ -483,6 +558,13 @@ const styles = StyleSheet.create({
     marginBottom: spacing.sm,
   },
   mistakeAyahLabel: { fontFamily: fonts.semiBold, fontSize: 15, color: colors.text },
+  tapHint: {
+    fontFamily: fonts.regular,
+    fontSize: 12,
+    color: colors.textMuted,
+    textAlign: 'center',
+    marginTop: spacing.sm,
+  },
   notMistakeBtn: {
     alignSelf: 'flex-start',
     borderWidth: 1,
