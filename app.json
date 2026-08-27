@@ -20,6 +20,7 @@
         "ITSAppUsesNonExemptEncryption": false
       },
       "bundleIdentifier": "ai.dawrah.app",
+      "appleTeamId": "FZ75DRL752",
       "privacyManifests": {
         "NSPrivacyTracking": false,
         "NSPrivacyTrackingDomains": [],
