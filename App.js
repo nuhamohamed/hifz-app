@@ -12,7 +12,6 @@ import PostSessionQuizScreen from './screens/PostSessionQuizScreen';
 import PreSessionQuizScreen from './screens/PreSessionQuizScreen';
 import RecitationScreen from './screens/RecitationScreen';
 import SessionSummaryScreen from './screens/SessionSummaryScreen';
-import SessionReviewScreen from './screens/SessionReviewScreen';
 import SettingsScreen from './screens/SettingsScreen';
 import TodayScreen from './screens/TodayScreen';
 import WelcomeScreen from './screens/onboarding/WelcomeScreen';
@@ -119,7 +118,6 @@ function MainNavigator() {
   return (
     <MainStack.Navigator initialRouteName="Today" screenOptions={{ headerShown: false }}>
       <MainStack.Screen name="Today" component={TodayScreen} />
-      <MainStack.Screen name="SessionReview" component={SessionReviewScreen} />
       <MainStack.Screen name="Settings" component={SettingsScreen} />
       <MainStack.Screen name="PreSessionQuiz" component={PreSessionQuizScreen} />
       <MainStack.Screen name="Recitation" component={RecitationScreen} />

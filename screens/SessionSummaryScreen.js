@@ -10,6 +10,7 @@ import {
 } from 'react-native';
 import { useSQLiteContext } from 'expo-sqlite';
 import { CommonActions, useNavigation } from '@react-navigation/native';
+import TabBar from '../components/TabBar';
 import { getCurrentUserId } from '../lib/auth';
 import { getAyahLocation, getJuzTotalAyahs, getSurahName } from '../lib/juzSurahMap';
 import { cancelEveningNudge } from '../lib/notifications';
@@ -159,16 +160,43 @@ export default function SessionSummaryScreen({ route }) {
   const [tomorrowText, setTomorrowText] = useState(null);
   const [juzComplete, setJuzComplete] = useState(false);
   const [returnsInDays, setReturnsInDays] = useState(null);
-  const planUpdatedRef = useRef(false);
+  // Null when opened from the tab, which is the entry point with no route
+  // params. Resolved below to the most recent session.
+  const [resolvedSessionId, setResolvedSessionId] = useState(sessionId ?? null);
   const opacity = useRef(new Animated.Value(0)).current;
   const checkScale = useRef(new Animated.Value(0.5)).current;
 
+  // Opened from the tab rather than at the end of a session, so there is no id
+  // in the route. Fall back to the most recent one: this screen is now the only
+  // place mistakes can be corrected, and that window must not be a single
+  // screen someone can swipe past.
   useEffect(() => {
-    if (!sessionId) {
-      setError('No session ID provided.');
-      setIsLoading(false);
-      return;
-    }
+    if (sessionId) return;
+    let mounted = true;
+    (async () => {
+      try {
+        const userId = await getCurrentUserId();
+        const { data } = await supabase
+          .from('sessions')
+          .select('id')
+          .eq('user_id', userId)
+          .order('date', { ascending: false })
+          .order('started_at', { ascending: false })
+          .limit(1)
+          .maybeSingle();
+        if (mounted) {
+          setResolvedSessionId(data?.id ?? null);
+          if (!data?.id) setIsLoading(false);
+        }
+      } catch {
+        if (mounted) setIsLoading(false);
+      }
+    })();
+    return () => { mounted = false; };
+  }, [sessionId]);
+
+  useEffect(() => {
+    if (!resolvedSessionId) return;
 
     let mounted = true;
 
@@ -180,9 +208,9 @@ export default function SessionSummaryScreen({ route }) {
         const { data: sessionData, error: sessionError } = await supabase
           .from('sessions')
           .select(
-            'portion_start_ayah, portion_end_ayah, juz_number, completed_at, status'
+            'id, portion_start_ayah, portion_end_ayah, juz_number, completed_at, status, plan_applied'
           )
-          .eq('id', sessionId)
+          .eq('id', resolvedSessionId)
           .single();
 
         if (sessionError) {
@@ -196,12 +224,20 @@ export default function SessionSummaryScreen({ route }) {
         const isJuzComplete =
           sessionData.portion_end_ayah >= totalAyahsInJuz;
 
-        if (sessionData.status === 'complete' && !planUpdatedRef.current) {
-          planUpdatedRef.current = true;
+        // plan_applied is persisted, not held in state. A React ref resets on
+        // every mount, so reopening this screen for the same session used to
+        // double-count its mistakes, multiply the review interval twice, and
+        // write a second scheduled row. Harmless when the screen was only ever
+        // reached once at the end of a session; not harmless now it is a tab.
+        if (sessionData.status === 'complete' && !sessionData.plan_applied) {
+          await supabase
+            .from('sessions')
+            .update({ plan_applied: true })
+            .eq('id', resolvedSessionId);
           await updateJuzProgressAfterSession(
             db,
             userId,
-            sessionId,
+            resolvedSessionId,
             sessionData.juz_number,
             sessionData.portion_end_ayah,
             totalAyahsInJuz
@@ -247,7 +283,7 @@ export default function SessionSummaryScreen({ route }) {
         const { data: mistakesData, error: mistakesError } = await supabase
           .from('mistakes')
           .select('ayah_number, surah_number, wrong_words, transcribed_text')
-          .eq('session_id', sessionId)
+          .eq('session_id', resolvedSessionId)
           .order('ayah_number', { ascending: true });
 
         if (mistakesError) {
@@ -292,7 +328,7 @@ export default function SessionSummaryScreen({ route }) {
     return () => {
       mounted = false;
     };
-  }, [sessionId, totalAyahsInJuzParam]);
+  }, [resolvedSessionId, totalAyahsInJuzParam]);
 
   // Tiers are dropped, so there is one count, not two.
   const mistakeCount = mistakes.length;
@@ -308,11 +344,11 @@ export default function SessionSummaryScreen({ route }) {
    * longer means anything.
    */
   const removeMistakeEntirely = useCallback(async (mistake) => {
-    if (!sessionId) return;
+    if (!resolvedSessionId) return;
     await supabase
       .from('mistakes')
       .delete()
-      .eq('session_id', sessionId)
+      .eq('session_id', resolvedSessionId)
       .eq('surah_number', mistake.surah_number)
       .eq('ayah_number', mistake.ayah_number);
 
@@ -322,7 +358,7 @@ export default function SessionSummaryScreen({ route }) {
     } catch (err) {
       console.error('[Summary] failed to clear the review queue:', err.message);
     }
-  }, [sessionId]);
+  }, [resolvedSessionId]);
 
   const handleDismissMistake = useCallback(async (index, mistake) => {
     setMistakes((prev) => prev.filter((_, i) => i !== index));
@@ -351,17 +387,21 @@ export default function SessionSummaryScreen({ route }) {
       return;
     }
 
-    if (!sessionId) return;
+    if (!resolvedSessionId) return;
     const { error } = await supabase
       .from('mistakes')
       .update({ wrong_words: remaining })
-      .eq('session_id', sessionId)
+      .eq('session_id', resolvedSessionId)
       .eq('surah_number', mistake.surah_number)
       .eq('ayah_number', mistake.ayah_number);
     if (error) {
       console.error('[Summary] failed to clear a word:', error.message);
     }
-  }, [sessionId, removeMistakeEntirely]);
+  }, [resolvedSessionId, removeMistakeEntirely]);
+
+  // Arriving at the end of a session gets a "back to home" button, since there
+  // is a flow to leave. Arriving from the tab gets the tab bar instead.
+  const cameFromSession = Boolean(sessionId);
 
   const handleBackToHome = () => {
     cancelEveningNudge().catch(() => {});
@@ -385,10 +425,29 @@ export default function SessionSummaryScreen({ route }) {
     return (
       <View style={styles.centered}>
         <Text style={styles.error}>{error}</Text>
-        <TouchableOpacity style={styles.homeBtn} onPress={handleBackToHome} activeOpacity={0.88}>
-          <Text style={styles.homeBtnText}>Back to home</Text>
-        </TouchableOpacity>
+        {cameFromSession ? (
+          <TouchableOpacity style={styles.homeBtn} onPress={handleBackToHome} activeOpacity={0.88}>
+            <Text style={styles.homeBtnText}>Back to home</Text>
+          </TouchableOpacity>
+        ) : null}
       </View>
+    );
+  }
+
+  // Opened from the tab before any session has been done. Without this it
+  // would fall through and claim "No mistakes this session", which is true but
+  // misleading when there has been no session at all.
+  if (!session) {
+    return (
+      <Animated.View style={[styles.screen, { opacity }]}>
+        <View style={styles.centered}>
+          <Text style={styles.emptyIcon}>✦</Text>
+          <Text style={styles.emptyText}>
+            Nothing to review yet. Finish a session and your mistakes will show up here.
+          </Text>
+        </View>
+        <TabBar active="summary" navigation={navigation} />
+      </Animated.View>
     );
   }
 
@@ -472,11 +531,15 @@ export default function SessionSummaryScreen({ route }) {
         <View style={{ height: 100 }} />
       </ScrollView>
 
-      <View style={styles.cta}>
-        <TouchableOpacity style={styles.homeBtn} onPress={handleBackToHome} activeOpacity={0.88}>
-          <Text style={styles.homeBtnText}>Back to home</Text>
-        </TouchableOpacity>
-      </View>
+      {cameFromSession ? (
+        <View style={styles.cta}>
+          <TouchableOpacity style={styles.homeBtn} onPress={handleBackToHome} activeOpacity={0.88}>
+            <Text style={styles.homeBtnText}>Back to home</Text>
+          </TouchableOpacity>
+        </View>
+      ) : (
+        <TabBar active="summary" navigation={navigation} />
+      )}
     </Animated.View>
   );
 }
@@ -600,6 +663,15 @@ const styles = StyleSheet.create({
     flexDirection: 'row', alignItems: 'center', gap: 12,
     backgroundColor: colors.successLight, borderRadius: 14, padding: spacing.md,
     marginBottom: spacing.md, borderWidth: 1, borderColor: colors.success,
+  },
+  emptyIcon: { fontSize: 30, color: colors.textMuted, marginBottom: spacing.md },
+  emptyText: {
+    fontFamily: fonts.regular,
+    fontSize: 15,
+    lineHeight: 22,
+    color: colors.textMid,
+    textAlign: 'center',
+    paddingHorizontal: spacing.xl,
   },
   cleanIcon: { fontSize: 18, color: colors.success },
   cleanText: { fontFamily: fonts.medium, fontSize: 14, color: colors.success, flex: 1 },

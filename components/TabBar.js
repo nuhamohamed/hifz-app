@@ -3,7 +3,7 @@ import { colors, fonts } from '../lib/theme';
 
 const TABS = [
   { id: 'home', icon: '◎', label: 'Home', screen: 'Today' },
-  { id: 'summary', icon: '✦', label: 'Summary', screen: 'SessionReview' },
+  { id: 'summary', icon: '✦', label: 'Summary', screen: 'SessionSummary' },
   { id: 'settings', icon: '⊙', label: 'Settings', screen: 'Settings' },
 ];
 

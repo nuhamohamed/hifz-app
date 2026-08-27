@@ -115,7 +115,12 @@ CREATE TABLE public.sessions (
   ),
   CONSTRAINT sessions_phase_check CHECK (
     phase IN ('pre_quiz', 'revision', 'post_quiz', 'complete')
-  )
+  ),
+  -- Guards the once-per-session plan update: juz mistake count, review
+  -- interval, and tomorrow's scheduled portion. Must be persisted rather
+  -- than held in component state, since the summary is a tab that can be
+  -- reopened at any time.
+  plan_applied boolean NOT NULL DEFAULT false
 );
 
 CREATE INDEX sessions_user_id_idx ON public.sessions (user_id);
