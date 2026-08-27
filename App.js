@@ -208,6 +208,14 @@ export default function App() {
     setResumePoint(null);
   }, []);
 
+  // Settings calls this after wiping the account, to send the person back
+  // through setup. The ref has to be cleared too, or the guard above would keep
+  // treating onboarding as finished and the root navigator would never switch.
+  const restartOnboarding = useCallback(() => {
+    onboardingDone.current = false;
+    setResumePoint('Welcome');
+  }, []);
+
   // Anonymous sign-in runs before anything renders, so "no session yet" is a
   // loading state rather than a signed-out one.
   const isCheckingAuth = !authError && (!session || resumePoint === undefined);
@@ -221,7 +229,7 @@ export default function App() {
   }
 
   return (
-    <OnboardingProvider value={{ completeOnboarding, resumePoint }}>
+    <OnboardingProvider value={{ completeOnboarding, restartOnboarding, resumePoint }}>
       <SQLiteProvider databaseName="mushaf.db" assetSource={MUSHAF_ASSET}>
         <NavigationContainer>
           <RootNavigator />

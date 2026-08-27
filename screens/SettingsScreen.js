@@ -13,7 +13,8 @@ import DateTimePicker from '@react-native-community/datetimepicker';
 import Slider from '@react-native-community/slider';
 import { useNavigation } from '@react-navigation/native';
 import TabBar from '../components/TabBar';
-import { getCurrentUserId, isAnonymous } from '../lib/auth';
+import { getCurrentUserId, isAnonymous, resetAccountData } from '../lib/auth';
+import { useOnboarding } from '../lib/OnboardingContext';
 import { scheduleDailyNotification } from '../lib/notifications';
 import { supabase } from '../lib/supabase';
 import { colors, fonts, radius, spacing } from '../lib/theme';
@@ -33,6 +34,38 @@ function formatTimeDisplay(date) {
 }
 
 export default function SettingsScreen() {
+  const { restartOnboarding } = useOnboarding();
+  const [isResetting, setIsResetting] = useState(false);
+  const [resetError, setResetError] = useState('');
+
+  // Confirmed before anything is touched. This is irreversible and there is no
+  // sign-in to recover an account from, so it must not be a single tap.
+  const handleStartOver = () => {
+    Alert.alert(
+      'Start over?',
+      'This clears every session, mistake and review you have, and takes you back through setup. It cannot be undone.',
+      [
+        { text: 'Cancel', style: 'cancel' },
+        {
+          text: 'Start over',
+          style: 'destructive',
+          onPress: async () => {
+            setIsResetting(true);
+            setResetError('');
+            try {
+              const userId = await getCurrentUserId();
+              await resetAccountData(userId);
+              restartOnboarding();
+            } catch (err) {
+              setResetError(err.message ?? 'Could not clear your data.');
+              setIsResetting(false);
+            }
+          },
+        },
+      ]
+    );
+  };
+
   const navigation = useNavigation();
   const [sessionMinutes, setSessionMinutes] = useState(30);
   const [reminderTime, setReminderTime] = useState(() => {
@@ -216,6 +249,28 @@ export default function SettingsScreen() {
             </Text>
           </TouchableOpacity>
         ) : null}
+
+        {/* Getting your juz wrong at onboarding was otherwise unrecoverable:
+            the only escape was deleting the app, which destroys everything
+            else too and, with no sign-in, cannot be undone. */}
+        <View style={styles.dangerZone}>
+          <Text style={styles.dangerLabel}>Start over</Text>
+          <Text style={styles.dangerBody}>
+            Clears everything you have done and takes you back through setup. Use
+            this if you chose the wrong juz. It cannot be undone.
+          </Text>
+          <TouchableOpacity
+            style={styles.dangerButton}
+            onPress={handleStartOver}
+            disabled={isResetting}
+            activeOpacity={0.7}
+          >
+            <Text style={styles.dangerButtonText}>
+              {isResetting ? 'Clearing…' : 'Start over'}
+            </Text>
+          </TouchableOpacity>
+          {resetError ? <Text style={styles.error}>{resetError}</Text> : null}
+        </View>
       </ScrollView>
 
       <TabBar active="settings" navigation={navigation} />
@@ -286,6 +341,37 @@ const styles = StyleSheet.create({
     alignItems: 'center',
   },
   saveButtonText: { fontFamily: fonts.semiBold, color: colors.white, fontSize: 17 },
+  dangerZone: {
+    marginTop: spacing.xxl,
+    paddingTop: spacing.lg,
+    borderTopWidth: 1,
+    borderTopColor: colors.border,
+  },
+  dangerLabel: {
+    fontFamily: fonts.semiBold,
+    fontSize: 15,
+    color: colors.text,
+    marginBottom: 6,
+  },
+  dangerBody: {
+    fontFamily: fonts.regular,
+    fontSize: 13,
+    lineHeight: 19,
+    color: colors.textMuted,
+    marginBottom: spacing.md,
+  },
+  dangerButton: {
+    borderWidth: 1,
+    borderColor: colors.error,
+    borderRadius: radius.md,
+    paddingVertical: 13,
+    alignItems: 'center',
+  },
+  dangerButtonText: {
+    fontFamily: fonts.semiBold,
+    fontSize: 15,
+    color: colors.error,
+  },
   signOutButton: {
     alignItems: 'center',
     paddingVertical: spacing.md,
