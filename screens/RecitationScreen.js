@@ -27,7 +27,7 @@ import { createLiveJudge } from '../lib/liveWordJudge';
 import { useSQLiteContext } from 'expo-sqlite';
 import MushafPage from '../components/MushafPage';
 import { getPageForAyah } from '../lib/mushafDb';
-import { colors, fonts } from '../lib/theme';
+import { colors, fonts, radius, spacing } from '../lib/theme';
 
 // Remove consecutive duplicate words (stutters) before passing to the live judge.
 function dedupeConsecutiveWords(text) {
@@ -122,6 +122,18 @@ export default function RecitationScreen(props) {
   const [currentAyahDisplay, setCurrentAyahDisplay] = useState('');
   const [isLoading, setIsLoading] = useState(true);
   const [error, setError] = useState('');
+  // Set when the microphone closed itself: 90 seconds of silence, or two hours
+  // in one sitting. Null while listening.
+  const [micClosedReason, setMicClosedReason] = useState(null);
+  // Bumped to restart listening after the microphone closed itself. The whole
+  // setup lives in one effect, so re-running it is the honest way back in
+  // rather than duplicating the connection logic.
+  const [listenAttempt, setListenAttempt] = useState(0);
+
+  const resumeAfterAutoStop = useCallback(() => {
+    setMicClosedReason(null);
+    setListenAttempt((n) => n + 1);
+  }, []);
 
   const ayahDataRef = useRef({
     textDisplay: '',
@@ -575,6 +587,9 @@ export default function RecitationScreen(props) {
           onError: (message) => {
             if (mounted) setError(message);
           },
+          onAutoStop: (reason) => {
+            if (mounted) setMicClosedReason(reason);
+          },
         });
       } catch (err) {
         if (mounted) {
@@ -598,6 +613,7 @@ export default function RecitationScreen(props) {
     initialAyahIndex,
     resumeFromOffset,
     startOffset,
+    listenAttempt,
     juzNumber,
   ]);
 
@@ -728,6 +744,21 @@ export default function RecitationScreen(props) {
         <Text style={styles.headerMode}>Recitation Portion</Text>
         <Text style={styles.headerSub}>{portionLabel}</Text>
       </View>
+
+      {micClosedReason ? (
+        <TouchableOpacity
+          style={styles.micPaused}
+          onPress={resumeAfterAutoStop}
+          activeOpacity={0.85}
+        >
+          <Text style={styles.micPausedTitle}>Listening paused</Text>
+          <Text style={styles.micPausedBody}>
+            {micClosedReason === 'ceiling'
+              ? 'That has been a long sitting. Tap to carry on.'
+              : 'The microphone turned itself off after a quiet minute and a half. Tap to carry on.'}
+          </Text>
+        </TouchableOpacity>
+      ) : null}
       <View style={styles.progressTrack}>
         <View
           style={[styles.progressFill, { width: `${(currentAyahIndex / totalAyahs) * 100}%` }]}
@@ -827,6 +858,28 @@ const styles = StyleSheet.create({
     fontFamily: fonts.semiBold,
     fontSize: 16,
     color: colors.text,
+  },
+  micPaused: {
+    marginHorizontal: spacing.lg,
+    marginBottom: spacing.sm,
+    paddingVertical: 14,
+    paddingHorizontal: 16,
+    borderRadius: radius.md,
+    backgroundColor: '#E6EFF9',
+    borderWidth: 1,
+    borderColor: colors.primary,
+  },
+  micPausedTitle: {
+    fontFamily: fonts.semiBold,
+    fontSize: 15,
+    color: colors.primary,
+    marginBottom: 3,
+  },
+  micPausedBody: {
+    fontFamily: fonts.regular,
+    fontSize: 13,
+    lineHeight: 19,
+    color: colors.textMid,
   },
   headerSub: {
     fontFamily: fonts.regular,
