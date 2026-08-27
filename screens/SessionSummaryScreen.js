@@ -12,6 +12,7 @@ import { useSQLiteContext } from 'expo-sqlite';
 import { CommonActions, useNavigation } from '@react-navigation/native';
 import TabBar from '../components/TabBar';
 import { getCurrentUserId } from '../lib/auth';
+import { tomorrowString as getTomorrowDateString } from '../lib/dates';
 import { getAyahLocation, getJuzTotalAyahs, getSurahName } from '../lib/juzSurahMap';
 import { cancelEveningNudge } from '../lib/notifications';
 import { getAyah } from '../lib/quranApi';
@@ -19,12 +20,6 @@ import { updateJuzProgressAfterSession } from '../lib/planEngine';
 import { removeFromQuizQueue } from '../lib/quizEngine';
 import { supabase } from '../lib/supabase';
 import { colors, fonts, spacing } from '../lib/theme';
-
-function getTomorrowDateString() {
-  const d = new Date();
-  d.setDate(d.getDate() + 1);
-  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
-}
 
 function formatTomorrowLine(tomorrow) {
   const start = getAyahLocation(

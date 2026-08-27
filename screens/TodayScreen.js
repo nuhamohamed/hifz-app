@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import {
   ActivityIndicator,
   Animated,
@@ -11,9 +11,10 @@ import {
 } from 'react-native';
 import * as Notifications from 'expo-notifications';
 import { useSQLiteContext } from 'expo-sqlite';
-import { useNavigation } from '@react-navigation/native';
+import { useFocusEffect, useNavigation } from '@react-navigation/native';
 import TabBar from '../components/TabBar';
 import { getCurrentUserId } from '../lib/auth';
+import { todayString as getTodayDateString, tomorrowString as getTomorrowDateString } from '../lib/dates';
 import { getAyahLocation, getJuzTotalAyahs } from '../lib/juzSurahMap';
 import { getTodayPortion } from '../lib/planEngine';
 import {
@@ -29,20 +30,6 @@ function formatSessionDate(dateStr) {
   const [, month, day] = dateStr.split('-').map(Number);
   const monthName = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'][month - 1];
   return `${monthName} ${day}`;
-}
-
-function getTodayDateString() {
-  const d = new Date();
-  const y = d.getFullYear();
-  const m = String(d.getMonth() + 1).padStart(2, '0');
-  const day = String(d.getDate()).padStart(2, '0');
-  return `${y}-${m}-${day}`;
-}
-
-function getTomorrowDateString() {
-  const d = new Date();
-  d.setDate(d.getDate() + 1);
-  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
 }
 
 function formatTomorrowLine(tomorrow) {
@@ -165,6 +152,12 @@ export default function TodayScreen() {
   // bundled page data. Provided by SQLiteProvider in App.js.
   const db = useSQLiteContext();
   const navigation = useNavigation();
+  // Bumped whenever this screen comes back into focus, so the plan is re-read.
+  // It used to load once on mount and never again, so pausing a session and
+  // coming back still showed "Start session" with no sign anything was in
+  // progress, and finishing one still showed the portion you had just done.
+  // Only a full restart of the app corrected it.
+  const [refreshKey, setRefreshKey] = useState(0);
   const [name, setName] = useState('');
   const [todayPortion, setTodayPortion] = useState(null);
   const [quizCount, setQuizCount] = useState(0);
@@ -279,7 +272,20 @@ export default function TodayScreen() {
     return () => {
       mounted = false;
     };
-  }, []);
+  }, [refreshKey]);
+
+  // Skips the first focus, since the effect above has already run on mount.
+  // Without that guard every launch would load the plan twice.
+  const hasFocusedOnce = useRef(false);
+  useFocusEffect(
+    useCallback(() => {
+      if (!hasFocusedOnce.current) {
+        hasFocusedOnce.current = true;
+        return;
+      }
+      setRefreshKey((n) => n + 1);
+    }, [])
+  );
 
   const navigateForPausedSession = (session) => {
     const resumeFromOffset = (session.last_confirmed_ayah ?? 0) + 1;

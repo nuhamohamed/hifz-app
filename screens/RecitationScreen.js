@@ -13,6 +13,7 @@ import { useNavigation } from '@react-navigation/native';
 import { Audio } from 'expo-av';
 import * as Haptics from 'expo-haptics';
 import { getCurrentUserId } from '../lib/auth';
+import { todayString as getTodayDateString } from '../lib/dates';
 import { getAyahLocation } from '../lib/juzSurahMap';
 import { normalizeArabic } from '../lib/arabicUtils';
 import { getAyah } from '../lib/quranApi';
@@ -78,14 +79,6 @@ function classifyMistakeTier(wrongIndices, letterDiffByIndex) {
     (i) => (letterDiffByIndex ?? {})[i] == null
   );
   return skippedEntirely ? 2 : 1;
-}
-
-function getTodayDateString() {
-  const d = new Date();
-  const y = d.getUTCFullYear();
-  const m = String(d.getUTCMonth() + 1).padStart(2, '0');
-  const day = String(d.getUTCDate()).padStart(2, '0');
-  return `${y}-${m}-${day}`;
 }
 
 export default function RecitationScreen(props) {
