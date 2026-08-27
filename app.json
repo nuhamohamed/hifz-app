@@ -81,7 +81,14 @@
       "favicon": "./assets/favicon.png"
     },
     "plugins": [
-      "@siteed/audio-studio",
+      [
+        "@siteed/audio-studio",
+        {
+          "iosConfig": {
+            "microphoneUsageDescription": "Dawrah listens while you recite so it can follow along and show you where you slipped. Audio is transcribed as you speak and is never recorded or saved."
+          }
+        }
+      ],
       [
         "expo-notifications",
         {
