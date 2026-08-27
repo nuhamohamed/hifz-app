@@ -23,6 +23,7 @@ import GenderScreen from './screens/onboarding/GenderScreen';
 import NotificationsScreen from './screens/onboarding/NotificationsScreen';
 import ReminderTimeScreen from './screens/onboarding/ReminderTimeScreen';
 import AllSetScreen from './screens/onboarding/AllSetScreen';
+import DevMenuScreen from './screens/DevMenuScreen';
 import MockupNavigator from './screens/mockups/MockupNavigator';
 import { supabase } from './lib/supabase';
 import { colors } from './lib/theme';
@@ -89,9 +90,19 @@ function AuthErrorScreen({ message }) {
 function OnboardingNavigator({ initialRouteName }) {
   return (
     <OnboardingStack.Navigator
-      initialRouteName={initialRouteName}
+      // In a dev build the tester lands on DevMenu first, so recitation is
+      // reachable without walking all eight setup screens after every database
+      // reset. __DEV__ is false in a release build, so real users go straight
+      // to their resume point and DevMenu is not registered at all.
+      initialRouteName={__DEV__ ? 'DevMenu' : initialRouteName}
       screenOptions={{ headerShown: false }}
     >
+      {__DEV__ ? (
+        <OnboardingStack.Screen name="DevMenu" component={DevMenuScreen} />
+      ) : null}
+      {__DEV__ ? (
+        <OnboardingStack.Screen name="Mockups" component={MockupNavigator} />
+      ) : null}
       <OnboardingStack.Screen name="Welcome" component={WelcomeScreen} />
       <OnboardingStack.Screen name="Name" component={NameScreen} />
       <OnboardingStack.Screen name="Memorization" component={MemorizedJuzScreen} />
