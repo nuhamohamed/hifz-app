@@ -10,11 +10,13 @@ this file over that one.
 
 ## State
 
-Branch `fix/beta-p0-scheduling-and-mistakes`, **14 commits ahead of `main`**,
-all pushed. `main` is untouched at `a5213e4`. Working tree clean.
+Branch `fix/beta-p0-scheduling-and-mistakes`, 14 commits ahead of `main` and
+pushed, plus **one working tree of uncommitted changes** across seven files
+(the scheduling and quiz-costing work below). `main` is untouched at `a5213e4`.
 
-Eight schema migrations applied and verified against the live Supabase project
-`pcjmmogbjohtvnmrupya`. `supabase/schema.sql` is in step with them.
+Ten schema migrations applied and verified against the live Supabase project
+`pcjmmogbjohtvnmrupya`. `supabase/schema.sql` is in step with them. `009` adds
+`scheduled_portions.status` and `users.age`; `010` adds `sessions.type`.
 
 The full task list lives in an artifact the author has:
 **Dawrah TestFlight Checklist**, 74 items. Ask her for the link rather than
@@ -22,50 +24,170 @@ rebuilding it from scratch.
 
 ---
 
-## The two remaining code tasks
+## The two remaining code tasks are done
 
-They are one piece of work, because both read the same number.
+Both landed on 28 August, and both were run on the simulator against the live
+database before being called done.
 
-### Cost the quiz from the ayahs actually due
+### Cost the quiz from the ayahs actually due: done
 
-`getTodayPortion(db, userId, dueQuizMinutes)` already takes this parameter and
-**every caller passes 0**. That was deliberate: the plumbing went in early so
-the sizing work could land without waiting on it.
+`getAyahPageShares()` in `mushafDb.js` answers the page-share question for a
+scattered set of ayahs, which is what the quiz needs: due items come from
+wherever mistakes were made and cross juz freely, so there is no range to
+sweep. `dueQuizCost()` in `quizEngine.js` joins that to the due queue, and
+`getTodayPlan()` in `planEngine.js` costs the quiz *before* sizing the portion.
 
-`portionMath.js` has `quizItemMinutes(pageShare, minutesPerPage)` and
-`quizMinutes(items, minutesPerPage)` ready to use. What is missing is joining
-the due `quiz_queue` rows to their page share, which `getJuzAyahPages` in
-`mushafDb.js` already returns per ayah.
+Verified on the simulator: with eight of the longest ayahs in the Qur'an due,
+the portion gave way from **Al-Fatihah 1 to Al-Baqarah 88 (95 ayat)** to
+**Al-Fatihah 1 to Al-Baqarah 62 (69 ayat)**, and the day still totalled 30
+minutes. 26 ayahs surrendered to pay for the quiz, which is the quiz being paid
+first rather than overrunning.
 
-Why it matters: the quiz is never cut and the portion gives way, so the portion
-cannot be sized correctly until the quiz's real cost is known. An ayah's cost
-varies enormously — An-Naba 1 is 3 seconds, Al-Baqarah 282 is two minutes — so
-a flat per-item estimate is wrong by a factor of 40.
+### Per-portion return dates: done
 
-### Per-portion return dates
+`scheduleCompletedPass()` in `planEngine.js` replaces the single
+`full_juz_review` row. Every portion of the finished pass is written
+individually, shifted so the pass begins at `completion_date + interval` and
+keeps its internal rhythm.
 
-`updateJuzProgressAfterSession()` in `planEngine.js` currently schedules only
-the **next** portion. The settled decision is that when a pass completes, every
-portion of it is scheduled individually: the whole pass shifts to begin at
-`completion_date + interval` and keeps its internal rhythm.
+Verified against the live database with a six-day pass through juz 1 finishing
+27 August and earning 7 days: six rows on 3 to 8 September, starting at offsets
+1, 26, 51, 76, 101 and 126. Not one row for the whole juz.
 
-Worked example the author gave: start juz 2, finish on day 5, earn a 2-day
-interval, and day 0's portion is due on day 7, day 1's on day 8.
+### Then the Today screen: done
 
-Why: work then returns at the rate it was created, so the daily load is level
-by construction rather than arriving as a lump and being rationed.
-
-`scheduled_portions` already has a unique index on
-`(user_id, juz_number, portion_start_ayah, scheduled_date)` that permits several
-rows per date, which this needs.
-
-### Then the Today screen
-
-Once the quiz is costed, show `Today: about 35 minutes`, a plain count of
-anything waiting, and the line "Short on time? Start anyway. The review comes
-first and is the part that matters most."
+"Today: about 35 minutes", "2 juz waiting", and the short-on-time line, all
+confirmed rendering on the simulator.
 
 ---
+
+## Three bugs found on the way, all fixed
+
+- **`updateJuzProgressAfterSession()` threw on every completed session.** It
+  read `portionStartAyah`, which was never a parameter and never in scope, so
+  it was a `ReferenceError` in strict mode. It fires on the Summary screen, and
+  the Summary screen is now the only place a session's consequences are
+  applied, so no session had been able to shrink a portion, halve a plan or
+  schedule anything since the parameter list last changed. Now passed in.
+
+- **Halving was silently thrown away.** A bad session wrote a halved range into
+  `scheduled_portions`, but `mapScheduledRow()` deliberately ignores the stored
+  end and recomputes, without the halved flag. Since scheduled rows are the
+  normal path, the halving never once took effect. The flag is now read and
+  passed through.
+
+- **Portions were picked newest-first.** That worked only because a pass had one
+  row outstanding at a time and consumed rows were never deleted; picking the
+  newest was how stale rows were stepped over. With a pass now laid out all at
+  once, newest-first hands back the *end* of a juz and skips everything before
+  it. Now oldest-first, with consumed rows deleted at the end of each session.
+  Confirmed on the simulator: a six-portion backlog offers Al-Fatihah 1, not
+  offset 126.
+
+Two judgement calls, one of which the author then changed:
+
+1. **A pass is recovered by walking back to the session that started at offset
+   1**, rather than by adding a column to mark where a pass began. Self-
+   contained, needs no migration, and degrades to the old whole-juz row if it
+   ever cannot tell. Kept.
+2. **Worked scheduled rows were deleted; they are now marked instead.** The
+   author asked about a future progress dashboard, which tipped it: deleting is
+   irreversible and the schedule is the only thing `sessions` cannot
+   reconstruct. Migration `009` adds `status` to `scheduled_portions`.
+
+   Three states, and the distinction is load-bearing. `done` is ground a session
+   actually covered. `superseded` is a row abandoned when a completed pass was
+   laid out afresh around it. `pending` is everything still owed, **including
+   overdue rows the person has not reached yet**: falling behind never clears
+   the backlog, it just leaves it waiting, which is the settled handling of
+   overflow. Marking a whole overdue backlog `done` would have been the shorter
+   query and would have credited people for portions they skipped.
+
+---
+
+## Checked against the settled decisions, and three things did not match
+
+Worth doing again after any scheduling change, because all three of these read
+as correct in the code and were only wrong against the written decision.
+
+- **The estimate had a 5-minute floor.** The decision costs a quiz per ayah from
+  its real page share, so three short ayahs is about 22 seconds. A floor turned
+  that into "about 5 minutes", overstating a light day eightfold in the one
+  place the app promises an honest number. It now rounds to the minute below ten
+  and to five above, and shows nothing at all when nothing is due.
+
+- **A backlog was being erased.** Overdue rows the person had not reached were
+  marked `superseded` and replaced with a single rolling portion. That quietly
+  rewrote five waiting portions into one larger one, against "nothing is dropped
+  and nothing is crammed". They now stay `pending` and come back oldest-first,
+  one day at a time. Only the ground a session actually covered is closed out.
+
+- **"Tomorrow: Quiz only" was a lie to anyone behind.** Both tomorrow lookups
+  matched tomorrow's date exactly, which was survivable while a juz had one row
+  outstanding. With a pass laid out in full, anyone a single day behind has
+  their next portion sitting in the past, so the query found nothing and
+  promised them a free day. Now `<= tomorrow`, ordered as the planner orders it.
+  Confirmed on the simulator: reads "Tomorrow: Juz 1, Al-Baqarah 19-43".
+
+One gap this opened and closed: a session ends where today's budget runs out,
+not where the row said it would, so someone who has cut their session length can
+stop short of the row they were working through. Without a check the next row
+starts beyond where they reached and the ayahs between are skipped for a whole
+round. `updateJuzProgressAfterSession` now compares the next pending offset
+against where the session actually stopped and fills the gap.
+
+Also removed the em dashes from six user-facing strings, per the standing rule.
+One remains in `SessionSummaryScreen` as a placeholder glyph for an empty value,
+which is typography rather than copy.
+
+---
+
+## A quiz-only day is now genuinely quiz only
+
+**This decision is not written down in the checklist.** The phrase "quiz only"
+does not appear anywhere on that page; the author settled it in conversation and
+had to raise it a second time. Worth adding to the artifact so the next session
+finds it.
+
+What the app did: the Today screen said "Quiz only today", then fabricated a
+one-ayah portion of juz 1 so the session flow had something to hand the
+recitation screen. The agenda still listed three steps, and the person was
+walked into reciting Al-Fatihah 1. Finishing the day then applied recitation
+consequences off that placeholder.
+
+Measured on the simulator with someone who had **finished** juz 1, next review
+booked for 18 September: one quiz-only day rebooked juz 1 for **the next
+morning, starting at ayah 2**. Three weeks early, near the start of a juz they
+had just completed. Merely opening the Summary tab was enough, because that tab
+resolves to the most recent session whatever it was.
+
+Migration `010` adds `sessions.type` (`revision` | `quiz_only`). A quiz-only day
+now creates a typed session, shows one agenda step rather than three, says
+"Start review" rather than "Start session", and ends when the quiz ends.
+`SessionSummaryScreen` refuses to apply consequences for one, which is the guard
+that matters because of the tab. And a day with nothing due at all now says
+"Nothing is due today. Rest, and come back tomorrow." with no button, instead of
+offering a session that would have done nothing.
+
+Verified after the fix: zero scheduled rows written, juz 1 still due 18
+September, still marked complete.
+
+---
+
+## Age at onboarding
+
+Settled on 28 August: **ask, store, and refuse under-13s.**
+
+`AgeScreen` is now step 1 of 7, ahead of Welcome's successor screens and before
+name, gender or memorisation. That position is deliberate. Someone under 13 is
+turned away before Dawrah has stored anything personal about them at all, which
+is what keeps this outside COPPA in the US and the parental-consent rules in the
+UK and EU. The floor is enforced in the app and again as a database constraint.
+
+**This has paperwork consequences that are not done yet.** Dawrah now holds
+personal data it did not hold before, so the privacy policy has to say so and
+Apple's App Privacy form has to declare it. Both are already on the "before you
+submit" list; age is a new line item on each.
 
 ## Waiting on the author, not on code
 
