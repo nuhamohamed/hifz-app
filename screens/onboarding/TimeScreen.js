@@ -73,8 +73,8 @@ export default function TimeScreen({ route, navigation }) {
         <TouchableOpacity style={styles.backBtn} onPress={() => navigation.goBack()} activeOpacity={0.7}>
           <Text style={styles.backBtnText}>← Back</Text>
         </TouchableOpacity>
-        <OnboardingProgressDots current={2} total={6} />
-        <Text style={styles.step}>Step 3 of 6</Text>
+        <OnboardingProgressDots current={3} total={7} />
+        <Text style={styles.step}>Step 4 of 7</Text>
         <Text style={styles.question}>How much time can you spend each day?</Text>
         <Text style={styles.sub}>We'll plan your sessions to fit within this window.</Text>
       </View>

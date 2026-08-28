@@ -14,10 +14,29 @@ import { getCurrentUserId } from '../../lib/auth';
 import { supabase } from '../../lib/supabase';
 import { colors, fonts, spacing } from '../../lib/theme';
 
-export default function NameScreen({ navigation }) {
-  const [name, setName] = useState('');
+/**
+ * The minimum age Dawrah accepts.
+ *
+ * Storing personal data about children under 13 puts an app inside COPPA in the
+ * United States, and inside the parental-consent rules in the UK and EU. Dawrah
+ * keeps the age rather than checking and discarding it, so the only way to stay
+ * outside all of that is to decline the account instead.
+ */
+export const MINIMUM_AGE = 13;
+
+const MAXIMUM_AGE = 120;
+
+/**
+ * Asked before anything else is collected, which is the whole point of its
+ * position in the flow. Name, gender and memorisation all come afterwards, so
+ * someone under 13 is turned away before Dawrah has stored anything personal
+ * about them at all.
+ */
+export default function AgeScreen({ navigation }) {
+  const [age, setAge] = useState('');
   const [isSaving, setIsSaving] = useState(false);
   const [error, setError] = useState('');
+  const [tooYoung, setTooYoung] = useState(false);
   const opacity = useRef(new Animated.Value(0)).current;
   const translateY = useRef(new Animated.Value(20)).current;
 
@@ -28,23 +47,41 @@ export default function NameScreen({ navigation }) {
     ]).start();
   }, [opacity, translateY]);
 
-  const canContinue = name.trim().length > 0 && !isSaving;
+  const parsed = Number.parseInt(age, 10);
+  const looksLikeAnAge = Number.isInteger(parsed) && parsed > 0 && parsed <= MAXIMUM_AGE;
+  const canContinue = looksLikeAnAge && !isSaving;
+
+  // Digits only. A number pad still offers punctuation on some keyboards, and
+  // a stray character would otherwise turn into NaN and silently disable the
+  // button with no explanation.
+  const handleChange = (text) => {
+    setAge(text.replace(/[^0-9]/g, '').slice(0, 3));
+    if (tooYoung) setTooYoung(false);
+    if (error) setError('');
+  };
 
   const handleContinue = async () => {
     if (!canContinue) return;
+
+    // Checked before the write, not after. Nothing about someone under 13 is
+    // stored, which is the difference between an age gate and an age record.
+    if (parsed < MINIMUM_AGE) {
+      setTooYoung(true);
+      return;
+    }
+
     setIsSaving(true);
     setError('');
     try {
-      const trimmed = name.trim();
       const userId = await getCurrentUserId();
       const { error: updateError } = await supabase
         .from('users')
-        .update({ name: trimmed })
+        .update({ age: parsed })
         .eq('id', userId);
       if (updateError) throw new Error(updateError.message);
-      navigation.navigate('Memorization', { name: trimmed });
+      navigation.navigate('Name');
     } catch (err) {
-      setError(err.message ?? 'Failed to save your name.');
+      setError(err.message ?? 'Failed to save your age.');
     } finally {
       setIsSaving(false);
     }
@@ -56,31 +93,53 @@ export default function NameScreen({ navigation }) {
       behavior={Platform.OS === 'ios' ? 'padding' : undefined}
     >
       <Animated.View style={[styles.inner, { opacity, transform: [{ translateY }] }]}>
-        <OnboardingProgressDots current={1} total={7} />
+        <OnboardingProgressDots current={0} total={7} />
 
         <View style={styles.content}>
-          <Text style={styles.step}>Step 2 of 7</Text>
-          <Text style={styles.question}>What should we call you?</Text>
-          <Text style={styles.sub}>We'll use this to personalise your experience.</Text>
+          <Text style={styles.step}>Step 1 of 7</Text>
+          <Text style={styles.question}>How old are you?</Text>
+          <Text style={styles.sub}>
+            It helps us understand who Dawrah is for. We ask once and never show
+            it to anyone.
+          </Text>
 
           <TextInput
-            style={[styles.input, name.length > 0 && styles.inputFocused]}
-            placeholder="Your first name"
+            style={[
+              styles.input,
+              age.length > 0 && styles.inputFocused,
+              tooYoung && styles.inputRejected,
+            ]}
+            placeholder="Your age"
             placeholderTextColor={colors.textMuted}
-            value={name}
-            onChangeText={setName}
-            autoCapitalize="words"
+            value={age}
+            onChangeText={handleChange}
+            keyboardType="number-pad"
             returnKeyType="done"
+            maxLength={3}
             onSubmitEditing={handleContinue}
           />
+
+          {tooYoung ? (
+            <View style={styles.note}>
+              <Text style={styles.noteTitle}>
+                Dawrah is for ages {MINIMUM_AGE} and over
+              </Text>
+              <Text style={styles.noteText}>
+                We are sorry. Your hifz matters just as much, and we hope to be
+                able to welcome you before long. Nothing you have entered has
+                been saved.
+              </Text>
+            </View>
+          ) : null}
+
           {error ? <Text style={styles.error}>{error}</Text> : null}
         </View>
 
         <TouchableOpacity
-          style={[styles.primaryBtn, !canContinue && styles.primaryBtnDisabled]}
+          style={[styles.primaryBtn, (!canContinue || tooYoung) && styles.primaryBtnDisabled]}
           onPress={handleContinue}
           activeOpacity={0.88}
-          disabled={!canContinue}
+          disabled={!canContinue || tooYoung}
         >
           <Text style={styles.primaryBtnText}>{isSaving ? 'Saving…' : 'Continue'}</Text>
         </TouchableOpacity>
@@ -133,6 +192,25 @@ const styles = StyleSheet.create({
     color: colors.text,
   },
   inputFocused: { borderColor: colors.brown },
+  inputRejected: { borderColor: colors.error },
+  note: {
+    marginTop: spacing.md,
+    backgroundColor: colors.errorLight,
+    borderRadius: 12,
+    padding: spacing.md,
+  },
+  noteTitle: {
+    fontFamily: fonts.semiBold,
+    fontSize: 15,
+    color: colors.text,
+    marginBottom: spacing.xs,
+  },
+  noteText: {
+    fontFamily: fonts.regular,
+    fontSize: 14,
+    color: colors.textMid,
+    lineHeight: 21,
+  },
   error: {
     fontFamily: fonts.regular,
     fontSize: 13,

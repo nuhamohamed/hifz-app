@@ -134,7 +134,7 @@ export default function DevMenuScreen() {
             />
             <Row
               label="Run onboarding from the start"
-              hint="All eight screens, exactly as a tester sees them"
+              hint="All nine screens, exactly as a tester sees them"
               onPress={() => navigation.navigate('Welcome')}
             />
             <Row

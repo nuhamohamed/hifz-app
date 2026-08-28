@@ -32,7 +32,7 @@ export default function WelcomeScreen({ navigation }) {
 
         <TouchableOpacity
           style={styles.primaryBtn}
-          onPress={() => navigation.navigate('Name')}
+          onPress={() => navigation.navigate('Age')}
           activeOpacity={0.88}
         >
           <Text style={styles.primaryBtnText}>Get started</Text>

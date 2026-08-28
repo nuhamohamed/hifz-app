@@ -63,8 +63,8 @@ export default function GenderScreen({ route, navigation }) {
         <TouchableOpacity style={styles.backBtn} onPress={() => navigation.goBack()} activeOpacity={0.7}>
           <Text style={styles.backBtnText}>← Back</Text>
         </TouchableOpacity>
-        <OnboardingProgressDots current={3} total={6} />
-        <Text style={styles.step}>Step 4 of 6</Text>
+        <OnboardingProgressDots current={4} total={7} />
+        <Text style={styles.step}>Step 5 of 7</Text>
         <Text style={styles.question}>Are you male or female?</Text>
         <Text style={styles.sub}>
           We use this to support your revision during periods, keeping your streak intact with non-recitation review.

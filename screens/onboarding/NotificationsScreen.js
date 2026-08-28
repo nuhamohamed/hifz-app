@@ -33,8 +33,8 @@ export default function NotificationsScreen({ route, navigation }) {
         <TouchableOpacity style={styles.backBtn} onPress={() => navigation.goBack()} activeOpacity={0.7}>
           <Text style={styles.backBtnText}>← Back</Text>
         </TouchableOpacity>
-        <OnboardingProgressDots current={4} total={6} />
-        <Text style={styles.step}>Step 5 of 6</Text>
+        <OnboardingProgressDots current={5} total={7} />
+        <Text style={styles.step}>Step 6 of 7</Text>
         <Text style={styles.question}>Stay on track</Text>
         <Text style={styles.sub}>We'll send you a gentle nudge at your chosen time.</Text>
       </View>

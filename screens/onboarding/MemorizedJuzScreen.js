@@ -200,8 +200,8 @@ export default function MemorizedJuzScreen({ route, navigation }) {
         <TouchableOpacity style={styles.backBtn} onPress={() => navigation.goBack()} activeOpacity={0.7}>
           <Text style={styles.backBtnText}>← Back</Text>
         </TouchableOpacity>
-        <OnboardingProgressDots current={1} total={6} />
-        <Text style={styles.step}>Step 2 of 6</Text>
+        <OnboardingProgressDots current={2} total={7} />
+        <Text style={styles.step}>Step 3 of 7</Text>
         <Text style={styles.question}>What have you memorized, {name}?</Text>
         <Text style={styles.sub}>Check a juz to mark it fully memorized, or expand it to select surahs and ayahs.</Text>
       </View>

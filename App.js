@@ -18,6 +18,7 @@ import WelcomeScreen from './screens/onboarding/WelcomeScreen';
 import NameScreen from './screens/onboarding/NameScreen';
 import MemorizedJuzScreen from './screens/onboarding/MemorizedJuzScreen';
 import TimeScreen from './screens/onboarding/TimeScreen';
+import AgeScreen from './screens/onboarding/AgeScreen';
 import GenderScreen from './screens/onboarding/GenderScreen';
 import NotificationsScreen from './screens/onboarding/NotificationsScreen';
 import ReminderTimeScreen from './screens/onboarding/ReminderTimeScreen';
@@ -103,6 +104,7 @@ function OnboardingNavigator({ initialRouteName }) {
         <OnboardingStack.Screen name="Mockups" component={MockupNavigator} />
       ) : null}
       <OnboardingStack.Screen name="Welcome" component={WelcomeScreen} />
+      <OnboardingStack.Screen name="Age" component={AgeScreen} />
       <OnboardingStack.Screen name="Name" component={NameScreen} />
       <OnboardingStack.Screen name="Memorization" component={MemorizedJuzScreen} />
       <OnboardingStack.Screen name="Time" component={TimeScreen} />
