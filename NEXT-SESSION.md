@@ -189,6 +189,49 @@ personal data it did not hold before, so the privacy policy has to say so and
 Apple's App Privacy form has to declare it. Both are already on the "before you
 submit" list; age is a new line item on each.
 
+## Parked: fa heard as waw, and the recogniser is the suspect
+
+Reported 28 August, deliberately not fixed yet. **Say the letter fa where the
+ayah has waw, clearly, and no mistake is flagged.**
+
+Ruled out already, by reading rather than guessing: the app cannot be the
+cause. A spoken word either equals the expected word exactly, after a
+normalisation that touches neither letter, or it is marked wrong. There is no
+fuzzy match, no similarity threshold and no edit-distance tolerance anywhere in
+the decision path. `letterDiff.js` does use Levenshtein, but only to colour the
+letters inside a word already judged wrong; it never decides.
+
+So the app never sees the fa. Either the recogniser returns the waw the ayah
+expects, or the error is lost after arrival.
+
+The strong suspect is the first. There is a note already in
+`realtimeTranscription.js` saying Speechmatics "over-predicts Quran text in
+partials", which is why partials are not used for word reveal. The same pull
+would explain this exactly: the model has Quranic text in its training data and
+completes toward it, and a rare fa prefix is smoothed into the far commoner waw
+conjunction. Committed transcripts get the same treatment, and those *are* what
+the app judges against.
+
+**The next step is evidence, not code.** Commit `918f045` logs per-word
+confidence and competing candidates from `results`, which the app otherwise
+throws away, under `__DEV__`. Recite one ayah on a phone with Metro attached,
+say the fa deliberately, and read the `[RT-DEBUG]` lines. Three outcomes, three
+different answers:
+
+- **Waw returned confidently, no alternative.** Nothing app-side can catch it.
+  It belongs with "grading mistakes by kind" as after the beta, and probably
+  needs a Qur'an-specific model rather than a general Arabic one.
+- **Fa present as a lower-ranked alternative.** Real fix available: judge
+  against the candidates rather than only the top one.
+- **Confidence drops on the substituted word.** The app can at least stop
+  claiming the word was correct, and show it unchecked rather than green.
+
+Worth settling before the beta rather than after, because the author's own
+decision notes say drifting into a similar-sounding verse is how huffaz lose
+their memorisation. This is that class of error.
+
+---
+
 ## Waiting on the author, not on code
 
 - **Apple Developer enrollment** — submitted, still pending. Blocks everything.
