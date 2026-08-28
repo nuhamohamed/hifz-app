@@ -163,10 +163,11 @@ export default function TodayScreen() {
   // Only a full restart of the app corrected it.
   const [refreshKey, setRefreshKey] = useState(0);
   const [name, setName] = useState('');
-  const [todayPortion, setTodayPortion] = useState(null);
+  // Every portion due today, one per juz, in mushaf order. Usually one.
+  const [portions, setPortions] = useState([]);
   const [quizCount, setQuizCount] = useState(0);
   const [estimateMinutes, setEstimateMinutes] = useState(null);
-  const [juzWaiting, setJuzWaiting] = useState(0);
+  const [portionsWaiting, setPortionsWaiting] = useState(0);
   const [portionLoading, setPortionLoading] = useState(true);
   const [pausedSession, setPausedSession] = useState(null);
   const [sessionDoneToday, setSessionDoneToday] = useState(false);
@@ -244,16 +245,19 @@ export default function TodayScreen() {
 
         if (!mounted) return;
 
-        const portion = plan.portion;
+        const portion = plan.portions[0] ?? null;
         setName(userResult.data?.name ?? '');
-        setTodayPortion(portion);
+        setPortions(plan.portions);
         // The length of the quiz that will actually run, after the overlap
         // dedupe and the leech cap, rather than the raw row count.
         setQuizCount(plan.quizItemCount);
         setEstimateMinutes(roundedEstimateMinutes(plan.estimateMinutes));
-        setJuzWaiting(plan.juzWaiting);
+        setPortionsWaiting(plan.portionsWaiting);
 
-        const isDone = !completedResult.error && !!completedResult.data;
+        // Finished today AND nothing further due. A day carrying two juz is not
+        // over when the first is done, so this cannot key on the session alone.
+        const isDone =
+          !completedResult.error && !!completedResult.data && plan.portions.length === 0;
         if (isDone) {
           setSessionDoneToday(true);
           setTomorrowText(formatTomorrowLine(tomorrowResult.data ?? null));
@@ -267,7 +271,7 @@ export default function TodayScreen() {
               : [9, 0];
             await scheduleDailyNotification(remHour, remMin);
 
-            const isOverdue = !!(portion.scheduledDate && portion.scheduledDate < today);
+            const isOverdue = !!(portion?.scheduledDate && portion.scheduledDate < today);
             if (isDone) {
               await cancelEveningNudge();
             } else {
@@ -361,7 +365,7 @@ export default function TodayScreen() {
         return;
       }
 
-      if (!todayPortion || todayPortion.type === 'quiz_only') {
+      if (!nextPortion) {
         // There is nothing to recite, so the day is the quiz and then it ends.
         //
         // This used to invent a one-ayah portion of juz 1 purely so the session
@@ -410,13 +414,13 @@ export default function TodayScreen() {
           date: today,
           status: 'in_progress',
           phase: 'pre_quiz',
-          juz_number: todayPortion.juzNumber,
-          portion_start_ayah: todayPortion.portionStartAyah,
-          portion_end_ayah: todayPortion.portionEndAyah,
+          juz_number: nextPortion.juzNumber,
+          portion_start_ayah: nextPortion.portionStartAyah,
+          portion_end_ayah: nextPortion.portionEndAyah,
           // A juz offset, matching portion_start_ayah above. It used to be a
           // surah-relative ayah number, which made resume restart a
           // cross-surah portion in the wrong place.
-          last_confirmed_ayah: todayPortion.portionStartAyah - 1,
+          last_confirmed_ayah: nextPortion.portionStartAyah - 1,
           started_at: new Date().toISOString(),
         })
         .select('id')
@@ -425,7 +429,7 @@ export default function TodayScreen() {
       if (insertError) throw new Error(insertError.message);
       navigation.navigate(
         'PreSessionQuiz',
-        buildSessionParams(newSession.id, todayPortion.portionStartAyah, todayPortion)
+        buildSessionParams(newSession.id, nextPortion.portionStartAyah, nextPortion)
       );
     } catch (err) {
       setError(err.message ?? 'Failed to start session.');
@@ -436,8 +440,11 @@ export default function TodayScreen() {
 
   const resumeHint = getResumeHint(pausedSession);
   const isCarriedOver = !!(pausedSession && pausedSession.date !== getTodayDateString());
-  const summary = portionSummary(todayPortion);
-  const quizOnly = todayPortion?.type === 'quiz_only';
+  // The first portion is the one Start begins; the rest are listed and come
+  // after it, one session each.
+  const nextPortion = portions[0] ?? null;
+  const summary = portionSummary(nextPortion);
+  const quizOnly = portions.length === 0;
   // Nothing to recite and nothing due: a genuinely empty day. Saying "Quiz only"
   // and offering a Start button would be two lies in a row.
   const nothingDue = quizOnly && quizCount === 0 && !pausedSession;
@@ -473,6 +480,8 @@ export default function TodayScreen() {
                 <Text style={styles.portionEyebrow}>
                   {isCarriedOver
                     ? `UNFINISHED · ${formatSessionDate(pausedSession.date)}`
+                    : portions.length > 1
+                    ? `JUZ ${summary.juzNumber} · FIRST OF ${portions.length}`
                     : summary
                     ? `JUZ ${summary.juzNumber} · TODAY'S PORTION`
                     : "TODAY'S PORTION"}
@@ -503,11 +512,13 @@ export default function TodayScreen() {
                 <Text style={styles.costText}>
                   Today: about {estimateMinutes} minute{estimateMinutes === 1 ? '' : 's'}
                 </Text>
-                {juzWaiting > 0 ? (
+                {portionsWaiting > 0 ? (
                   /* A fact, not a warning. No badge and nothing dropped: a
-                     backlog is worked oldest first and shrinks by being done. */
+                     backlog is worked oldest first and shrinks by being done.
+                     Counted in portions, because a juz count read zero for
+                     someone days behind inside the juz they were being served. */
                   <Text style={styles.waitingText}>
-                    {juzWaiting} juz waiting
+                    {portionsWaiting} portion{portionsWaiting === 1 ? '' : 's'} waiting
                   </Text>
                 ) : null}
               </View>
@@ -524,22 +535,35 @@ export default function TodayScreen() {
                   />
                   {/* A quiz-only day has no portion, so it has no recitation and
                       no recap of one. Listing three steps and then ending after
-                      the first was the screen contradicting itself. */}
-                  {quizOnly ? null : (
-                    <>
+                      the first was the screen contradicting itself.
+
+                      When two juz fall on the same day both are listed here, in
+                      mushaf order, each as its own step. They are done one after
+                      the other, and stopping after the first leaves the second
+                      waiting rather than losing it. */}
+                  {portions.map((p, i) => {
+                    const label = portionSummary(p)?.label;
+                    return (
                       <StepCard
-                        step={2}
+                        key={`${p.juzNumber}-${p.portionStartAyah}`}
+                        step={i + 2}
                         icon="◉"
-                        title={summary ? `Recite ${summary.label}` : 'Recite today\'s portion'}
-                        desc="We follow along as you go"
+                        title={label ? `Recite ${label}` : "Recite today's portion"}
+                        desc={
+                          portions.length > 1
+                            ? `Juz ${p.juzNumber}`
+                            : 'We follow along as you go'
+                        }
                         iconBg={colors.parchment} iconColor={colors.brown}
                       />
-                      <StepCard
-                        step={3} icon="◆" title="Recap quiz"
-                        desc="Locks it in for next time"
-                        iconBg={colors.parchment} iconColor={colors.accent}
-                      />
-                    </>
+                    );
+                  })}
+                  {quizOnly ? null : (
+                    <StepCard
+                      step={portions.length + 2} icon="◆" title="Recap quiz"
+                      desc="Locks it in for next time"
+                      iconBg={colors.parchment} iconColor={colors.accent}
+                    />
                   )}
                 </View>
               </>
