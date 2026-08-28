@@ -16,7 +16,8 @@ import TabBar from '../components/TabBar';
 import { getCurrentUserId } from '../lib/auth';
 import { todayString as getTodayDateString, tomorrowString as getTomorrowDateString } from '../lib/dates';
 import { getAyahLocation, getJuzTotalAyahs } from '../lib/juzSurahMap';
-import { getTodayPortion } from '../lib/planEngine';
+import { getTodayPlan } from '../lib/planEngine';
+import { roundedEstimateMinutes } from '../lib/portionMath';
 import {
   cancelEveningNudge,
   scheduleDailyNotification,
@@ -38,16 +39,16 @@ function formatTomorrowLine(tomorrow) {
   const start = getAyahLocation(tomorrow.juz_number, tomorrow.portion_start_ayah);
   const end = getAyahLocation(tomorrow.juz_number, tomorrow.portion_end_ayah);
   if (start.surahNumber === end.surahNumber) {
-    return `Tomorrow: Juz ${tomorrow.juz_number} — ${start.surahName} ${start.ayahNumber}–${end.ayahNumber}`;
+    return `Tomorrow: Juz ${tomorrow.juz_number}, ${start.surahName} ${start.ayahNumber}–${end.ayahNumber}`;
   }
-  return `Tomorrow: Juz ${tomorrow.juz_number} — ${start.surahName} ${start.ayahNumber} to ${end.surahName} ${end.ayahNumber}`;
+  return `Tomorrow: Juz ${tomorrow.juz_number}, ${start.surahName} ${start.ayahNumber} to ${end.surahName} ${end.ayahNumber}`;
 }
 
 // Passes juz-relative offsets straight through. It used to flatten them into a
 // single surah, taking the surah of the *start* and the ayah number of the
 // *end*, which silently corrupted every portion spanning two surahs. 28 of the
 // 30 juz contain more than one surah, so that was most portions.
-function buildSessionParams(sessionId, resumeFromOffset, portion) {
+function buildSessionParams(sessionId, resumeFromOffset, portion, sessionType = 'revision') {
   const juzNumber = portion.juzNumber ?? 1;
   return {
     juzNumber,
@@ -56,6 +57,9 @@ function buildSessionParams(sessionId, resumeFromOffset, portion) {
     totalAyahsInJuz: getJuzTotalAyahs(juzNumber),
     sessionId,
     resumeFromOffset,
+    // 'quiz_only' means the day ends when the quiz does. The offsets above are
+    // then meaningless and nothing downstream may act on them.
+    sessionType,
   };
 }
 
@@ -161,6 +165,8 @@ export default function TodayScreen() {
   const [name, setName] = useState('');
   const [todayPortion, setTodayPortion] = useState(null);
   const [quizCount, setQuizCount] = useState(0);
+  const [estimateMinutes, setEstimateMinutes] = useState(null);
+  const [juzWaiting, setJuzWaiting] = useState(0);
   const [portionLoading, setPortionLoading] = useState(true);
   const [pausedSession, setPausedSession] = useState(null);
   const [sessionDoneToday, setSessionDoneToday] = useState(false);
@@ -191,22 +197,21 @@ export default function TodayScreen() {
         const today = getTodayDateString();
         const userId = await getCurrentUserId();
 
-        const [userResult, portion, pausedResult, quizResult, completedResult, tomorrowResult] = await Promise.all([
+        // The plan is one call rather than a query in the Promise.all, because
+        // the portion cannot be sized until the due quiz has been costed: the
+        // quiz is never cut, so it is paid for first and the portion takes what
+        // is left. Everything that does not depend on that still runs alongside.
+        const [userResult, plan, pausedResult, completedResult, tomorrowResult] = await Promise.all([
           supabase.from('users').select('name, notification_time').eq('id', userId).maybeSingle(),
-          getTodayPortion(db, userId),
+          getTodayPlan(db, userId),
           supabase
             .from('sessions')
-            .select('id, last_confirmed_ayah, phase, juz_number, portion_start_ayah, portion_end_ayah, date')
+            .select('id, last_confirmed_ayah, phase, juz_number, portion_start_ayah, portion_end_ayah, date, type')
             .eq('user_id', userId)
             .in('status', ['paused', 'in_progress'])
             .order('date', { ascending: false })
             .limit(1)
             .maybeSingle(),
-          supabase
-            .from('quiz_queue')
-            .select('id', { count: 'exact', head: true })
-            .eq('user_id', userId)
-            .lte('next_review_date', today),
           supabase
             .from('sessions')
             .select('id')
@@ -219,17 +224,34 @@ export default function TodayScreen() {
             .from('scheduled_portions')
             .select('juz_number, portion_start_ayah, portion_end_ayah, type')
             .eq('user_id', userId)
-            .eq('scheduled_date', getTomorrowDateString())
-            .order('id', { ascending: false })
+            .eq('status', 'pending')
+            // Everything already due as well as tomorrow's own row, ordered
+            // exactly as getTodayPortion() orders it, so this really is the
+            // next thing the person will be handed.
+            //
+            // This matched tomorrow's date exactly, which was survivable while
+            // a juz had one row outstanding at a time. Now that a return pass
+            // is laid out in full, anyone even one day behind has their next
+            // portion sitting in the past, and an exact match found nothing and
+            // told them tomorrow was a quiz-only day.
+            .lte('scheduled_date', getTomorrowDateString())
+            .order('scheduled_date', { ascending: true })
+            .order('juz_number', { ascending: true })
+            .order('portion_start_ayah', { ascending: true })
             .limit(1)
             .maybeSingle(),
         ]);
 
         if (!mounted) return;
 
+        const portion = plan.portion;
         setName(userResult.data?.name ?? '');
         setTodayPortion(portion);
-        setQuizCount(quizResult.count ?? 0);
+        // The length of the quiz that will actually run, after the overlap
+        // dedupe and the leech cap, rather than the raw row count.
+        setQuizCount(plan.quizItemCount);
+        setEstimateMinutes(roundedEstimateMinutes(plan.estimateMinutes));
+        setJuzWaiting(plan.juzWaiting);
 
         const isDone = !completedResult.error && !!completedResult.data;
         if (isDone) {
@@ -289,11 +311,16 @@ export default function TodayScreen() {
 
   const navigateForPausedSession = (session) => {
     const resumeFromOffset = (session.last_confirmed_ayah ?? 0) + 1;
-    const params = buildSessionParams(session.id, resumeFromOffset, {
-      juzNumber: session.juz_number ?? 1,
-      portionStartAyah: session.portion_start_ayah,
-      portionEndAyah: session.portion_end_ayah,
-    });
+    const params = buildSessionParams(
+      session.id,
+      resumeFromOffset,
+      {
+        juzNumber: session.juz_number ?? 1,
+        portionStartAyah: session.portion_start_ayah,
+        portionEndAyah: session.portion_end_ayah,
+      },
+      session.type ?? 'revision'
+    );
     const phase = session.phase ?? 'pre_quiz';
 
     if (phase === 'pre_quiz') {
@@ -317,7 +344,7 @@ export default function TodayScreen() {
 
       const { data: paused, error: fetchError } = await supabase
         .from('sessions')
-        .select('id, last_confirmed_ayah, phase, juz_number, portion_start_ayah, portion_end_ayah, date')
+        .select('id, last_confirmed_ayah, phase, juz_number, portion_start_ayah, portion_end_ayah, date, type')
         .eq('user_id', userId)
         .in('status', ['paused', 'in_progress'])
         .order('date', { ascending: false })
@@ -335,6 +362,16 @@ export default function TodayScreen() {
       }
 
       if (!todayPortion || todayPortion.type === 'quiz_only') {
+        // There is nothing to recite, so the day is the quiz and then it ends.
+        //
+        // This used to invent a one-ayah portion of juz 1 purely so the session
+        // flow had something to hand the recitation screen. The screen said
+        // "Quiz only today" and then walked people into reciting Al-Fatihah 1,
+        // and finishing the day advanced the recitation plan off the back of it:
+        // a juz already completed and not due for three weeks came back the next
+        // morning, starting at ayah 2. The columns below are still written
+        // because they are NOT NULL, but `type` is what anything downstream
+        // reads, and nothing acts on the offsets for a quiz-only day.
         const { data: newSession, error: insertError } = await supabase
           .from('sessions')
           .insert({
@@ -342,6 +379,7 @@ export default function TodayScreen() {
             date: today,
             status: 'in_progress',
             phase: 'pre_quiz',
+            type: 'quiz_only',
             juz_number: 1,
             portion_start_ayah: 1,
             portion_end_ayah: 1,
@@ -355,7 +393,12 @@ export default function TodayScreen() {
 
         navigation.navigate(
           'PreSessionQuiz',
-          buildSessionParams(newSession.id, 1, { juzNumber: 1, portionStartAyah: 1, portionEndAyah: 1 })
+          buildSessionParams(
+            newSession.id,
+            1,
+            { juzNumber: 1, portionStartAyah: 1, portionEndAyah: 1 },
+            'quiz_only'
+          )
         );
         return;
       }
@@ -395,6 +438,9 @@ export default function TodayScreen() {
   const isCarriedOver = !!(pausedSession && pausedSession.date !== getTodayDateString());
   const summary = portionSummary(todayPortion);
   const quizOnly = todayPortion?.type === 'quiz_only';
+  // Nothing to recite and nothing due: a genuinely empty day. Saying "Quiz only"
+  // and offering a Start button would be two lies in a row.
+  const nothingDue = quizOnly && quizCount === 0 && !pausedSession;
 
   return (
     <View style={styles.screen}>
@@ -407,7 +453,7 @@ export default function TodayScreen() {
         {notifDenied ? (
           <TouchableOpacity style={styles.notifBanner} onPress={() => Linking.openSettings()} activeOpacity={0.8}>
             <Text style={styles.notifBannerText}>
-              Notifications are off — tap to enable reminders in Settings.
+              Notifications are off. Tap to enable reminders in Settings.
             </Text>
           </TouchableOpacity>
         ) : null}
@@ -433,6 +479,8 @@ export default function TodayScreen() {
                 </Text>
                 {portionLoading ? (
                   <ActivityIndicator size="small" color={colors.primary} style={{ alignSelf: 'flex-start', marginVertical: 4 }} />
+                ) : nothingDue ? (
+                  <Text style={styles.portionTitle}>Nothing due today</Text>
                 ) : quizOnly ? (
                   <Text style={styles.portionTitle}>Quiz only today</Text>
                 ) : summary ? (
@@ -446,26 +494,56 @@ export default function TodayScreen() {
               </View>
             </Animated.View>
 
-            <Text style={styles.sectionLabel}>TODAY'S AGENDA</Text>
-            <View style={styles.steps}>
-              <StepCard
-                step={1} icon="◈" title="Mistake Review"
-                desc="Primes what you'll revise"
-                iconBg={colors.ice} iconColor={colors.primary}
-              />
-              <StepCard
-                step={2}
-                icon="◉"
-                title={summary ? `Recite ${summary.label}` : 'Recite today\'s portion'}
-                desc="We follow along as you go"
-                iconBg={colors.parchment} iconColor={colors.brown}
-              />
-              <StepCard
-                step={3} icon="◆" title="Recap quiz"
-                desc="Locks it in for next time"
-                iconBg={colors.parchment} iconColor={colors.accent}
-              />
-            </View>
+            {!portionLoading && estimateMinutes ? (
+              <View style={styles.costRow}>
+                {/* Said every day, not only on heavy ones, so nobody finds out
+                    forty minutes in. Honest now that the quiz is costed from
+                    the ayahs actually due rather than assumed free, which is
+                    also why a day with nothing due shows no time at all. */}
+                <Text style={styles.costText}>
+                  Today: about {estimateMinutes} minute{estimateMinutes === 1 ? '' : 's'}
+                </Text>
+                {juzWaiting > 0 ? (
+                  /* A fact, not a warning. No badge and nothing dropped: a
+                     backlog is worked oldest first and shrinks by being done. */
+                  <Text style={styles.waitingText}>
+                    {juzWaiting} juz waiting
+                  </Text>
+                ) : null}
+              </View>
+            ) : null}
+
+            {nothingDue ? null : (
+              <>
+                <Text style={styles.sectionLabel}>TODAY'S AGENDA</Text>
+                <View style={styles.steps}>
+                  <StepCard
+                    step={1} icon="◈" title="Mistake Review"
+                    desc={quizOnly ? 'The ayat you slipped on' : "Primes what you'll revise"}
+                    iconBg={colors.ice} iconColor={colors.primary}
+                  />
+                  {/* A quiz-only day has no portion, so it has no recitation and
+                      no recap of one. Listing three steps and then ending after
+                      the first was the screen contradicting itself. */}
+                  {quizOnly ? null : (
+                    <>
+                      <StepCard
+                        step={2}
+                        icon="◉"
+                        title={summary ? `Recite ${summary.label}` : 'Recite today\'s portion'}
+                        desc="We follow along as you go"
+                        iconBg={colors.parchment} iconColor={colors.brown}
+                      />
+                      <StepCard
+                        step={3} icon="◆" title="Recap quiz"
+                        desc="Locks it in for next time"
+                        iconBg={colors.parchment} iconColor={colors.accent}
+                      />
+                    </>
+                  )}
+                </View>
+              </>
+            )}
 
             {resumeHint ? <Text style={styles.resumeHint}>{resumeHint}</Text> : null}
             {error ? <Text style={styles.error}>{error}</Text> : null}
@@ -475,12 +553,27 @@ export default function TodayScreen() {
 
             <View style={styles.spacer} />
 
+            {/* True rather than a nudge: step 1 above genuinely is the quiz, so
+                five minutes really does buy the highest-value part of a day. */}
+            {!portionLoading && !quizOnly ? (
+              <Text style={styles.shortOnTime}>
+                Short on time? Start anyway. The review comes first and is the
+                part that matters most.
+              </Text>
+            ) : null}
+
             {isStarting || portionLoading ? (
               <ActivityIndicator size="large" color={colors.primary} style={{ marginBottom: spacing.md }} />
+            ) : nothingDue ? (
+              <Text style={styles.restDay}>
+                Nothing is due today. Rest, and come back tomorrow.
+              </Text>
             ) : (
               <TouchableOpacity style={styles.startBtn} onPress={handleStartSession} activeOpacity={0.88}>
                 <Text style={styles.startBtnIcon}>▶</Text>
-                <Text style={styles.startBtnText}>{pausedSession ? 'Resume session' : 'Start session'}</Text>
+                <Text style={styles.startBtnText}>
+                  {pausedSession ? 'Resume session' : quizOnly ? 'Start review' : 'Start session'}
+                </Text>
               </TouchableOpacity>
             )}
           </>
@@ -622,6 +715,28 @@ const styles = StyleSheet.create({
     fontFamily: fonts.medium, fontSize: 14, color: colors.accent,
     textAlign: 'center', marginTop: spacing.md,
   },
+  costRow: {
+    flexDirection: 'row', alignItems: 'baseline', justifyContent: 'space-between',
+    marginTop: spacing.sm, marginBottom: spacing.md,
+  },
+  costText: {
+    fontFamily: fonts.semiBold, fontSize: 15, color: colors.text,
+  },
+  waitingText: {
+    fontFamily: fonts.regular, fontSize: 13, color: colors.textMuted,
+  },
+
+  restDay: {
+    fontFamily: fonts.regular, fontSize: 15, color: colors.textMid,
+    textAlign: 'center', lineHeight: 22, marginBottom: spacing.lg,
+  },
+
+  shortOnTime: {
+    fontFamily: fonts.regular, fontSize: 13, color: colors.textMid,
+    textAlign: 'center', lineHeight: 19, marginBottom: spacing.md,
+    paddingHorizontal: spacing.sm,
+  },
+
   quizCountHint: {
     fontFamily: fonts.regular, fontSize: 13, color: colors.textMuted,
     textAlign: 'center', marginTop: spacing.sm,

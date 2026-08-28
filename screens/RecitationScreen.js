@@ -799,7 +799,7 @@ export default function RecitationScreen(props) {
             onPress={() => finishRevisionRef.current?.()}
             activeOpacity={0.85}
           >
-            <Text style={styles.doneBtnText}>Done — continue to quiz</Text>
+            <Text style={styles.doneBtnText}>Done, continue to quiz</Text>
           </TouchableOpacity>
         </View>
       ) : (currentAyahIndex === 0 && revealedWordCount === 0) || mistakeMessage ? (

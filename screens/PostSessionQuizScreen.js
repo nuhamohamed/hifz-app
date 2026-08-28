@@ -296,7 +296,7 @@ export default function PostSessionQuizScreen(props) {
           firstFailedTextRef.current = accumulatedText;
           mistakeStateRef.current = 'awaiting_retry';
           await buzzAndTone();
-          setMistakeMessage('Possible mistake detected — please try again.');
+          setMistakeMessage('Possible mistake detected. Please try again.');
         }
         return;
       }

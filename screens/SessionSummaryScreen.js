@@ -203,7 +203,7 @@ export default function SessionSummaryScreen({ route }) {
         const { data: sessionData, error: sessionError } = await supabase
           .from('sessions')
           .select(
-            'id, portion_start_ayah, portion_end_ayah, juz_number, completed_at, status, plan_applied'
+            'id, portion_start_ayah, portion_end_ayah, juz_number, completed_at, status, plan_applied, type'
           )
           .eq('id', resolvedSessionId)
           .single();
@@ -214,17 +214,25 @@ export default function SessionSummaryScreen({ route }) {
 
         const userId = await getCurrentUserId();
 
+        // A quiz-only day has no portion, so the offsets on its row are filler
+        // and nothing may be concluded from them. Read the type first.
+        const isQuizOnly = sessionData.type === 'quiz_only';
+
         const totalAyahsInJuz =
           totalAyahsInJuzParam ?? getJuzTotalAyahs(sessionData.juz_number);
         const isJuzComplete =
-          sessionData.portion_end_ayah >= totalAyahsInJuz;
+          !isQuizOnly && sessionData.portion_end_ayah >= totalAyahsInJuz;
 
         // plan_applied is persisted, not held in state. A React ref resets on
         // every mount, so reopening this screen for the same session used to
         // double-count its mistakes, multiply the review interval twice, and
         // write a second scheduled row. Harmless when the screen was only ever
         // reached once at the end of a session; not harmless now it is a tab.
-        if (sessionData.status === 'complete' && !sessionData.plan_applied) {
+        // The guard matters here and not only in the flow: this screen is also
+        // a tab, and opening it resolves to the most recent session whatever
+        // that session was. Without it, visiting the tab after a quiz-only day
+        // would advance the recitation plan off a portion nobody recited.
+        if (sessionData.status === 'complete' && !sessionData.plan_applied && !isQuizOnly) {
           await supabase
             .from('sessions')
             .update({ plan_applied: true })
@@ -234,6 +242,7 @@ export default function SessionSummaryScreen({ route }) {
             userId,
             resolvedSessionId,
             sessionData.juz_number,
+            sessionData.portion_start_ayah,
             sessionData.portion_end_ayah,
             totalAyahsInJuz
           );
@@ -257,8 +266,15 @@ export default function SessionSummaryScreen({ route }) {
           .from('scheduled_portions')
           .select('juz_number, portion_start_ayah, portion_end_ayah, type')
           .eq('user_id', userId)
-          .eq('scheduled_date', getTomorrowDateString())
-          .order('id', { ascending: false })
+          .eq('status', 'pending')
+          // Anything already due counts as well as tomorrow's own row, ordered
+          // exactly as getTodayPortion() orders it. Matching tomorrow's date
+          // exactly told anyone with a backlog that tomorrow was quiz-only,
+          // when in fact they had overdue portions waiting.
+          .lte('scheduled_date', getTomorrowDateString())
+          .order('scheduled_date', { ascending: true })
+          .order('juz_number', { ascending: true })
+          .order('portion_start_ayah', { ascending: true })
           .limit(1)
           .maybeSingle();
 
@@ -456,7 +472,12 @@ export default function SessionSummaryScreen({ route }) {
         : `${start.surahName} ${start.ayahNumber} to ${end.surahName} ${end.ayahNumber}`;
   }
 
-  const ayahCount = session ? session.portion_end_ayah - session.portion_start_ayah + 1 : 0;
+  // Zero on a quiz-only day. Its portion columns are filler, so subtracting them
+  // would report an ayah recited that nobody recited.
+  const ayahCount =
+    session && session.type !== 'quiz_only'
+      ? session.portion_end_ayah - session.portion_start_ayah + 1
+      : 0;
 
   return (
     <Animated.View style={[styles.screen, { opacity }]}>

@@ -59,7 +59,8 @@ export default function PreSessionQuizScreen(props) {
   const navigation = useNavigation();
   const db = useSQLiteContext();
   const sessionParams = props.route?.params ?? {};
-  const { sessionId, juzNumber: sessionJuzNumber = 1 } = sessionParams;
+  const { sessionId, juzNumber: sessionJuzNumber = 1, sessionType = 'revision' } = sessionParams;
+  const isQuizOnly = sessionType === 'quiz_only';
 
   const [quizItems, setQuizItems] = useState([]);
   const [currentItemIndex, setCurrentItemIndex] = useState(0);
@@ -102,14 +103,42 @@ export default function PreSessionQuizScreen(props) {
   const currentItem = quizItems[currentItemIndex];
   const blockLength = blockAyahsRef.current.length;
 
+  // On a quiz-only day the quiz *is* the day. There is no portion to recite and
+  // no recap of one, so finishing here finishes the session. Previously every
+  // path from this screen led into recitation, which is how a day the app had
+  // called "Quiz only" ended up walking people through Al-Fatihah 1 and then
+  // rebooking a juz they had already completed.
+  const finishQuizOnlyDay = useCallback(async () => {
+    await stopListening();
+    if (sessionParams.sessionId) {
+      await supabase
+        .from('sessions')
+        .update({
+          phase: 'complete',
+          status: 'complete',
+          completed_at: new Date().toISOString(),
+        })
+        .eq('id', sessionParams.sessionId);
+    }
+    navigation.navigate('Today');
+  }, [navigation, sessionParams.sessionId]);
+
   const navigateToRecitation = useCallback(async () => {
+    if (isQuizOnly) {
+      await finishQuizOnlyDay();
+      return;
+    }
     if (sessionParams.sessionId) {
       await supabase.from('sessions').update({ phase: 'revision' }).eq('id', sessionParams.sessionId);
     }
     navigation.replace('Recitation', sessionParams);
-  }, [navigation, sessionParams]);
+  }, [navigation, sessionParams, isQuizOnly, finishQuizOnlyDay]);
 
   const finishAllQuizItems = useCallback(async () => {
+    if (isQuizOnly) {
+      await finishQuizOnlyDay();
+      return;
+    }
     await stopListening();
     if (sessionParams.sessionId) {
       await supabase.from('sessions').update({ phase: 'revision' }).eq('id', sessionParams.sessionId);
@@ -117,7 +146,7 @@ export default function PreSessionQuizScreen(props) {
     setShowTransition(true);
     Animated.timing(fadeAnim, { toValue: 1, duration: 1500, useNativeDriver: true }).start();
     setTimeout(() => { navigation.replace('Recitation', sessionParams); }, 4500);
-  }, [fadeAnim, navigation, sessionParams]);
+  }, [fadeAnim, navigation, sessionParams, isQuizOnly, finishQuizOnlyDay]);
 
   const buzzAndTone = useCallback(async () => {
     try { await Haptics.notificationAsync(Haptics.NotificationFeedbackType.Warning); } catch {}
@@ -284,7 +313,7 @@ export default function PreSessionQuizScreen(props) {
           firstFailedTextRef.current = accumulatedText;
           mistakeStateRef.current = 'awaiting_retry';
           await buzzAndTone();
-          setMistakeMessage('Possible mistake detected — please try again.');
+          setMistakeMessage('Possible mistake detected. Please try again.');
         }
         return;
       }

@@ -15,6 +15,10 @@ CREATE TABLE public.users (
   avg_minutes_per_page double precision NOT NULL DEFAULT 2.0,
   name text,
   gender text CHECK (gender IN ('male', 'female')),
+  -- Collected at onboarding and kept. Under-13s are refused rather than
+  -- stored, which is what keeps this out of COPPA and the UK/EU parental
+  -- consent regime; the floor is enforced here as well as in the app.
+  age integer CHECK (age IS NULL OR (age >= 13 AND age <= 120)),
   onboarding_completed boolean NOT NULL DEFAULT false
 );
 
@@ -115,8 +119,17 @@ CREATE TABLE public.sessions (
   -- they read. Feeds avg_minutes_per_page once five plausible sessions
   -- exist; implausible values are discarded rather than averaged.
   recitation_seconds integer,
+  -- What kind of day this was. 'quiz_only' means due reviews and nothing else:
+  -- the portion columns are unused and the day never advances the recitation
+  -- schedule. The screen used to promise "Quiz only today" and then fabricate a
+  -- one-ayah portion of juz 1 so the flow had something to run, which walked
+  -- people into recitation and rebooked juz they had already finished.
+  type text NOT NULL DEFAULT 'revision',
   CONSTRAINT sessions_status_check CHECK (
     status IN ('in_progress', 'paused', 'complete')
+  ),
+  CONSTRAINT sessions_type_check CHECK (
+    type IN ('revision', 'quiz_only')
   ),
   CONSTRAINT sessions_phase_check CHECK (
     phase IN ('pre_quiz', 'revision', 'post_quiz', 'complete')
@@ -187,8 +200,17 @@ CREATE TABLE public.scheduled_portions (
   portion_start_ayah integer NOT NULL,
   portion_end_ayah integer NOT NULL,
   type text NOT NULL,
+  -- Worked portions are marked, not deleted. Portions are picked oldest-first,
+  -- so a row left pending after its session would be handed straight back the
+  -- next day; deleting it was the first fix, but that threw away the only
+  -- record of what the app had planned. 'superseded' is a row the person never
+  -- reached before the pass was rescheduled around it.
+  status text NOT NULL DEFAULT 'pending',
   CONSTRAINT scheduled_portions_type_check CHECK (
     type IN ('revision', 'full_juz_review')
+  ),
+  CONSTRAINT scheduled_portions_status_check CHECK (
+    status IN ('pending', 'done', 'superseded')
   )
 );
 
@@ -198,5 +220,9 @@ CREATE INDEX scheduled_portions_user_id_idx ON public.scheduled_portions (user_i
 -- guard against duplicate writes keys on the juz and its starting offset.
 CREATE UNIQUE INDEX scheduled_portions_unique_slot
   ON public.scheduled_portions (user_id, juz_number, portion_start_ayah, scheduled_date);
+
+-- Every read of "what is due" filters on status, so it leads the index.
+CREATE INDEX scheduled_portions_pending_idx
+  ON public.scheduled_portions (user_id, status, scheduled_date);
 
 ALTER TABLE public.scheduled_portions ENABLE ROW LEVEL SECURITY;
