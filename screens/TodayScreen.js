@@ -92,8 +92,16 @@ function getResumeHint(pausedSession) {
 }
 
 // Two-half overlay technique: right clip shows 0→180°, left clip adds 180→360°.
-function SessionRing({ completedAyahs = 0, todayAyahs = 7, size = 80, stroke = 7 }) {
-  const fraction = Math.min(1, completedAyahs / Math.max(todayAyahs, 1));
+/**
+ * Progress through the whole session, not through the portion.
+ *
+ * It used to be handed an ayah count, which meant the ring measured only the
+ * recitation: a day whose mistake review was the bulk of the work showed no
+ * movement for finishing it. The caller now works out one fraction across
+ * every part of the day and passes that.
+ */
+function SessionRing({ fraction: rawFraction = 0, size = 80, stroke = 7 }) {
+  const fraction = Math.max(0, Math.min(1, rawFraction));
   const half = size / 2;
   const angle = fraction * 360;
 
@@ -169,6 +177,9 @@ export default function TodayScreen() {
   // What was recited today, once the day is finished. The agenda crosses this
   // out rather than the next session's portion, which nobody has done yet.
   const [donePortion, setDonePortion] = useState(null);
+  // Mistakes made during today's finished session. Decides whether the recap
+  // quiz actually ran, and so whether it belongs on the agenda at all.
+  const [doneMistakeCount, setDoneMistakeCount] = useState(0);
   const [portionLoading, setPortionLoading] = useState(true);
   const [pausedSession, setPausedSession] = useState(null);
   const [sessionDoneToday, setSessionDoneToday] = useState(false);
@@ -254,6 +265,21 @@ export default function TodayScreen() {
               }
             : null
         );
+
+        // Whether the recap actually ran. fetchPostSessionItems pulls mistakes
+        // for that session alone and returns nothing when there are none, so a
+        // clean recitation skips straight to the summary. Counting them here
+        // lets the agenda agree with what happened instead of listing a step
+        // that was never shown.
+        if (isDone && completedResult.data) {
+          const { count: mistakeCount } = await supabase
+            .from('mistakes')
+            .select('ayah_number', { count: 'exact', head: true })
+            .eq('session_id', completedResult.data.id);
+          if (mounted) setDoneMistakeCount(mistakeCount ?? 0);
+        } else if (mounted) {
+          setDoneMistakeCount(0);
+        }
 
         if (!notificationsScheduledRef.current) {
           notificationsScheduledRef.current = true;
@@ -557,17 +583,6 @@ export default function TodayScreen() {
       ? 'Quiz only today'
       : 'Unable to load portion');
 
-  // ── How far through the day they are ──────────────────────────────────────
-  // The ring was hardcoded to zero, so "session progress" never moved. It now
-  // follows the resume marker, which is written after every confirmed ayah.
-  const portionLength = summary ? summary.ayahCount : 0;
-  const recitedSoFar =
-    pausedSession && nextPortion
-      ? Math.max(0, (pausedSession.last_confirmed_ayah ?? 0) - nextPortion.portionStartAyah + 1)
-      : 0;
-  const ringDone = sessionDoneToday ? portionLength || 1 : recitedSoFar;
-  const ringTotal = sessionDoneToday ? portionLength || 1 : portionLength || 1;
-
   // ── Which agenda steps are behind them ────────────────────────────────────
   // Phase is written as the session moves, so a paused session already knows
   // how far it reached. Finishing the day crosses everything out.
@@ -575,6 +590,58 @@ export default function TodayScreen() {
   const quizStepDone = sessionDoneToday || phase === 'revision' || phase === 'post_quiz';
   const reciteStepDone = sessionDoneToday || phase === 'post_quiz';
   const recapStepDone = sessionDoneToday;
+
+  // ── Which agenda steps exist at all ───────────────────────────────────────
+  // Mistake review is a step only when something is genuinely due. It used to
+  // be printed unconditionally, so a new account was told to review mistakes it
+  // could not yet have made. Worse, the empty quiz auto-skips and writes phase
+  // 'revision', which crossed the step off: a review both invented and marked
+  // complete without anyone having done anything.
+  const hasReviewStep = quizCount > 0;
+
+  // The recap quizzes the mistakes made while reciting, so it only runs when
+  // the portion was recited and produced some. A finished day with none never
+  // saw it, so listing it would be inventing a step after the fact. A session
+  // paused part way keeps it: the portion is unfinished, and whether it earns a
+  // recap cannot be known until it is.
+  const hasRecapStep = !quizOnly && (sessionDoneToday ? doneMistakeCount > 0 : true);
+
+  // Numbering follows what is actually shown rather than fixed positions.
+  const firstPortionStep = hasReviewStep ? 2 : 1;
+
+  // ── How far through the day they are ──────────────────────────────────────
+  // The ring covers the whole session, not just the recitation. Shares are
+  // fixed rather than proportional to item counts, so finishing a three-item
+  // review still visibly moves it: proportionally it would be worth about 3%
+  // against a ninety-ayah portion, which reads as no progress for real work.
+  // Only the parts that exist are counted, and the weights are normalised
+  // against those, so a day without a recap can still fill the ring.
+  const RING_WEIGHT = { review: 25, recite: 65, recap: 10 };
+
+  const portionLength = summary ? summary.ayahCount : 0;
+  const recitedSoFar =
+    pausedSession && nextPortion
+      ? Math.max(0, (pausedSession.last_confirmed_ayah ?? 0) - nextPortion.portionStartAyah + 1)
+      : 0;
+  const reciteFraction = sessionDoneToday
+    ? 1
+    : portionLength > 0
+    ? Math.min(1, recitedSoFar / portionLength)
+    : 0;
+
+  const ringParts = [];
+  if (hasReviewStep) ringParts.push([RING_WEIGHT.review, quizStepDone ? 1 : 0]);
+  if (!quizOnly) ringParts.push([RING_WEIGHT.recite, reciteFraction]);
+  if (hasRecapStep) ringParts.push([RING_WEIGHT.recap, recapStepDone ? 1 : 0]);
+
+  const ringWeightTotal = ringParts.reduce((sum, [w]) => sum + w, 0);
+  // A quiz-only day that is finished has no weighted parts at all, so it is
+  // reported full rather than as a divide by zero.
+  const ringFraction = ringWeightTotal
+    ? ringParts.reduce((sum, [w, done]) => sum + w * done, 0) / ringWeightTotal
+    : sessionDoneToday
+    ? 1
+    : 0;
   // The agenda belongs to whichever session is on screen.
   const agendaPortions = sessionDoneToday && donePortion
     ? [donePortion]
@@ -602,7 +669,7 @@ export default function TodayScreen() {
           <>
             <Animated.View style={[styles.portionCard, { transform: [{ translateY: cardTranslate }] }]}>
               <View style={styles.portionLeft}>
-                <SessionRing completedAyahs={ringDone} todayAyahs={ringTotal} />
+                <SessionRing fraction={ringFraction} />
               </View>
               <View style={styles.portionRight}>
                 <Text style={styles.portionEyebrow}>{bannerEyebrow}</Text>
@@ -648,11 +715,14 @@ export default function TodayScreen() {
                   {showingNext ? "NEXT SESSION'S AGENDA" : "TODAY'S AGENDA"}
                 </Text>
                 <View style={styles.steps}>
-                  <StepCard
-                    step={1} icon="◈" title="Mistake Review"
-                    iconBg={colors.ice} iconColor={colors.primary}
-                    done={quizStepDone}
-                  />
+                  {hasReviewStep ? (
+                    <StepCard
+                      step={1} icon="◈" title="Mistake Review"
+                      desc={`${quizCount} ayah${quizCount === 1 ? '' : 's'} to go over`}
+                      iconBg={colors.ice} iconColor={colors.primary}
+                      done={quizStepDone}
+                    />
+                  ) : null}
                   {/* A quiz-only day has no portion, so it has no recitation and
                       no recap of one. Listing three steps and then ending after
                       the first was the screen contradicting itself.
@@ -666,7 +736,7 @@ export default function TodayScreen() {
                     return (
                       <StepCard
                         key={`${p.juzNumber}-${p.portionStartAyah}`}
-                        step={i + 2}
+                        step={i + firstPortionStep}
                         icon="◉"
                         title={label ? `Recite ${label}` : "Recite today's portion"}
                         desc={
@@ -679,14 +749,14 @@ export default function TodayScreen() {
                       />
                     );
                   })}
-                  {quizOnly && !showingNext && !sessionDoneToday ? null : (
+                  {hasRecapStep ? (
                     <StepCard
-                      step={agendaPortions.length + 2} icon="◆" title="Recap quiz"
-                      desc="Locks it in for next time"
+                      step={agendaPortions.length + firstPortionStep} icon="◆" title="Recap quiz"
+                      desc="Goes back over the mistakes you make today"
                       iconBg={colors.parchment} iconColor={colors.accent}
                       done={recapStepDone}
                     />
-                  )}
+                  ) : null}
                 </View>
               </>
             )}
@@ -694,9 +764,9 @@ export default function TodayScreen() {
             {/* The resume point lives in the banner now, which is the one
                 place the main update belongs. It was printed here too. */}
             {error ? <Text style={styles.error}>{error}</Text> : null}
-            {quizCount > 0 ? (
-              <Text style={styles.quizCountHint}>{quizCount} item{quizCount === 1 ? '' : 's'} due for mistake review</Text>
-            ) : null}
+            {/* The count moved onto the Mistake Review step itself, where the
+                other steps carry their detail. Printed twice, it read as two
+                different facts. */}
             </ScrollView>
 
             <View style={styles.footer}>
@@ -844,10 +914,6 @@ const styles = StyleSheet.create({
     paddingHorizontal: spacing.sm,
   },
 
-  quizCountHint: {
-    fontFamily: fonts.regular, fontSize: 13, color: colors.textMuted,
-    textAlign: 'center', marginTop: spacing.sm,
-  },
   error: {
     fontFamily: fonts.regular, color: colors.error,
     textAlign: 'center', marginTop: spacing.md,
