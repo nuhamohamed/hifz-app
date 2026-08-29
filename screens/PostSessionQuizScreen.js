@@ -561,6 +561,7 @@ export default function PostSessionQuizScreen(props) {
           {quizProgress}
           {currentItem ? ` · ${getSurahName(currentItem.surah_number)} · Ayah ${currentItem.ayah_number}` : ''}
         </Text>
+        <Text style={styles.pageBadge}>{currentPage != null ? `pg ${currentPage}` : ''}</Text>
       </View>
       <View style={styles.progressTrack}>
         <View
@@ -673,6 +674,18 @@ const styles = StyleSheet.create({
     paddingHorizontal: 16,
     paddingTop: 4,
     paddingBottom: 8,
+  },
+  // Sits against the header's right edge, absolutely so the centred title
+  // stays centred. Western digits: the Arabic-Indic number at the foot of the
+  // page was decoration, this is a reference someone reads against a physical
+  // mushaf.
+  pageBadge: {
+    position: 'absolute',
+    right: 16,
+    top: 2,
+    fontFamily: fonts.medium,
+    fontSize: 13,
+    color: colors.textMuted,
   },
   headerMode: {
     fontFamily: fonts.semiBold,

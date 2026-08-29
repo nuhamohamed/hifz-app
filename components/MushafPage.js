@@ -9,15 +9,6 @@ export const MUSHAF_FONT_FAMILY = 'UthmanicHafs';
 
 const BASMALLAH = 'بِسۡمِ ٱللَّهِ ٱلرَّحۡمَٰنِ ٱلرَّحِيمِ';
 
-const ARABIC_DIGIT_MAP = ['٠', '١', '٢', '٣', '٤', '٥', '٦', '٧', '٨', '٩'];
-
-function toArabicDigits(n) {
-  return String(n)
-    .split('')
-    .map((d) => ARABIC_DIGIT_MAP[Number(d)] ?? d)
-    .join('');
-}
-
 /**
  * One mushaf page (15-line Madinah layout) with per-word visibility/status.
  *
@@ -88,7 +79,6 @@ export default function MushafPage({ pageNumber, ayahStatuses }) {
           />
         ))}
       </View>
-      <Text style={styles.pageNumber}>{toArabicDigits(pageNumber)}</Text>
     </View>
   );
 }
@@ -196,13 +186,6 @@ const styles = StyleSheet.create({
   },
   linesContainer: {
     flex: 1,
-  },
-  pageNumber: {
-    textAlign: 'center',
-    marginTop: 8,
-    fontSize: 18,
-    color: '#8a6d2f',
-    fontFamily: 'UthmanicHafs',
   },
   loading: {
     minHeight: 200,

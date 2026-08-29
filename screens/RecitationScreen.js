@@ -700,6 +700,14 @@ export default function RecitationScreen(props) {
   };
 
   const [currentPage, setCurrentPage] = useState(null);
+  // The page actually on screen. Pages already visited can be swiped back to,
+  // and a badge that kept reporting the recitation position would name a page
+  // the reader is not looking at.
+  const [visiblePage, setVisiblePage] = useState(null);
+  const viewabilityConfig = useRef({ itemVisiblePercentThreshold: 60 }).current;
+  const handleViewableChanged = useRef(({ viewableItems }) => {
+    if (viewableItems.length > 0) setVisiblePage(viewableItems[0].item);
+  }).current;
 
   useEffect(() => {
     let mounted = true;
@@ -708,6 +716,7 @@ export default function RecitationScreen(props) {
       .then((page) => {
         if (!mounted || page == null) return;
         setCurrentPage(page);
+        setVisiblePage((prev) => prev ?? page);
         setAllPages((prev) => {
           if (prev[prev.length - 1] === page) return prev;
           return [...prev, page];
@@ -794,6 +803,7 @@ export default function RecitationScreen(props) {
       <View style={styles.header}>
         <Text style={styles.headerMode}>Recitation Portion</Text>
         <Text style={styles.headerSub}>{portionLabel}</Text>
+        <Text style={styles.pageBadge}>{visiblePage != null ? `pg ${visiblePage}` : ''}</Text>
       </View>
 
       {micClosedReason ? (
@@ -830,6 +840,8 @@ export default function RecitationScreen(props) {
           offset: screenWidth * index,
           index,
         })}
+        onViewableItemsChanged={handleViewableChanged}
+        viewabilityConfig={viewabilityConfig}
         renderItem={({ item: pageNum }) => (
           <View style={{ width: screenWidth, flex: 1 }}>
             <MushafPage pageNumber={pageNum} ayahStatuses={ayahStatuses} />
@@ -914,6 +926,18 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     paddingHorizontal: 16,
     paddingBottom: 8,
+  },
+  // Sits against the header's right edge, absolutely so the centred title
+  // stays centred. Western digits: the Arabic-Indic number at the foot of the
+  // page was decoration, this is a reference someone reads against a physical
+  // mushaf.
+  pageBadge: {
+    position: 'absolute',
+    right: 16,
+    top: 2,
+    fontFamily: fonts.medium,
+    fontSize: 13,
+    color: colors.textMuted,
   },
   headerMode: {
     fontFamily: fonts.semiBold,
