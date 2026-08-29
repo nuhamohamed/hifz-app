@@ -62,7 +62,7 @@ export default function EraseDataScreen({ navigation }) {
           <Text style={styles.warnTitle}>This cannot be undone.</Text>
           <Text style={styles.warnText}>
             Dawrah keeps your progress on this phone's account only. There is no
-            sign-in, so nothing erased here can be brought back.
+            sign-in yet, so nothing erased here can be brought back.
           </Text>
         </View>
 
@@ -70,7 +70,6 @@ export default function EraseDataScreen({ navigation }) {
         {[
           'Every session you have recited',
           'Every mistake and the words in it',
-          'Your review queue and all box levels',
           'Your schedule and juz progress',
           'The juz you told us you had memorised',
         ].map((item) => (
