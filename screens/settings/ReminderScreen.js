@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react';
 import {
-  ActivityIndicator, Linking, Platform, StyleSheet, Text, TouchableOpacity, View,
+  ActivityIndicator, Linking, Platform, StyleSheet, Switch, Text, TouchableOpacity, View,
 } from 'react-native';
 import DateTimePicker from '@react-native-community/datetimepicker';
 import * as Notifications from 'expo-notifications';
@@ -16,14 +16,14 @@ function toDbTime(date) {
 }
 
 /**
- * The daily reminder, on its own screen.
+ * The daily reminder: a switch, and a time once it is on.
  *
- * Saving reports what actually happened rather than assuming. Scheduling
- * returns false when iOS is blocking notifications, and that used to be
- * discarded, so someone could set a time and be told it was saved while no
- * reminder could ever fire.
+ * Off is stored as a null notification_time rather than a separate flag, so
+ * there is one source of truth and nothing can disagree with itself about
+ * whether reminders are wanted.
  */
 export default function ReminderScreen({ navigation }) {
+  const [enabled, setEnabled] = useState(false);
   const [time, setTime] = useState(() => {
     const d = new Date();
     d.setHours(9, 0, 0, 0);
@@ -48,16 +48,40 @@ export default function ReminderScreen({ navigation }) {
           const d = new Date();
           d.setHours(h, m, 0, 0);
           setTime(d);
+          setEnabled(true);
         }
-        const { status } = await Notifications.getPermissionsAsync();
-        setBlocked(status !== 'granted');
       } catch {
-        // The picker still works; only the warning is missing.
+        // The switch still works; only the stored value is missing.
       } finally {
         setIsLoading(false);
       }
     })();
   }, []);
+
+  // Turning it on is the moment to ask, since that is when the person has said
+  // they want it. A refusal flips the switch back rather than leaving it on
+  // over a reminder that can never arrive.
+  const handleToggle = async (next) => {
+    setError('');
+    if (!next) {
+      setEnabled(false);
+      setBlocked(false);
+      return;
+    }
+    const { status, canAskAgain } = await Notifications.getPermissionsAsync();
+    let granted = status === 'granted';
+    if (!granted && canAskAgain) {
+      const asked = await Notifications.requestPermissionsAsync();
+      granted = asked.status === 'granted';
+    }
+    if (granted) {
+      setBlocked(false);
+      setEnabled(true);
+      return;
+    }
+    setBlocked(true);
+    setEnabled(false);
+  };
 
   const handleSave = async () => {
     setIsSaving(true);
@@ -66,9 +90,15 @@ export default function ReminderScreen({ navigation }) {
       const userId = await getCurrentUserId();
       const { error: updateError } = await supabase
         .from('users')
-        .update({ notification_time: toDbTime(time) })
+        .update({ notification_time: enabled ? toDbTime(time) : null })
         .eq('id', userId);
       if (updateError) throw new Error(updateError.message);
+
+      if (!enabled) {
+        await cancelDailyNotification();
+        navigation.goBack();
+        return;
+      }
 
       const scheduled = await scheduleDailyNotification(time.getHours(), time.getMinutes());
       if (!scheduled) {
@@ -82,12 +112,6 @@ export default function ReminderScreen({ navigation }) {
       setError(err.message ?? 'Could not save.');
       setIsSaving(false);
     }
-  };
-
-  const handleTurnOff = async () => {
-    setIsSaving(true);
-    await cancelDailyNotification();
-    navigation.goBack();
   };
 
   if (isLoading) {
@@ -108,11 +132,20 @@ export default function ReminderScreen({ navigation }) {
       </View>
 
       <View style={styles.body}>
+        <View style={styles.switchCard}>
+          <Text style={styles.switchLabel}>Daily reminder</Text>
+          <Switch
+            value={enabled}
+            onValueChange={handleToggle}
+            trackColor={{ false: colors.border, true: colors.primary }}
+          />
+        </View>
+
         {blocked ? (
           <View style={styles.blockedBox}>
             <Text style={styles.blockedText}>
-              iOS is blocking notifications for Dawrah, so no reminder can arrive
-              whatever time is set here.
+              iOS is blocking notifications for Dawrah, so a reminder cannot be
+              turned on from here.
             </Text>
             <TouchableOpacity onPress={() => Linking.openSettings()} activeOpacity={0.7}>
               <Text style={styles.blockedLink}>Open Settings</Text>
@@ -120,19 +153,17 @@ export default function ReminderScreen({ navigation }) {
           </View>
         ) : null}
 
-        <View style={styles.pickerCard}>
-          <DateTimePicker
-            value={time}
-            mode="time"
-            display={Platform.OS === 'ios' ? 'spinner' : 'default'}
-            onChange={(_e, selected) => selected && setTime(selected)}
-          />
-        </View>
+        {enabled ? (
+          <View style={styles.pickerCard}>
+            <DateTimePicker
+              value={time}
+              mode="time"
+              display={Platform.OS === 'ios' ? 'spinner' : 'default'}
+              onChange={(_e, selected) => selected && setTime(selected)}
+            />
+          </View>
+        ) : null}
 
-        <Text style={styles.note}>
-          Sent only on days that hold something. A reminder to open an app with
-          nothing in it is how reminders get ignored.
-        </Text>
         {error ? <Text style={styles.error}>{error}</Text> : null}
       </View>
 
@@ -144,9 +175,6 @@ export default function ReminderScreen({ navigation }) {
           disabled={isSaving}
         >
           <Text style={styles.saveBtnText}>{isSaving ? 'Saving…' : 'Save'}</Text>
-        </TouchableOpacity>
-        <TouchableOpacity style={styles.offBtn} onPress={handleTurnOff} activeOpacity={0.7}>
-          <Text style={styles.offBtnText}>Turn reminders off</Text>
         </TouchableOpacity>
       </View>
     </View>
@@ -163,6 +191,14 @@ const styles = StyleSheet.create({
   back: { fontFamily: fonts.medium, fontSize: 16, color: colors.primary, marginBottom: spacing.sm },
   title: { fontFamily: fonts.semiBold, fontSize: 28, color: colors.text, letterSpacing: -0.4 },
   body: { flex: 1, paddingHorizontal: spacing.lg, paddingTop: spacing.md },
+  switchCard: {
+    flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between',
+    backgroundColor: colors.card, borderRadius: radius.md,
+    borderWidth: 1, borderColor: colors.border,
+    paddingVertical: 14, paddingHorizontal: spacing.md,
+    marginBottom: spacing.md,
+  },
+  switchLabel: { fontFamily: fonts.medium, fontSize: 16, color: colors.text },
   pickerCard: {
     backgroundColor: colors.card, borderRadius: radius.md,
     borderWidth: 1, borderColor: colors.border, alignItems: 'center',
@@ -173,17 +209,11 @@ const styles = StyleSheet.create({
   },
   blockedText: { fontFamily: fonts.regular, fontSize: 14, color: colors.textMid, lineHeight: 21 },
   blockedLink: { fontFamily: fonts.semiBold, fontSize: 15, color: colors.primary, marginTop: spacing.sm },
-  note: {
-    fontFamily: fonts.regular, fontSize: 14, color: colors.textMid,
-    lineHeight: 21, marginTop: spacing.lg,
-  },
   error: { fontFamily: fonts.regular, fontSize: 14, color: colors.error, marginTop: spacing.md },
-  footer: { paddingHorizontal: spacing.lg, paddingBottom: 40, gap: 4 },
+  footer: { paddingHorizontal: spacing.lg, paddingBottom: 40 },
   saveBtn: {
     backgroundColor: colors.primary, borderRadius: radius.md,
     paddingVertical: 17, alignItems: 'center',
   },
   saveBtnText: { fontFamily: fonts.semiBold, fontSize: 17, color: colors.white },
-  offBtn: { paddingVertical: 14, alignItems: 'center' },
-  offBtnText: { fontFamily: fonts.medium, fontSize: 15, color: colors.textMid },
 });

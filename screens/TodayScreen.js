@@ -258,13 +258,15 @@ export default function TodayScreen() {
         if (!notificationsScheduledRef.current) {
           notificationsScheduledRef.current = true;
           try {
-            // Only when tomorrow actually holds something. Someone whose juz
-            // is finished and not due back for three weeks was still being
-            // asked every morning to open an app with nothing in it.
-            if (plan.hasWorkTomorrow) {
-              const [remHour, remMin] = userResult.data?.notification_time
-                ? userResult.data.notification_time.split(':').map(Number)
-                : [9, 0];
+            // Two ways to end up with no reminder, and both are respected.
+            // A null notification_time means reminders are switched off, which
+            // used to fall back to 9am and schedule one anyway. And a tomorrow
+            // that holds nothing gets none either: someone whose juz is
+            // finished and not due back for three weeks was still asked every
+            // morning to open an app with nothing in it.
+            const reminderTime = userResult.data?.notification_time;
+            if (reminderTime && plan.hasWorkTomorrow) {
+              const [remHour, remMin] = reminderTime.split(':').map(Number);
               await scheduleDailyNotification(remHour, remMin);
             } else {
               await cancelDailyNotification();
