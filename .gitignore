@@ -43,3 +43,5 @@ yarn-error.*
 
 # vendored CLI binaries (37MB gh install)
 .tools/
+
+.env.local

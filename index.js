@@ -1,3 +1,6 @@
+// Imported first so Sentry is initialised before any app module is evaluated.
+import './lib/sentry';
+
 import { registerRootComponent } from 'expo';
 
 import App from './App';

@@ -30,6 +30,8 @@ import { colors } from './lib/theme';
 import { getOnboardingResumePoint } from './lib/onboarding';
 import { ensureSession } from './lib/auth';
 import { OnboardingProvider, useOnboarding } from './lib/OnboardingContext';
+import * as Sentry from '@sentry/react-native';
+import { navigationIntegration } from './lib/sentry';
 
 // Dismisses the OAuth browser sheet once the redirect lands back in the app.
 WebBrowser.maybeCompleteAuthSession();
@@ -137,7 +139,7 @@ function RootNavigator() {
   );
 }
 
-export default function App() {
+export default Sentry.wrap(function App() {
   const [fontsLoaded] = useFonts({
     UthmanicHafs: require('./assets/UthmanicHafs_V22.ttf'),
     Outfit_400Regular,
@@ -151,6 +153,7 @@ export default function App() {
   const [authError, setAuthError] = useState(null);
   // Once onboarding is finished, no in-flight resume-point fetch may undo it.
   const onboardingDone = useRef(false);
+  const navigationRef = useRef(null);
 
   useEffect(() => {
     let mounted = true;
@@ -225,11 +228,14 @@ export default function App() {
   return (
     <OnboardingProvider value={{ completeOnboarding, restartOnboarding, resumePoint }}>
       <SQLiteProvider databaseName="mushaf.db" assetSource={MUSHAF_ASSET}>
-        <NavigationContainer>
+        <NavigationContainer
+          ref={navigationRef}
+          onReady={() => navigationIntegration.registerNavigationContainer(navigationRef)}
+        >
           <RootNavigator />
         </NavigationContainer>
         <StatusBar style="auto" />
       </SQLiteProvider>
     </OnboardingProvider>
   );
-}
+});

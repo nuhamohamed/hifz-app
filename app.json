@@ -101,7 +101,15 @@
       "expo-sqlite",
       "expo-asset",
       "expo-font",
-      "expo-web-browser"
+      "expo-web-browser",
+      [
+        "@sentry/react-native/expo",
+        {
+          "url": "https://sentry.io/",
+          "project": "dawrah",
+          "organization": "dawrah"
+        }
+      ]
     ]
   }
 }
