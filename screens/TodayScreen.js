@@ -508,16 +508,16 @@ export default function TodayScreen() {
 
   let bannerEyebrow = "TODAY'S PORTION";
   let bannerSub = null;
-  // When the subtitle carries *when* rather than *how much*, it is the more
-  // important half of the card and is set to look like it. A date whispered
-  // under a large portion range reads as though the portion were today's.
-  let bannerSubStrong = false;
+  // On a day whose point is *when* rather than *what*, the date is the
+  // headline and the portion is the detail under it. Reading the portion first
+  // made it look like today's work.
+  let bannerTitleOverride = null;
   if (sessionDoneToday) {
     bannerEyebrow = 'ALL DONE FOR TODAY';
-    bannerSub = nextSession
+    bannerTitleOverride = nextSession
       ? `Next session · ${formatSessionDate(nextSession.scheduledDate)}`
       : 'Nothing scheduled yet';
-    bannerSubStrong = true;
+    bannerSub = nextSession ? nextSummary.label : null;
   } else if (pausedSession) {
     bannerEyebrow = isCarriedOver
       ? `UNFINISHED · ${formatSessionDate(pausedSession.date)}`
@@ -525,8 +525,8 @@ export default function TodayScreen() {
     bannerSub = resumeHint;
   } else if (showingNext) {
     bannerEyebrow = 'NOTHING DUE TODAY';
-    bannerSub = `Next session · ${formatSessionDate(nextSession.scheduledDate)}`;
-    bannerSubStrong = true;
+    bannerTitleOverride = `Next session · ${formatSessionDate(nextSession.scheduledDate)}`;
+    bannerSub = nextSummary.label;
   } else if (summary) {
     bannerEyebrow =
       portions.length > 1
@@ -540,18 +540,15 @@ export default function TodayScreen() {
         : null;
   }
 
-  // When all done, the banner names what is coming rather than what was done.
-  const bannerTitle = sessionDoneToday
-    ? nextSession
-      ? nextSummary.label
-      : 'Nothing scheduled yet'
-    : displaySummary
-    ? displaySummary.label
-    : nothingDue
-    ? 'Nothing due today'
-    : quizOnly
-    ? 'Quiz only today'
-    : 'Unable to load portion';
+  const bannerTitle =
+    bannerTitleOverride ??
+    (displaySummary
+      ? displaySummary.label
+      : nothingDue
+      ? 'Nothing due today'
+      : quizOnly
+      ? 'Quiz only today'
+      : 'Unable to load portion');
 
   // ── How far through the day they are ──────────────────────────────────────
   // The ring was hardcoded to zero, so "session progress" never moved. It now
@@ -607,16 +604,7 @@ export default function TodayScreen() {
                 ) : (
                   <>
                     <Text style={styles.portionTitle}>{bannerTitle}</Text>
-                    {bannerSub ? (
-                      <Text
-                        style={[
-                          styles.portionSub,
-                          bannerSubStrong && styles.portionSubStrong,
-                        ]}
-                      >
-                        {bannerSub}
-                      </Text>
-                    ) : null}
+                    {bannerSub ? <Text style={styles.portionSub}>{bannerSub}</Text> : null}
                   </>
                 )}
               </View>
@@ -797,12 +785,6 @@ const styles = StyleSheet.create({
   },
   portionTitle: { fontFamily: fonts.semiBold, fontSize: 20, color: colors.text, letterSpacing: -0.3, marginBottom: 4 },
   portionSub: { fontFamily: fonts.regular, fontSize: 13, color: colors.textMid },
-  portionSubStrong: {
-    fontFamily: fonts.semiBold,
-    fontSize: 15,
-    color: colors.primary,
-    marginTop: 2,
-  },
 
   sectionLabel: {
     fontFamily: fonts.semiBold, fontSize: 11, color: colors.textMuted,
