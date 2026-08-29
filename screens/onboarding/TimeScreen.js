@@ -115,10 +115,9 @@ export default function TimeScreen({ route, navigation }) {
           </Text>
         ) : null}
         <Text style={styles.caveat}>
-          This is the shape of a normal day, not a promise. Some days run longer:
-          a heavy review, or ground you have fallen behind on. The review always
-          comes first, and anything that does not fit is waiting for you tomorrow
-          rather than lost.
+          The time you set is an estimate. What a day actually takes depends
+          on what is due that day. If you are short of time, start anyway: even
+          a few minutes of it helps.
         </Text>
         {error ? <Text style={styles.error}>{error}</Text> : null}
       </View>

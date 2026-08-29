@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react';
 import { ActivityIndicator, StyleSheet, Text, TouchableOpacity, View } from 'react-native';
 import Slider from '@react-native-community/slider';
 import { getCurrentUserId } from '../../lib/auth';
+import { recommendedSessionMinutes } from '../../lib/portionMath';
 import { supabase } from '../../lib/supabase';
 import { colors, fonts, radius, spacing } from '../../lib/theme';
 
@@ -13,6 +14,9 @@ import { colors, fonts, radius, spacing } from '../../lib/theme';
  */
 export default function SessionLengthScreen({ navigation }) {
   const [minutes, setMinutes] = useState(30);
+  // Onboarding showed the suggested length and this screen did not, so someone
+  // changing it later had no idea what the number was measured against.
+  const [recommended, setRecommended] = useState(null);
   const [isLoading, setIsLoading] = useState(true);
   const [isSaving, setIsSaving] = useState(false);
   const [error, setError] = useState('');
@@ -27,6 +31,14 @@ export default function SessionLengthScreen({ navigation }) {
           .eq('id', userId)
           .maybeSingle();
         if (data?.session_minutes) setMinutes(data.session_minutes);
+
+        // Same suggestion onboarding made, recomputed rather than stored, so
+        // it follows the juz they have added or finished since.
+        const { count } = await supabase
+          .from('juz_progress')
+          .select('juz_number', { count: 'exact', head: true })
+          .eq('user_id', userId);
+        if (count) setRecommended(recommendedSessionMinutes(count));
       } catch {
         // Leaves the default in place; the slider still works.
       } finally {
@@ -88,11 +100,19 @@ export default function SessionLengthScreen({ navigation }) {
           <Text style={styles.scale}>15 min</Text>
           <Text style={styles.scale}>120 min</Text>
         </View>
+        {recommended ? (
+          <Text style={styles.recommendation}>
+            {minutes === recommended
+              ? `${recommended} minutes covers everything you have memorised on a monthly round.`
+              : minutes < recommended
+                ? `We suggest ${recommended} minutes. Less than that and a full round takes longer than a month.`
+                : `We suggest ${recommended} minutes. More is fine, you will simply come round again sooner.`}
+          </Text>
+        ) : null}
         <Text style={styles.note}>
-          This is the shape of a normal day, not a promise. A heavy review, or
-          ground you have fallen behind on, can run longer. The review always
-          comes first, and anything that does not fit waits for you rather than
-          being lost.
+          The time you set is an estimate. What a day actually takes depends
+          on what is due that day. If you are short of time, start anyway: even
+          a few minutes of it helps.
         </Text>
         {error ? <Text style={styles.error}>{error}</Text> : null}
       </View>
@@ -129,9 +149,16 @@ const styles = StyleSheet.create({
   value: { fontFamily: fonts.semiBold, fontSize: 28, color: colors.primary },
   scaleRow: { flexDirection: 'row', justifyContent: 'space-between', marginTop: 4 },
   scale: { fontFamily: fonts.regular, fontSize: 13, color: colors.textMuted },
+  recommendation: {
+    fontFamily: fonts.medium,
+    fontSize: 14,
+    color: colors.primary,
+    lineHeight: 20,
+    marginTop: spacing.md,
+  },
   note: {
     fontFamily: fonts.regular, fontSize: 14, color: colors.textMid,
-    lineHeight: 21, marginTop: spacing.lg,
+    lineHeight: 21, marginTop: spacing.sm,
   },
   error: { fontFamily: fonts.regular, fontSize: 14, color: colors.error, marginTop: spacing.md },
   footer: { paddingHorizontal: spacing.lg, paddingBottom: 40 },
