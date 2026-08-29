@@ -8,6 +8,7 @@ import { Outfit_400Regular, Outfit_500Medium, Outfit_600SemiBold } from '@expo-g
 import { ActivityIndicator, Text, View } from 'react-native';
 import { NavigationContainer } from '@react-navigation/native';
 import { createNativeStackNavigator } from '@react-navigation/native-stack';
+import ErrorBoundary from './components/ErrorBoundary';
 import PostSessionQuizScreen from './screens/PostSessionQuizScreen';
 import PreSessionQuizScreen from './screens/PreSessionQuizScreen';
 import RecitationScreen from './screens/RecitationScreen';
@@ -226,16 +227,21 @@ export default Sentry.wrap(function App() {
   }
 
   return (
-    <OnboardingProvider value={{ completeOnboarding, restartOnboarding, resumePoint }}>
-      <SQLiteProvider databaseName="mushaf.db" assetSource={MUSHAF_ASSET}>
-        <NavigationContainer
-          ref={navigationRef}
-          onReady={() => navigationIntegration.registerNavigationContainer(navigationRef)}
-        >
-          <RootNavigator />
-        </NavigationContainer>
-        <StatusBar style="auto" />
-      </SQLiteProvider>
-    </OnboardingProvider>
+    // Outside the providers on purpose. Recovery remounts everything below the
+    // boundary, and that has to include the navigation container, or someone
+    // lands straight back on the screen that just failed.
+    <ErrorBoundary>
+      <OnboardingProvider value={{ completeOnboarding, restartOnboarding, resumePoint }}>
+        <SQLiteProvider databaseName="mushaf.db" assetSource={MUSHAF_ASSET}>
+          <NavigationContainer
+            ref={navigationRef}
+            onReady={() => navigationIntegration.registerNavigationContainer(navigationRef)}
+          >
+            <RootNavigator />
+          </NavigationContainer>
+          <StatusBar style="auto" />
+        </SQLiteProvider>
+      </OnboardingProvider>
+    </ErrorBoundary>
   );
 });
