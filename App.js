@@ -13,6 +13,9 @@ import PreSessionQuizScreen from './screens/PreSessionQuizScreen';
 import RecitationScreen from './screens/RecitationScreen';
 import SessionSummaryScreen from './screens/SessionSummaryScreen';
 import SettingsScreen from './screens/SettingsScreen';
+import SessionLengthScreen from './screens/settings/SessionLengthScreen';
+import ReminderScreen from './screens/settings/ReminderScreen';
+import EraseDataScreen from './screens/settings/EraseDataScreen';
 import TodayScreen from './screens/TodayScreen';
 import WelcomeScreen from './screens/onboarding/WelcomeScreen';
 import NameScreen from './screens/onboarding/NameScreen';
@@ -110,6 +113,9 @@ function MainNavigator() {
     <MainStack.Navigator initialRouteName="Today" screenOptions={{ headerShown: false }}>
       <MainStack.Screen name="Today" component={TodayScreen} />
       <MainStack.Screen name="Settings" component={SettingsScreen} />
+      <MainStack.Screen name="SettingsSessionLength" component={SessionLengthScreen} />
+      <MainStack.Screen name="SettingsReminder" component={ReminderScreen} />
+      <MainStack.Screen name="SettingsEraseData" component={EraseDataScreen} />
       <MainStack.Screen name="PreSessionQuiz" component={PreSessionQuizScreen} />
       <MainStack.Screen name="Recitation" component={RecitationScreen} />
       <MainStack.Screen name="PostSessionQuiz" component={PostSessionQuizScreen} />
