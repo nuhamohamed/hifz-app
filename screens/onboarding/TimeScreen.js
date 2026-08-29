@@ -3,7 +3,7 @@ import { Animated, StyleSheet, Text, TouchableOpacity, View } from 'react-native
 import Slider from '@react-native-community/slider';
 import OnboardingProgressDots from '../../components/OnboardingProgressDots';
 import { getCurrentUserId } from '../../lib/auth';
-import { recommendedSessionMinutes } from '../../lib/portionMath';
+import { recommendedSessionMinutes, suggestionLine } from '../../lib/portionMath';
 import { supabase } from '../../lib/supabase';
 import { colors, fonts, radius, spacing } from '../../lib/theme';
 
@@ -11,6 +11,7 @@ export default function TimeScreen({ route, navigation }) {
   const name = route?.params?.name ?? 'there';
   const [sessionMinutes, setSessionMinutes] = useState(30);
   const [recommended, setRecommended] = useState(null);
+  const [juzCount, setJuzCount] = useState(0);
   const [isSaving, setIsSaving] = useState(false);
   const [error, setError] = useState('');
   const opacity = useRef(new Animated.Value(0)).current;
@@ -33,6 +34,7 @@ export default function TimeScreen({ route, navigation }) {
           .eq('user_id', userId);
         if (!mounted || !count) return;
         const suggestion = recommendedSessionMinutes(count);
+        setJuzCount(count);
         setRecommended(suggestion);
         setSessionMinutes(suggestion);
       } catch {
@@ -105,19 +107,17 @@ export default function TimeScreen({ route, navigation }) {
           <Text style={styles.sliderLabel}>15 min</Text>
           <Text style={styles.sliderLabel}>120 min</Text>
         </View>
-        {recommended ? (
-          <Text style={styles.recommendation}>
-            {sessionMinutes === recommended
-              ? `${recommended} minutes covers everything you have memorised on a monthly round.`
-              : sessionMinutes < recommended
-                ? `We suggest ${recommended} minutes. Less than that and a full round takes longer than a month.`
-                : `We suggest ${recommended} minutes. More is fine, you will simply come round again sooner.`}
-          </Text>
+        {/* Only when they have landed below it. Above or on the suggestion
+            there is nothing to warn about, and a line confirming a good choice
+            every time is noise that trains people to stop reading. The caveat
+            below stays put either way, because it is true at any length. */}
+        {recommended && sessionMinutes < recommended ? (
+          <Text style={styles.recommendation}>{suggestionLine(recommended, juzCount)}</Text>
         ) : null}
         <Text style={styles.caveat}>
-          The time you set is an estimate. What a day actually takes depends
-          on what is due that day. If you are short of time, start anyway: even
-          a few minutes of it helps.
+          This is an estimate, not a fixed length. A day runs longer or shorter
+          depending on what is due and how many mistakes you have to go over. If
+          you are short of time, start anyway: even a few minutes helps.
         </Text>
         {error ? <Text style={styles.error}>{error}</Text> : null}
       </View>

@@ -2,7 +2,7 @@ import { useEffect, useState } from 'react';
 import { ActivityIndicator, StyleSheet, Text, TouchableOpacity, View } from 'react-native';
 import Slider from '@react-native-community/slider';
 import { getCurrentUserId } from '../../lib/auth';
-import { recommendedSessionMinutes } from '../../lib/portionMath';
+import { recommendedSessionMinutes, suggestionLine } from '../../lib/portionMath';
 import { supabase } from '../../lib/supabase';
 import { colors, fonts, radius, spacing } from '../../lib/theme';
 
@@ -17,6 +17,7 @@ export default function SessionLengthScreen({ navigation }) {
   // Onboarding showed the suggested length and this screen did not, so someone
   // changing it later had no idea what the number was measured against.
   const [recommended, setRecommended] = useState(null);
+  const [juzCount, setJuzCount] = useState(0);
   const [isLoading, setIsLoading] = useState(true);
   const [isSaving, setIsSaving] = useState(false);
   const [error, setError] = useState('');
@@ -43,6 +44,7 @@ export default function SessionLengthScreen({ navigation }) {
           .select('juz_number', { count: 'exact', head: true })
           .eq('user_id', userId);
         if (count) {
+          setJuzCount(count);
           setRecommended(recommendedSessionMinutes(count, data?.avg_minutes_per_page));
         }
       } catch {
@@ -106,19 +108,14 @@ export default function SessionLengthScreen({ navigation }) {
           <Text style={styles.scale}>15 min</Text>
           <Text style={styles.scale}>120 min</Text>
         </View>
-        {recommended ? (
-          <Text style={styles.recommendation}>
-            {minutes === recommended
-              ? `${recommended} minutes covers everything you have memorised on a monthly round.`
-              : minutes < recommended
-                ? `We suggest ${recommended} minutes. Less than that and a full round takes longer than a month.`
-                : `We suggest ${recommended} minutes. More is fine, you will simply come round again sooner.`}
-          </Text>
+        {/* Only when they have landed below it. See TimeScreen. */}
+        {recommended && minutes < recommended ? (
+          <Text style={styles.recommendation}>{suggestionLine(recommended, juzCount)}</Text>
         ) : null}
         <Text style={styles.note}>
-          The time you set is an estimate. What a day actually takes depends
-          on what is due that day. If you are short of time, start anyway: even
-          a few minutes of it helps.
+          This is an estimate, not a fixed length. A day runs longer or shorter
+          depending on what is due and how many mistakes you have to go over. If
+          you are short of time, start anyway: even a few minutes helps.
         </Text>
         {error ? <Text style={styles.error}>{error}</Text> : null}
       </View>
