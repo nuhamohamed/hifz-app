@@ -272,8 +272,13 @@ export default function TodayScreen() {
               await cancelDailyNotification();
             }
 
+            // The nudge answers to the same switch as the 9am reminder. It
+            // used to be scheduled whenever the day was unfinished, without
+            // consulting notification_time at all, so someone who had turned
+            // reminders off still got an 8pm notification. That is the same
+            // bug the morning reminder had, in the one path that was missed.
             const isOverdue = !!(portion?.scheduledDate && portion.scheduledDate < today);
-            if (isDone) {
+            if (isDone || !reminderTime) {
               await cancelEveningNudge();
             } else {
               await scheduleEveningNudge(isOverdue);
