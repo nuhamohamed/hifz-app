@@ -368,6 +368,10 @@ export default function SessionSummaryScreen({ route }) {
 
   // Tiers are dropped, so there is one count, not two.
   const mistakeCount = mistakes.length;
+  // Not the same as mistakesOpen. Clearing the last mistake off an open list
+  // leaves the flag true with nothing to show, and the tick would stay hidden
+  // on a screen that has just become a clean one.
+  const listExpanded = mistakesOpen && mistakeCount > 0;
 
   /**
    * Stops an ayah being a mistake at all: removes the record that feeds the juz
@@ -506,7 +510,7 @@ export default function SessionSummaryScreen({ route }) {
 
   return (
     <Animated.View style={[styles.screen, { opacity }]}>
-      <ScrollView contentContainerStyle={styles.scrollContent} showsVerticalScrollIndicator={false}>
+      <View style={styles.content}>
         {juzComplete ? (
           <View style={styles.juzCompleteCard}>
             <Text style={styles.juzCompleteTitle}>Juz {session?.juz_number} Complete!</Text>
@@ -520,9 +524,14 @@ export default function SessionSummaryScreen({ route }) {
           </View>
         ) : (
           <View style={styles.successSection}>
-            <Animated.View style={[styles.checkCircle, { transform: [{ scale: checkScale }] }]}>
-              <Text style={styles.checkIcon}>✓</Text>
-            </Animated.View>
+            {/* The tick is decoration and it is the tallest thing up here. With
+                the list open, the room it takes is room the list cannot scroll
+                in, so it stands down until the list is closed again. */}
+            {listExpanded ? null : (
+              <Animated.View style={[styles.checkCircle, { transform: [{ scale: checkScale }] }]}>
+                <Text style={styles.checkIcon}>✓</Text>
+              </Animated.View>
+            )}
             {/* The tab is opened on days after the session as well, so the
                 heading names the day it belongs to rather than announcing a
                 completion that may have happened last week. */}
@@ -545,6 +554,12 @@ export default function SessionSummaryScreen({ route }) {
           />
         </View>
 
+        {/* The mistake list is the only part of this screen that grows without
+            bound, so it is the only part that scrolls. A bad day used to push
+            up next off the bottom of the page; now the list scrolls inside its
+            own region and the next session stays on screen. When the list is
+            closed a filler holds that space open, so up next sits in the same
+            place either way rather than jumping as the list opens. */}
         {mistakes.length > 0 ? (
           <>
             <TouchableOpacity
@@ -557,36 +572,44 @@ export default function SessionSummaryScreen({ route }) {
               </Text>
               <Text style={styles.disclosureChevron}>{mistakesOpen ? '▾' : '▸'}</Text>
             </TouchableOpacity>
-            {mistakesOpen
-              ? mistakes.map((mistake, index) => (
+            {mistakesOpen ? (
+              <ScrollView
+                style={styles.mistakeScroll}
+                contentContainerStyle={styles.mistakeScrollContent}
+              >
+                {mistakes.map((mistake, index) => (
                   <MistakeCard
                     key={`${mistake.surah_number}-${mistake.ayah_number}-${index}`}
                     mistake={mistake}
                     onDismiss={() => handleDismissMistake(index, mistake)}
                     onClearWord={(word) => handleClearWord(index, mistake, word)}
                   />
-                ))
-              : null}
+                ))}
+              </ScrollView>
+            ) : (
+              <View style={styles.filler} />
+            )}
           </>
         ) : (
-          <View style={styles.cleanCard}>
-            <Text style={styles.cleanIcon}>✦</Text>
-            <Text style={styles.cleanText}>No mistakes this session. Excellent work.</Text>
-          </View>
+          <>
+            <View style={styles.cleanCard}>
+              <Text style={styles.cleanIcon}>✦</Text>
+              <Text style={styles.cleanText}>No mistakes this session. Excellent work.</Text>
+            </View>
+            <View style={styles.filler} />
+          </>
         )}
 
         {tomorrowText ? (
-          <>
+          <View>
             <Text style={styles.sectionLabel}>UP NEXT</Text>
             <View style={styles.nextCard}>
               <Text style={styles.nextLabel}>TOMORROW</Text>
               <Text style={styles.nextTitle}>{tomorrowText}</Text>
             </View>
-          </>
+          </View>
         ) : null}
-
-        <View style={{ height: 100 }} />
-      </ScrollView>
+      </View>
 
       {cameFromSession ? (
         <View style={styles.cta}>
@@ -610,11 +633,20 @@ const styles = StyleSheet.create({
     padding: spacing.lg,
     backgroundColor: colors.background,
   },
-  scrollContent: {
+  // The page no longer scrolls as a whole. This is a fixed-height column:
+  // header, then the mistake region which takes whatever is left, then up next
+  // pinned above the button or the tab bar.
+  content: {
+    flex: 1,
     paddingTop: 64,
     paddingHorizontal: spacing.lg,
     paddingBottom: 16,
   },
+  mistakeScroll: { flex: 1, marginBottom: spacing.md },
+  mistakeScrollContent: { paddingBottom: spacing.xs },
+  // Holds the same space open when the list is closed, so up next does not
+  // move when the disclosure is toggled.
+  filler: { flex: 1 },
   disclosureRow: {
     flexDirection: 'row',
     alignItems: 'center',
@@ -761,8 +793,9 @@ const styles = StyleSheet.create({
     marginBottom: spacing.lg,
   },
   cta: {
-    position: 'absolute',
-    bottom: 0, left: 0, right: 0,
+    // Was absolute, which needed a spacer inside the old page-wide ScrollView
+    // to stop content hiding behind it. In a flex column it is simply the last
+    // child, the same as the tab bar it stands in for.
     paddingHorizontal: spacing.lg,
     paddingBottom: 48,
     paddingTop: spacing.sm,
