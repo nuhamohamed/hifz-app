@@ -13,6 +13,7 @@ import { CommonActions, useNavigation } from '@react-navigation/native';
 import TabBar from '../components/TabBar';
 import { getCurrentUserId } from '../lib/auth';
 import {
+  addDays,
   formatDayLabel as formatSessionDate,
   todayString as getTodayDateString,
   tomorrowString as getTomorrowDateString,
@@ -24,6 +25,38 @@ import { updateJuzProgressAfterSession } from '../lib/planEngine';
 import { removeFromQuizQueue } from '../lib/quizEngine';
 import { supabase } from '../lib/supabase';
 import { colors, fonts, spacing } from '../lib/theme';
+
+/**
+ * What to call the session on screen.
+ *
+ * This tab keeps showing the last completed session until a new one is
+ * finished, so the day after a session it is showing yesterday's work. "Session
+ * 28 Aug" is accurate and tells you nothing; a day close enough to have a name
+ * gets its name.
+ */
+function sessionHeading(dateStr) {
+  if (!dateStr) return 'Session';
+  const today = getTodayDateString();
+  if (dateStr === today) return "Today's session";
+  if (dateStr === addDays(today, -1)) return "Yesterday's session";
+  return `Session · ${formatSessionDate(dateStr)}`;
+}
+
+/**
+ * What to call the portion in the up-next card.
+ *
+ * It was hardcoded to TOMORROW, but the query behind it takes the earliest
+ * pending portion due up to and including tomorrow. Viewing yesterday's summary
+ * today, or having a backlog, therefore labelled work that is due now as
+ * tomorrow's.
+ */
+function upNextLabel(scheduledDate) {
+  if (!scheduledDate) return 'TOMORROW';
+  const today = getTodayDateString();
+  if (scheduledDate <= today) return 'TODAY';
+  if (scheduledDate === getTomorrowDateString()) return 'TOMORROW';
+  return formatSessionDate(scheduledDate).toUpperCase();
+}
 
 function formatTomorrowLine(tomorrow) {
   const start = getAyahLocation(
@@ -157,6 +190,7 @@ export default function SessionSummaryScreen({ route }) {
   const [session, setSession] = useState(null);
   const [mistakes, setMistakes] = useState([]);
   const [tomorrowText, setTomorrowText] = useState(null);
+  const [nextLabel, setNextLabel] = useState('TOMORROW');
   const [juzComplete, setJuzComplete] = useState(false);
   // Collapsed to begin with. Opening the tab to check on a day should not lead
   // with a wall of red; the count is the summary and the detail is a choice.
@@ -290,7 +324,7 @@ export default function SessionSummaryScreen({ route }) {
 
         const { data: tomorrow, error: tomorrowError } = await supabase
           .from('scheduled_portions')
-          .select('juz_number, portion_start_ayah, portion_end_ayah, type')
+          .select('juz_number, portion_start_ayah, portion_end_ayah, type, scheduled_date')
           .eq('user_id', userId)
           .eq('status', 'pending')
           // Anything already due counts as well as tomorrow's own row, ordered
@@ -345,6 +379,7 @@ export default function SessionSummaryScreen({ route }) {
         setSession(sessionData);
         setMistakes(enrichedMistakes);
         setTomorrowText(nextTomorrowText);
+        setNextLabel(upNextLabel(tomorrow?.scheduled_date));
         setJuzComplete(isJuzComplete);
         setReturnsInDays(returnsIn);
       } catch (err) {
@@ -535,11 +570,7 @@ export default function SessionSummaryScreen({ route }) {
             {/* The tab is opened on days after the session as well, so the
                 heading names the day it belongs to rather than announcing a
                 completion that may have happened last week. */}
-            <Text style={styles.successTitle}>
-              {session?.date === getTodayDateString()
-                ? "Today's session"
-                : `Session · ${formatSessionDate(session?.date)}`}
-            </Text>
+            <Text style={styles.successTitle}>{sessionHeading(session?.date)}</Text>
             <Text style={styles.successSub}>{portionLabel}</Text>
           </View>
         )}
@@ -604,7 +635,7 @@ export default function SessionSummaryScreen({ route }) {
           <View>
             <Text style={styles.sectionLabel}>UP NEXT</Text>
             <View style={styles.nextCard}>
-              <Text style={styles.nextLabel}>TOMORROW</Text>
+              <Text style={styles.nextLabel}>{nextLabel}</Text>
               <Text style={styles.nextTitle}>{tomorrowText}</Text>
             </View>
           </View>
