@@ -17,7 +17,6 @@ import { getCurrentUserId } from '../lib/auth';
 import {
   formatDayLabel as formatSessionDate,
   todayString as getTodayDateString,
-  tomorrowString as getTomorrowDateString,
 } from '../lib/dates';
 import { getAyahLocation, getJuzTotalAyahs } from '../lib/juzSurahMap';
 import { getTodayPlan } from '../lib/planEngine';
@@ -30,17 +29,6 @@ import {
 } from '../lib/notifications';
 import { supabase } from '../lib/supabase';
 import { colors, fonts, spacing } from '../lib/theme';
-
-function formatTomorrowLine(tomorrow) {
-  if (!tomorrow) return 'Tomorrow: Quiz only';
-  if (tomorrow.type === 'quiz_only') return 'Tomorrow: Quiz only';
-  const start = getAyahLocation(tomorrow.juz_number, tomorrow.portion_start_ayah);
-  const end = getAyahLocation(tomorrow.juz_number, tomorrow.portion_end_ayah);
-  if (start.surahNumber === end.surahNumber) {
-    return `Tomorrow: Juz ${tomorrow.juz_number}, ${start.surahName} ${start.ayahNumber}–${end.ayahNumber}`;
-  }
-  return `Tomorrow: Juz ${tomorrow.juz_number}, ${start.surahName} ${start.ayahNumber} to ${end.surahName} ${end.ayahNumber}`;
-}
 
 // Passes juz-relative offsets straight through. It used to flatten them into a
 // single surah, taking the surah of the *start* and the ayah number of the
@@ -63,7 +51,7 @@ function buildSessionParams(sessionId, resumeFromOffset, portion, sessionType = 
 
 function portionSummary(todayPortion) {
   if (!todayPortion || todayPortion.type === 'quiz_only') return null;
-  const { juzNumber, portionStartAyah, portionEndAyah } = todayPortion;
+  const { juzNumber, portionStartAyah, portionEndAyah, pages } = todayPortion;
   const start = getAyahLocation(juzNumber, portionStartAyah);
   const end = getAyahLocation(juzNumber, portionEndAyah);
   return {
@@ -76,6 +64,9 @@ function portionSummary(todayPortion) {
         ? `${start.surahName} ${start.ayahNumber}\u2013${end.ayahNumber}`
         : `${start.surahName} ${start.ayahNumber} to ${end.surahName} ${end.ayahNumber}`,
     ayahCount: portionEndAyah - portionStartAyah + 1,
+    // Pages rather than ayahs. An ayah count says nothing about how long
+    // something takes, since a page holds anywhere from 1 to 40 of them.
+    pages: pages ?? 0,
   };
 }
 
@@ -132,11 +123,11 @@ function SessionRing({ completedAyahs = 0, todayAyahs = 7, size = 80, stroke = 7
   );
 }
 
-function StepCard({ step, icon, title, desc, iconBg, iconColor }) {
+function StepCard({ step, icon, title, desc, iconBg, iconColor, done }) {
   return (
-    <View style={styles.stepCard}>
-      <View style={styles.stepNumCircle}>
-        <Text style={styles.stepNumText}>{step}</Text>
+    <View style={[styles.stepCard, done && styles.stepCardDone]}>
+      <View style={[styles.stepNumCircle, done && styles.stepNumCircleDone]}>
+        <Text style={styles.stepNumText}>{done ? '✓' : step}</Text>
       </View>
       <View style={[styles.stepIconWrap, { backgroundColor: iconBg }]}>
         <Text style={[styles.stepIcon, { color: iconColor }]}>{icon}</Text>
@@ -144,8 +135,10 @@ function StepCard({ step, icon, title, desc, iconBg, iconColor }) {
       {/* A step with no second line centres on the box rather than sitting
           against the top of it, where an empty description used to hold space. */}
       <View style={styles.stepBody}>
-        <Text style={styles.stepTitle}>{title}</Text>
-        {desc ? <Text style={styles.stepDesc}>{desc}</Text> : null}
+        <Text style={[styles.stepTitle, done && styles.stepTextDone]}>{title}</Text>
+        {desc ? (
+          <Text style={[styles.stepDesc, done && styles.stepTextDone]}>{desc}</Text>
+        ) : null}
       </View>
     </View>
   );
@@ -173,10 +166,12 @@ export default function TodayScreen() {
   const [nextSession, setNextSession] = useState(null);
   // The length they chose, so the screen can tell a heavy day from a normal one.
   const [sessionMinutes, setSessionMinutes] = useState(null);
+  // What was recited today, once the day is finished. The agenda crosses this
+  // out rather than the next session's portion, which nobody has done yet.
+  const [donePortion, setDonePortion] = useState(null);
   const [portionLoading, setPortionLoading] = useState(true);
   const [pausedSession, setPausedSession] = useState(null);
   const [sessionDoneToday, setSessionDoneToday] = useState(false);
-  const [tomorrowText, setTomorrowText] = useState(null);
   const [isStarting, setIsStarting] = useState(false);
   const [error, setError] = useState('');
   const [notifDenied, setNotifDenied] = useState(false);
@@ -207,7 +202,7 @@ export default function TodayScreen() {
         // the portion cannot be sized until the due quiz has been costed: the
         // quiz is never cut, so it is paid for first and the portion takes what
         // is left. Everything that does not depend on that still runs alongside.
-        const [userResult, plan, pausedResult, completedResult, tomorrowResult] = await Promise.all([
+        const [userResult, plan, pausedResult, completedResult] = await Promise.all([
           supabase
             .from('users')
             .select('name, notification_time, session_minutes')
@@ -224,30 +219,10 @@ export default function TodayScreen() {
             .maybeSingle(),
           supabase
             .from('sessions')
-            .select('id')
+            .select('id, juz_number, portion_start_ayah, portion_end_ayah')
             .eq('user_id', userId)
             .eq('status', 'complete')
             .eq('date', today)
-            .limit(1)
-            .maybeSingle(),
-          supabase
-            .from('scheduled_portions')
-            .select('juz_number, portion_start_ayah, portion_end_ayah, type')
-            .eq('user_id', userId)
-            .eq('status', 'pending')
-            // Everything already due as well as tomorrow's own row, ordered
-            // exactly as getTodayPortion() orders it, so this really is the
-            // next thing the person will be handed.
-            //
-            // This matched tomorrow's date exactly, which was survivable while
-            // a juz had one row outstanding at a time. Now that a return pass
-            // is laid out in full, anyone even one day behind has their next
-            // portion sitting in the past, and an exact match found nothing and
-            // told them tomorrow was a quiz-only day.
-            .lte('scheduled_date', getTomorrowDateString())
-            .order('scheduled_date', { ascending: true })
-            .order('juz_number', { ascending: true })
-            .order('portion_start_ayah', { ascending: true })
             .limit(1)
             .maybeSingle(),
         ]);
@@ -269,10 +244,16 @@ export default function TodayScreen() {
         // over when the first is done, so this cannot key on the session alone.
         const isDone =
           !completedResult.error && !!completedResult.data && plan.portions.length === 0;
-        if (isDone) {
-          setSessionDoneToday(true);
-          setTomorrowText(formatTomorrowLine(tomorrowResult.data ?? null));
-        }
+        setSessionDoneToday(isDone);
+        setDonePortion(
+          isDone && completedResult.data
+            ? {
+                juzNumber: completedResult.data.juz_number,
+                portionStartAyah: completedResult.data.portion_start_ayah,
+                portionEndAyah: completedResult.data.portion_end_ayah,
+              }
+            : null
+        );
 
         if (!notificationsScheduledRef.current) {
           notificationsScheduledRef.current = true;
@@ -512,12 +493,84 @@ export default function TodayScreen() {
   const nothingDue = quizOnly && quizCount === 0 && !pausedSession;
   // A day with nothing due but a session booked ahead. The screen shows that
   // session rather than a dead end, and offers to bring it forward.
-  const showingNext = nothingDue && !!nextSession;
+  const showingNext = nothingDue && !!nextSession && !sessionDoneToday;
   const nextSummary = portionSummary(nextSession);
   // Above the length they asked for, so the day genuinely overruns.
   const isHeavyDay = !!(estimateMinutes && sessionMinutes && estimateMinutes > sessionMinutes);
+
+  // ── What the banner is carrying ───────────────────────────────────────────
+  // One card, one message: whatever the person most needs to know right now.
+  // It used to be a fixed "today's portion" plus a separate all-done card that
+  // replaced the whole screen, so a paused session said nothing at the top and
+  // a finished day threw the agenda away.
+  const displayPortion = showingNext ? nextSession : nextPortion;
+  const displaySummary = showingNext ? nextSummary : summary;
+
+  let bannerEyebrow = "TODAY'S PORTION";
+  let bannerSub = null;
+  if (sessionDoneToday) {
+    bannerEyebrow = 'ALL DONE FOR TODAY';
+    bannerSub = nextSession
+      ? `Next session · ${formatSessionDate(nextSession.scheduledDate)}`
+      : 'Nothing scheduled yet';
+  } else if (pausedSession) {
+    bannerEyebrow = isCarriedOver
+      ? `UNFINISHED · ${formatSessionDate(pausedSession.date)}`
+      : 'IN PROGRESS';
+    bannerSub = resumeHint;
+  } else if (showingNext) {
+    bannerEyebrow = `NEXT SESSION · ${formatSessionDate(nextSession.scheduledDate)}`;
+    bannerSub = 'Nothing due today';
+  } else if (summary) {
+    bannerEyebrow =
+      portions.length > 1
+        ? `JUZ ${summary.juzNumber} · FIRST OF ${portions.length}`
+        : `JUZ ${summary.juzNumber} · TODAY'S PORTION`;
+    bannerSub =
+      estimateMinutes && summary.pages
+        ? `about ${Math.max(1, Math.round(summary.pages))} page${
+            Math.round(summary.pages) === 1 ? '' : 's'
+          } · ${estimateMinutes} min`
+        : null;
+  }
+
+  // When all done, the banner names what is coming rather than what was done.
+  const bannerTitle = sessionDoneToday
+    ? nextSession
+      ? nextSummary.label
+      : 'Nothing scheduled yet'
+    : displaySummary
+    ? displaySummary.label
+    : nothingDue
+    ? 'Nothing due today'
+    : quizOnly
+    ? 'Quiz only today'
+    : 'Unable to load portion';
+
+  // ── How far through the day they are ──────────────────────────────────────
+  // The ring was hardcoded to zero, so "session progress" never moved. It now
+  // follows the resume marker, which is written after every confirmed ayah.
+  const portionLength = summary ? summary.ayahCount : 0;
+  const recitedSoFar =
+    pausedSession && nextPortion
+      ? Math.max(0, (pausedSession.last_confirmed_ayah ?? 0) - nextPortion.portionStartAyah + 1)
+      : 0;
+  const ringDone = sessionDoneToday ? portionLength || 1 : recitedSoFar;
+  const ringTotal = sessionDoneToday ? portionLength || 1 : portionLength || 1;
+
+  // ── Which agenda steps are behind them ────────────────────────────────────
+  // Phase is written as the session moves, so a paused session already knows
+  // how far it reached. Finishing the day crosses everything out.
+  const phase = pausedSession?.phase ?? null;
+  const quizStepDone = sessionDoneToday || phase === 'revision' || phase === 'post_quiz';
+  const reciteStepDone = sessionDoneToday || phase === 'post_quiz';
+  const recapStepDone = sessionDoneToday;
   // The agenda belongs to whichever session is on screen.
-  const agendaPortions = showingNext ? [nextSession] : portions;
+  const agendaPortions = sessionDoneToday && donePortion
+    ? [donePortion]
+    : showingNext
+    ? [nextSession]
+    : portions;
 
   return (
     <View style={styles.screen}>
@@ -535,60 +588,27 @@ export default function TodayScreen() {
           </TouchableOpacity>
         ) : null}
 
-        {sessionDoneToday ? (
-          <View style={styles.doneCard}>
-            <Text style={styles.doneTitle}>All done for today!</Text>
-            {tomorrowText ? <Text style={styles.tomorrowText}>{tomorrowText}</Text> : null}
-          </View>
-        ) : (
+        {(
           <>
             <Animated.View style={[styles.portionCard, { transform: [{ translateY: cardTranslate }] }]}>
               <View style={styles.portionLeft}>
-                <SessionRing completedAyahs={0} todayAyahs={summary?.ayahCount ?? 7} />
+                <SessionRing completedAyahs={ringDone} todayAyahs={ringTotal} />
               </View>
               <View style={styles.portionRight}>
-                <Text style={styles.portionEyebrow}>
-                  {isCarriedOver
-                    ? `UNFINISHED · ${formatSessionDate(pausedSession.date)}`
-                    : showingNext
-                    ? `NEXT SESSION · ${formatSessionDate(nextSession.scheduledDate)}`
-                    : portions.length > 1
-                    ? `JUZ ${summary.juzNumber} · FIRST OF ${portions.length}`
-                    : summary
-                    ? `JUZ ${summary.juzNumber} · TODAY'S PORTION`
-                    : "TODAY'S PORTION"}
-                </Text>
+                <Text style={styles.portionEyebrow}>{bannerEyebrow}</Text>
                 {portionLoading ? (
                   <ActivityIndicator size="small" color={colors.primary} style={{ alignSelf: 'flex-start', marginVertical: 4 }} />
-                ) : showingNext ? (
-                  <>
-                    <Text style={styles.portionTitle}>{nextSummary.label}</Text>
-                    <Text style={styles.portionSub}>Nothing due today</Text>
-                  </>
-                ) : nothingDue ? (
-                  <Text style={styles.portionTitle}>Nothing due today</Text>
-                ) : quizOnly ? (
-                  <Text style={styles.portionTitle}>Quiz only today</Text>
-                ) : summary ? (
-                  <>
-                    <Text style={styles.portionTitle}>{summary.label}</Text>
-                    <Text style={styles.portionSub}>{summary.ayahCount} ayat</Text>
-                  </>
                 ) : (
-                  <Text style={styles.portionTitle}>Unable to load portion</Text>
+                  <>
+                    <Text style={styles.portionTitle}>{bannerTitle}</Text>
+                    {bannerSub ? <Text style={styles.portionSub}>{bannerSub}</Text> : null}
+                  </>
                 )}
               </View>
             </Animated.View>
 
-            {!portionLoading && estimateMinutes ? (
+            {!portionLoading && portionsWaiting > 0 ? (
               <View style={styles.costRow}>
-                {/* Said every day, not only on heavy ones, so nobody finds out
-                    forty minutes in. Honest now that the quiz is costed from
-                    the ayahs actually due rather than assumed free, which is
-                    also why a day with nothing due shows no time at all. */}
-                <Text style={styles.costText}>
-                  Today: about {estimateMinutes} minute{estimateMinutes === 1 ? '' : 's'}
-                </Text>
                 {portionsWaiting > 0 ? (
                   /* A fact, not a warning. No badge and nothing dropped: a
                      backlog is worked oldest first and shrinks by being done.
@@ -612,7 +632,7 @@ export default function TodayScreen() {
               contentContainerStyle={styles.agendaContent}
               showsVerticalScrollIndicator={false}
             >
-            {nothingDue && !showingNext ? null : (
+            {nothingDue && !showingNext && !sessionDoneToday ? null : (
               <>
                 <Text style={styles.sectionLabel}>
                   {showingNext ? "NEXT SESSION'S AGENDA" : "TODAY'S AGENDA"}
@@ -621,6 +641,7 @@ export default function TodayScreen() {
                   <StepCard
                     step={1} icon="◈" title="Mistake Review"
                     iconBg={colors.ice} iconColor={colors.primary}
+                    done={quizStepDone}
                   />
                   {/* A quiz-only day has no portion, so it has no recitation and
                       no recap of one. Listing three steps and then ending after
@@ -644,21 +665,24 @@ export default function TodayScreen() {
                             : 'We follow along as you go'
                         }
                         iconBg={colors.parchment} iconColor={colors.brown}
+                        done={reciteStepDone}
                       />
                     );
                   })}
-                  {quizOnly && !showingNext ? null : (
+                  {quizOnly && !showingNext && !sessionDoneToday ? null : (
                     <StepCard
                       step={agendaPortions.length + 2} icon="◆" title="Recap quiz"
                       desc="Locks it in for next time"
                       iconBg={colors.parchment} iconColor={colors.accent}
+                      done={recapStepDone}
                     />
                   )}
                 </View>
               </>
             )}
 
-            {resumeHint ? <Text style={styles.resumeHint}>{resumeHint}</Text> : null}
+            {/* The resume point lives in the banner now, which is the one
+                place the main update belongs. It was printed here too. */}
             {error ? <Text style={styles.error}>{error}</Text> : null}
             {quizCount > 0 ? (
               <Text style={styles.quizCountHint}>{quizCount} item{quizCount === 1 ? '' : 's'} due for mistake review</Text>
@@ -680,7 +704,7 @@ export default function TodayScreen() {
 
             {isStarting || portionLoading ? (
               <ActivityIndicator size="large" color={colors.primary} style={{ marginBottom: spacing.md }} />
-            ) : showingNext ? (
+            ) : sessionDoneToday ? null : showingNext ? (
               <>
                 {/* Working ahead moves the whole rotation earlier rather than
                     banking a free day, so it is offered plainly and named for
@@ -742,16 +766,6 @@ const styles = StyleSheet.create({
   },
   notifBannerText: { fontFamily: fonts.regular, fontSize: 14, color: colors.accent, textAlign: 'center' },
 
-  doneCard: {
-    backgroundColor: colors.successLight,
-    borderWidth: 2,
-    borderColor: colors.success,
-    borderRadius: 20,
-    padding: 28,
-    alignItems: 'center',
-  },
-  doneTitle: { fontFamily: fonts.semiBold, fontSize: 22, color: colors.success, marginBottom: 16, textAlign: 'center' },
-  tomorrowText: { fontFamily: fonts.regular, fontSize: 16, color: colors.textMid, textAlign: 'center', lineHeight: 24 },
 
   portionCard: {
     backgroundColor: colors.ice,
@@ -787,14 +801,13 @@ const styles = StyleSheet.create({
   stepNumText: { fontFamily: fonts.semiBold, fontSize: 13, color: colors.white },
   stepIconWrap: { width: 40, height: 40, borderRadius: 12, alignItems: 'center', justifyContent: 'center' },
   stepIcon: { fontSize: 18 },
+  stepCardDone: { opacity: 0.55 },
+  stepNumCircleDone: { backgroundColor: colors.success },
+  stepTextDone: { textDecorationLine: 'line-through', color: colors.textMuted },
   stepBody: { flex: 1, justifyContent: 'center' },
   stepTitle: { fontFamily: fonts.semiBold, fontSize: 15, color: colors.text, marginBottom: 2 },
   stepDesc: { fontFamily: fonts.regular, fontSize: 13, color: colors.textMid },
 
-  resumeHint: {
-    fontFamily: fonts.medium, fontSize: 14, color: colors.accent,
-    textAlign: 'center', marginTop: spacing.md,
-  },
   costRow: {
     flexDirection: 'row', alignItems: 'baseline', justifyContent: 'space-between',
     marginTop: spacing.sm, marginBottom: spacing.md,
