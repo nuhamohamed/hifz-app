@@ -33,10 +33,15 @@ export default function TimeScreen({ route, navigation }) {
           .select('juz_number', { count: 'exact', head: true })
           .eq('user_id', userId);
         if (!mounted || !count) return;
+        // The slider is deliberately NOT moved to the suggestion. Landing
+        // already on it meant the suggestion could never be below the slider,
+        // so the line explaining it never appeared and the number arrived
+        // looking like an arbitrary default. Left at 30, someone who needs more
+        // than that is told so and moves the slider themselves, which is a
+        // choice rather than something inherited.
         const suggestion = recommendedSessionMinutes(count);
         setJuzCount(count);
         setRecommended(suggestion);
-        setSessionMinutes(suggestion);
       } catch {
         // A failed lookup just leaves the default in place. Not worth blocking
         // onboarding over a suggestion.
