@@ -66,6 +66,9 @@ export default function PreSessionQuizScreen(props) {
   const [currentItemIndex, setCurrentItemIndex] = useState(0);
   const [confirmedAyahs, setConfirmedAyahs] = useState([]);
   const [isLoading, setIsLoading] = useState(true);
+  // Nothing listens until the mic is tapped. It used to open itself on
+  // arrival, so the screen asked people to recite while already recording.
+  const [hasStarted, setHasStarted] = useState(false);
   const [error, setError] = useState('');
   const [showTransition, setShowTransition] = useState(false);
   const [showNextItemTransition, setShowNextItemTransition] = useState(false);
@@ -394,41 +397,7 @@ export default function PreSessionQuizScreen(props) {
 
         if (!mounted) return;
 
-        await startListening({
-          getExpectedWords: () => {
-            if (ayahDataRef.current?.isDisconnectedLetters) return [];
-            return (ayahDataRef.current?.words ?? [])
-              .map((w) => normalizeArabic(w.textCompare))
-              .filter(Boolean);
-          },
-          onAyahComplete: (text) => onAyahCompleteRef.current(text),
-          onPartial: (text) => {
-            liveJudgeRef.current?.update(dedupeConsecutiveWords(text));
-          },
-          onCommit: (matchedCount) => {
-            const prev = prevMatchPosRef.current;
-            prevMatchPosRef.current = matchedCount;
-            if (matchedCount > prev) {
-              if (matchedCount > prev + 1) {
-                const skipStart = prev;
-                for (let i = skipStart; i < matchedCount - 1; i++) {
-                  accumulatedWrongIndicesRef.current.add(i);
-                }
-                setLiveWrongIndices([...accumulatedWrongIndicesRef.current]);
-                setLiveLetterDiff((existing) => {
-                  const next = { ...existing };
-                  for (let i = skipStart; i < matchedCount - 1; i++) next[i] = null;
-                  return next;
-                });
-                if (!ayahDataRef.current?.isDisconnectedLetters) buzzAndTone();
-              }
-              const newRevealed = Math.max(revealedWordCountRef.current, matchedCount);
-              revealedWordCountRef.current = newRevealed;
-              setRevealedWordCount(newRevealed);
-            }
-          },
-          onError: (message) => { if (mounted) setError(message); },
-        });
+        // Listening now waits for the mic button; see the effect below.
       } catch (err) {
         if (mounted) setError(err.message ?? 'Failed to start pre-session quiz.');
       } finally {
@@ -439,9 +408,69 @@ export default function PreSessionQuizScreen(props) {
     return () => {
       mounted = false;
       startedRef.current = false;
-      stopListening();
     };
   }, [loadBlockForItem, navigateToRecitation, buzzAndTone]);
+
+  /**
+   * Open the microphone, once someone has asked for it.
+   *
+   * This ran at the tail of the setup effect, so the stream opened as soon as
+   * the screen appeared: the app was listening while the bottom of the screen
+   * told you to start reciting, and a Speechmatics connection was paid for
+   * whether or not anybody spoke.
+   */
+  useEffect(() => {
+    if (!hasStarted || isLoading || error) return;
+
+    let mounted = true;
+
+    (async () => {
+      try {
+      await startListening({
+        getExpectedWords: () => {
+          if (ayahDataRef.current?.isDisconnectedLetters) return [];
+          return (ayahDataRef.current?.words ?? [])
+            .map((w) => normalizeArabic(w.textCompare))
+            .filter(Boolean);
+        },
+        onAyahComplete: (text) => onAyahCompleteRef.current(text),
+        onPartial: (text) => {
+          liveJudgeRef.current?.update(dedupeConsecutiveWords(text));
+        },
+        onCommit: (matchedCount) => {
+          const prev = prevMatchPosRef.current;
+          prevMatchPosRef.current = matchedCount;
+          if (matchedCount > prev) {
+            if (matchedCount > prev + 1) {
+              const skipStart = prev;
+              for (let i = skipStart; i < matchedCount - 1; i++) {
+                accumulatedWrongIndicesRef.current.add(i);
+              }
+              setLiveWrongIndices([...accumulatedWrongIndicesRef.current]);
+              setLiveLetterDiff((existing) => {
+                const next = { ...existing };
+                for (let i = skipStart; i < matchedCount - 1; i++) next[i] = null;
+                return next;
+              });
+              if (!ayahDataRef.current?.isDisconnectedLetters) buzzAndTone();
+            }
+            const newRevealed = Math.max(revealedWordCountRef.current, matchedCount);
+            revealedWordCountRef.current = newRevealed;
+            setRevealedWordCount(newRevealed);
+          }
+        },
+        onError: (message) => { if (mounted) setError(message); },
+      });
+      } catch (err) {
+        if (mounted) setError(err.message ?? 'Could not start listening.');
+      }
+    })();
+
+    return () => {
+      mounted = false;
+      stopListening();
+    };
+  }, [hasStarted, isLoading, error, buzzAndTone]);
 
   useEffect(() => {
     if (isLoading || error || showTransition || showNextItemTransition) {
@@ -507,7 +536,7 @@ export default function PreSessionQuizScreen(props) {
     return map;
   }, [confirmedAyahs, currentItem, currentBlockIndex, revealedWordCount, liveWrongIndices, liveLetterDiff]);
 
-  const isListening = !isLoading && !error && !showTransition && !showNextItemTransition;
+  const isListening = hasStarted && !isLoading && !error && !showTransition && !showNextItemTransition;
 
   const handlePauseSession = async () => {
     if (sessionId) {
@@ -569,12 +598,12 @@ export default function PreSessionQuizScreen(props) {
         ) : null}
       </View>
 
-      {(revealedWordCount === 0 || hasFeedback) ? (
+      {(!hasStarted || revealedWordCount === 0 || hasFeedback) ? (
         <View style={styles.feedbackPanel}>
-          {revealedWordCount === 0 && !hasFeedback ? (
-            <>
-              <Text style={styles.reciteHint}>Recite from the grey ayah</Text>
-            </>
+          {!hasStarted && !hasFeedback ? (
+            <Text style={styles.reciteHint}>Tap the mic to start reciting</Text>
+          ) : revealedWordCount === 0 && !hasFeedback ? (
+            <Text style={styles.reciteHint}>Recite from the grey portion</Text>
           ) : null}
           {mistakeMessage ? (
             <Text style={styles.mistakeMessage}>{mistakeMessage}</Text>
@@ -619,14 +648,22 @@ export default function PreSessionQuizScreen(props) {
           {isLoading ? (
             <ActivityIndicator size="small" color={colors.accent} />
           ) : (
-            <View style={styles.micWrap}>
-              <Animated.View
-                style={[styles.micRing, { opacity: isListening ? pulseAnim : 0.15, transform: [{ scale: isListening ? pulseAnim : 1 }] }]}
-              />
-              <View style={styles.micCircle}>
-                <Text style={styles.micEmoji}>🎙</Text>
+            <TouchableOpacity
+              onPress={() => setHasStarted(true)}
+              disabled={hasStarted}
+              activeOpacity={0.7}
+              accessibilityRole="button"
+              accessibilityLabel={hasStarted ? 'Listening' : 'Start reciting'}
+            >
+              <View style={styles.micWrap}>
+                <Animated.View
+                  style={[styles.micRing, { opacity: isListening ? pulseAnim : 0.15, transform: [{ scale: isListening ? pulseAnim : 1 }] }]}
+                />
+                <View style={[styles.micCircle, !hasStarted && styles.micCircleIdle]}>
+                  <Text style={styles.micEmoji}>🎙</Text>
+                </View>
               </View>
-            </View>
+            </TouchableOpacity>
           )}
         </View>
 
@@ -781,6 +818,11 @@ const styles = StyleSheet.create({
   micCircle: {
     width: 34, height: 34, borderRadius: 17,
     backgroundColor: colors.primary, alignItems: 'center', justifyContent: 'center',
+  },
+  // Untapped, it reads as a control waiting to be pressed rather than an
+  // indicator of something already happening.
+  micCircleIdle: {
+    backgroundColor: colors.accent,
   },
   micEmoji: { fontSize: 16 },
   pageNumber: {

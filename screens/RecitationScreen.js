@@ -118,6 +118,10 @@ export default function RecitationScreen(props) {
   // Set when the microphone closed itself: 90 seconds of silence, or two hours
   // in one sitting. Null while listening.
   const [micClosedReason, setMicClosedReason] = useState(null);
+  // Nothing is listening until the mic is tapped. The microphone used to open
+  // itself on arrival, which meant the screen asked people to recite while it
+  // was already recording, and gave them no way to get ready first.
+  const [hasStarted, setHasStarted] = useState(false);
   // Bumped to restart listening after the microphone closed itself. The whole
   // setup lives in one effect, so re-running it is the honest way back in
   // rather than duplicating the connection logic.
@@ -537,66 +541,10 @@ export default function RecitationScreen(props) {
         if (!mounted) return;
         recreateJudge();
 
-        await startListening({
-          getExpectedWords,
-          onAyahComplete,
-          onPartial: (text) => {
-            if (isGoingBack(text, confirmedAyahWordsRef.current)) {
-              if (!isGoingBackRef.current) {
-                isGoingBackRef.current = true;
-                // Scrub indices at or beyond current matchPos — those came from
-                // going-back words misread against this ayah, not real mistakes.
-                const pos = prevMatchPosRef.current;
-                [...accumulatedWrongIndicesRef.current].forEach((i) => {
-                  if (i >= pos) accumulatedWrongIndicesRef.current.delete(i);
-                });
-                setLiveWrongIndices([...accumulatedWrongIndicesRef.current]);
-              }
-              return;
-            }
-            // Going-back window ended — user is speaking current ayah again.
-            isGoingBackRef.current = false;
-            liveJudgeRef.current?.update(dedupeConsecutiveWords(text));
-            setLiveText(text);
-          },
-          onCommit: (matchedCount) => {
-            const prev = prevMatchPosRef.current;
-            prevMatchPosRef.current = matchedCount;
-
-            if (matchedCount > prev) {
-              // matchPos advanced — user is on current ayah.
-              isGoingBackRef.current = false;
-
-              if (matchedCount > prev + 1) {
-                // Jump of >1: skipped word(s) — reveal in red immediately.
-                // spoken = null signals the whole word was omitted (no partial diff).
-                const skipStart = prev;
-                for (let i = skipStart; i < matchedCount - 1; i++) {
-                  accumulatedWrongIndicesRef.current.add(i);
-                }
-                setLiveWrongIndices([...accumulatedWrongIndicesRef.current]);
-                setLiveLetterDiff((existing) => {
-                  const next = { ...existing };
-                  for (let i = skipStart; i < matchedCount - 1; i++) next[i] = null;
-                  return next;
-                });
-                if (!ayahDataRef.current?.isDisconnectedLetters) {
-                  buzzAndTone();
-                  showMistakeMessage();
-                }
-              }
-              const newRevealed = Math.max(revealedWordCountRef.current, matchedCount);
-              revealedWordCountRef.current = newRevealed;
-              setRevealedWordCount(newRevealed);
-            }
-          },
-          onError: (message) => {
-            if (mounted) setError(message);
-          },
-          onAutoStop: (reason) => {
-            if (mounted) setMicClosedReason(reason);
-          },
-        });
+        // Listening is no longer started here. The microphone is a button
+        // now, so the portion loads and is readable first and the stream
+        // only opens once someone taps. Kept as its own effect below
+        // rather than inlined, so the connection logic still exists once.
       } catch (err) {
         if (mounted) {
           setError(err.message ?? 'Failed to start recitation session.');
@@ -609,7 +557,6 @@ export default function RecitationScreen(props) {
     return () => {
       mounted = false;
       startedRef.current = false;
-      stopListening();
     };
   }, [
     loadAyah,
@@ -619,8 +566,106 @@ export default function RecitationScreen(props) {
     initialAyahIndex,
     resumeFromOffset,
     startOffset,
-    listenAttempt,
     juzNumber,
+  ]);
+
+  /**
+   * Open the microphone, once someone has asked for it.
+   *
+   * This used to run at the tail of the setup effect, so the stream opened the
+   * moment the screen appeared: the app was already listening while the bottom
+   * of the screen told you to start reciting, and a Speechmatics connection was
+   * paid for whether or not anyone spoke. It now waits for the mic button.
+   *
+   * listenAttempt moved here with it. Bumping it is still how the microphone is
+   * reopened after it closes itself, and re-running this effect is a smaller
+   * thing to redo than the whole portion load.
+   */
+  useEffect(() => {
+    if (!hasStarted || isLoading || error) return;
+
+    let mounted = true;
+
+    (async () => {
+      try {
+      await startListening({
+        getExpectedWords,
+        onAyahComplete,
+        onPartial: (text) => {
+          if (isGoingBack(text, confirmedAyahWordsRef.current)) {
+            if (!isGoingBackRef.current) {
+              isGoingBackRef.current = true;
+              // Scrub indices at or beyond current matchPos — those came from
+              // going-back words misread against this ayah, not real mistakes.
+              const pos = prevMatchPosRef.current;
+              [...accumulatedWrongIndicesRef.current].forEach((i) => {
+                if (i >= pos) accumulatedWrongIndicesRef.current.delete(i);
+              });
+              setLiveWrongIndices([...accumulatedWrongIndicesRef.current]);
+            }
+            return;
+          }
+          // Going-back window ended — user is speaking current ayah again.
+          isGoingBackRef.current = false;
+          liveJudgeRef.current?.update(dedupeConsecutiveWords(text));
+          setLiveText(text);
+        },
+        onCommit: (matchedCount) => {
+          const prev = prevMatchPosRef.current;
+          prevMatchPosRef.current = matchedCount;
+
+          if (matchedCount > prev) {
+            // matchPos advanced — user is on current ayah.
+            isGoingBackRef.current = false;
+
+            if (matchedCount > prev + 1) {
+              // Jump of >1: skipped word(s) — reveal in red immediately.
+              // spoken = null signals the whole word was omitted (no partial diff).
+              const skipStart = prev;
+              for (let i = skipStart; i < matchedCount - 1; i++) {
+                accumulatedWrongIndicesRef.current.add(i);
+              }
+              setLiveWrongIndices([...accumulatedWrongIndicesRef.current]);
+              setLiveLetterDiff((existing) => {
+                const next = { ...existing };
+                for (let i = skipStart; i < matchedCount - 1; i++) next[i] = null;
+                return next;
+              });
+              if (!ayahDataRef.current?.isDisconnectedLetters) {
+                buzzAndTone();
+                showMistakeMessage();
+              }
+            }
+            const newRevealed = Math.max(revealedWordCountRef.current, matchedCount);
+            revealedWordCountRef.current = newRevealed;
+            setRevealedWordCount(newRevealed);
+          }
+        },
+        onError: (message) => {
+          if (mounted) setError(message);
+        },
+        onAutoStop: (reason) => {
+          if (mounted) setMicClosedReason(reason);
+        },
+      });
+      } catch (err) {
+        if (mounted) setError(err.message ?? 'Could not start listening.');
+      }
+    })();
+
+    return () => {
+      mounted = false;
+      stopListening();
+    };
+  }, [
+    hasStarted,
+    isLoading,
+    error,
+    listenAttempt,
+    getExpectedWords,
+    onAyahComplete,
+    buzzAndTone,
+    showMistakeMessage,
   ]);
 
   useEffect(() => {
@@ -718,7 +763,7 @@ export default function RecitationScreen(props) {
   ]);
 
   const displayAyahNumber = Math.min(currentAyahIndex + 1, totalAyahs);
-  const isListening = !isLoading && !error && !showTransition && !isRevisionComplete;
+  const isListening = hasStarted && !isLoading && !error && !showTransition && !isRevisionComplete;
 
   // "Al-Baqarah 142-252", or "Al-Baqarah 282 to Ali Imran 83" when the portion
   // spans two surahs, which most portions in most juz do.
@@ -802,12 +847,14 @@ export default function RecitationScreen(props) {
             <Text style={styles.doneBtnText}>Done, continue to quiz</Text>
           </TouchableOpacity>
         </View>
-      ) : (currentAyahIndex === 0 && revealedWordCount === 0) || mistakeMessage ? (
+      ) : !hasStarted || (currentAyahIndex === 0 && revealedWordCount === 0) || mistakeMessage ? (
         <View style={styles.feedbackPanel}>
-          {currentAyahIndex === 0 && revealedWordCount === 0 && !mistakeMessage ? (
-            <Text style={styles.reciteHint}>Recite from the grey ayah</Text>
-          ) : (
+          {mistakeMessage ? (
             <Text style={styles.feedbackMessage}>{mistakeMessage}</Text>
+          ) : !hasStarted ? (
+            <Text style={styles.reciteHint}>Tap the mic to start reciting</Text>
+          ) : (
+            <Text style={styles.reciteHint}>Recite from the grey portion</Text>
           )}
         </View>
       ) : null}
@@ -826,14 +873,22 @@ export default function RecitationScreen(props) {
           {isLoading ? (
             <ActivityIndicator size="small" color={colors.accent} />
           ) : (
-            <View style={styles.micWrap}>
-              <Animated.View
-                style={[styles.micRing, { opacity: isListening ? pulseAnim : 0.15, transform: [{ scale: isListening ? pulseAnim : 1 }] }]}
-              />
-              <View style={styles.micCircle}>
-                <Text style={styles.micEmoji}>🎙</Text>
+            <TouchableOpacity
+              onPress={() => setHasStarted(true)}
+              disabled={hasStarted}
+              activeOpacity={0.7}
+              accessibilityRole="button"
+              accessibilityLabel={hasStarted ? 'Listening' : 'Start reciting'}
+            >
+              <View style={styles.micWrap}>
+                <Animated.View
+                  style={[styles.micRing, { opacity: isListening ? pulseAnim : 0.15, transform: [{ scale: isListening ? pulseAnim : 1 }] }]}
+                />
+                <View style={[styles.micCircle, !hasStarted && styles.micCircleIdle]}>
+                  <Text style={styles.micEmoji}>🎙</Text>
+                </View>
               </View>
-            </View>
+            </TouchableOpacity>
           )}
         </View>
 
@@ -992,6 +1047,11 @@ const styles = StyleSheet.create({
   micCircle: {
     width: 34, height: 34, borderRadius: 17,
     backgroundColor: colors.primary, alignItems: 'center', justifyContent: 'center',
+  },
+  // Untapped, it reads as a control waiting to be pressed rather than an
+  // indicator of something already happening.
+  micCircleIdle: {
+    backgroundColor: colors.accent,
   },
   micEmoji: { fontSize: 16 },
   revealBtn: {
