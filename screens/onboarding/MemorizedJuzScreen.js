@@ -64,8 +64,11 @@ export default function MemorizedJuzScreen({ route, navigation }) {
         next.delete(juzNumber);
       } else {
         next.add(juzNumber);
-        // Collapse when marking full — no need to show surahs
+        // Collapse when marking full: there are no surahs left to choose.
         setExpandedJuz((e) => { const ne = new Set(e); ne.delete(juzNumber); return ne; });
+        // And drop anything part-selected inside it, or the juz is saved twice,
+        // once whole and once in pieces.
+        clearJuzSelection(juzNumber);
       }
       return next;
     });
@@ -84,6 +87,13 @@ export default function MemorizedJuzScreen({ route, navigation }) {
       const next = new Set(prev);
       if (next.has(surahKey)) {
         next.delete(surahKey);
+        // The stored "up to ayah" goes with it. Left behind, it kept the juz
+        // looking part-selected after everything visible had been unpicked.
+        setAyahUpTo((a) => {
+          const na = { ...a };
+          delete na[surahKey];
+          return na;
+        });
       } else {
         next.add(surahKey);
         setExpandedSurah((e) => { const ne = new Set(e); ne.delete(surahKey); return ne; });
@@ -102,6 +112,37 @@ export default function MemorizedJuzScreen({ route, navigation }) {
 
   const setAyahForKey = (surahKey, value) => {
     setAyahUpTo((prev) => ({ ...prev, [surahKey]: value }));
+  };
+
+  /**
+   * Clear everything chosen inside one juz: whole surahs and part-surahs alike.
+   *
+   * A partly-filled checkbox had no way to be emptied. Its tap handler expanded
+   * the juz instead of clearing it, so once someone picked a few surahs the only
+   * escape was to go in and unpick each one, and there was no escape at all from
+   * a part-surah ayah range, since deselecting a surah never removed its stored
+   * range. Tapping a partly-filled box now empties the juz, which is what the
+   * same box does everywhere else.
+   */
+  const clearJuzSelection = (juzNumber) => {
+    const prefix = `${juzNumber}-`;
+    setFullSurah((prev) => {
+      const next = new Set();
+      for (const key of prev) if (!key.startsWith(prefix)) next.add(key);
+      return next;
+    });
+    setAyahUpTo((prev) => {
+      const next = {};
+      for (const [key, value] of Object.entries(prev)) {
+        if (!key.startsWith(prefix)) next[key] = value;
+      }
+      return next;
+    });
+    setExpandedSurah((prev) => {
+      const next = new Set();
+      for (const key of prev) if (!key.startsWith(prefix)) next.add(key);
+      return next;
+    });
   };
 
   const handleSelectAll = () => {
@@ -230,7 +271,7 @@ export default function MemorizedJuzScreen({ route, navigation }) {
             <View key={juzNumber}>
               <View style={[styles.juzRow, isFull && styles.rowSelected, !isFull && hasPartialSelection(juzNumber) && styles.rowPartial]}>
                 {!isFull && hasPartialSelection(juzNumber)
-                  ? <HalfCheckbox onPress={() => toggleExpandJuz(juzNumber)} />
+                  ? <HalfCheckbox onPress={() => clearJuzSelection(juzNumber)} />
                   : <Checkbox checked={isFull} onPress={() => toggleFullJuz(juzNumber)} />
                 }
                 <View style={styles.rowBody}>

@@ -60,7 +60,7 @@ export default function TimeScreen({ route, navigation }) {
         .update({ session_minutes: sessionMinutes })
         .eq('id', userId);
       if (updateError) throw new Error(updateError.message);
-      navigation.navigate('Gender', { name });
+      navigation.navigate('Notifications', { name });
     } catch (err) {
       setError(err.message ?? 'Failed to save session length.');
       setIsSaving(false);
@@ -84,13 +84,19 @@ export default function TimeScreen({ route, navigation }) {
           <Text style={styles.valueLabel}>Session length</Text>
           <Text style={styles.valueDisplay}>{sessionMinutes} min</Text>
         </View>
+        {/* Quarter hours only. A 5-minute step invited numbers like 35 and 50
+            that nobody plans a day around, and the recommendation is already
+            rounded up to a multiple of 5. Rounding up here as well means the
+            slider can only ever land on more time than the arithmetic asked
+            for, never less, which is the safe direction: too much time is a
+            day that ends early, too little is a backlog that never clears. */}
         <Slider
           style={styles.slider}
           minimumValue={15}
           maximumValue={120}
-          step={5}
+          step={15}
           value={sessionMinutes}
-          onValueChange={setSessionMinutes}
+          onValueChange={(v) => setSessionMinutes(Math.ceil(v / 15) * 15)}
           minimumTrackTintColor={colors.primary}
           maximumTrackTintColor={colors.border}
           thumbTintColor={colors.primary}
@@ -108,6 +114,12 @@ export default function TimeScreen({ route, navigation }) {
                 : `We suggest ${recommended} minutes. More is fine, you will simply come round again sooner.`}
           </Text>
         ) : null}
+        <Text style={styles.caveat}>
+          This is the shape of a normal day, not a promise. Some days run longer:
+          a heavy review, or ground you have fallen behind on. The review always
+          comes first, and anything that does not fit is waiting for you tomorrow
+          rather than lost.
+        </Text>
         {error ? <Text style={styles.error}>{error}</Text> : null}
       </View>
 
@@ -126,6 +138,13 @@ export default function TimeScreen({ route, navigation }) {
 }
 
 const styles = StyleSheet.create({
+  caveat: {
+    fontFamily: fonts.regular,
+    fontSize: 13,
+    color: colors.textMuted,
+    lineHeight: 19,
+    marginTop: spacing.lg,
+  },
   screen: { flex: 1, backgroundColor: colors.background },
   header: { paddingTop: 64, paddingHorizontal: spacing.lg, paddingBottom: spacing.md },
   backBtn: { paddingBottom: spacing.sm, alignSelf: 'flex-start' },

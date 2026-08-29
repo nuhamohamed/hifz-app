@@ -4,32 +4,34 @@ import { colors, fonts, spacing } from '../../lib/theme';
 
 const LOGO = require('../../assets/logo.png');
 
+/**
+ * The first thing anyone sees: the mark and the name, and nothing else.
+ *
+ * This used to carry a headline and a paragraph explaining spaced repetition
+ * and weak-area detection. None of it survives contact with a first launch:
+ * the app has not earned the attention yet, and every claim in it is one the
+ * person can only judge after using it. The logo centred on the cream ground
+ * says the same thing more honestly.
+ */
 export default function WelcomeScreen({ navigation }) {
   const opacity = useRef(new Animated.Value(0)).current;
-  const translateY = useRef(new Animated.Value(24)).current;
+  const rise = useRef(new Animated.Value(16)).current;
 
   useEffect(() => {
     Animated.parallel([
-      Animated.timing(opacity, { toValue: 1, duration: 800, delay: 200, useNativeDriver: true }),
-      Animated.timing(translateY, { toValue: 0, duration: 700, delay: 200, useNativeDriver: true }),
+      Animated.timing(opacity, { toValue: 1, duration: 900, delay: 150, useNativeDriver: true }),
+      Animated.timing(rise, { toValue: 0, duration: 800, delay: 150, useNativeDriver: true }),
     ]).start();
-  }, [opacity, translateY]);
+  }, [opacity, rise]);
 
   return (
     <View style={styles.screen}>
-      <View style={styles.navLogo}>
-        <Image source={LOGO} style={styles.logoImg} />
-        <Text style={styles.logoText}>Dawrah</Text>
-      </View>
-      <Animated.View style={[styles.inner, { opacity, transform: [{ translateY }] }]}>
-        <View style={styles.spacerTop} />
-        <Text style={styles.headline}>Your personalized hifdh revision coach.</Text>
-        <Text style={styles.body}>
-          All you have to do is recite. We identify your weak areas and build your revision plan automatically using spaced repetition.
-        </Text>
+      <Animated.View style={[styles.center, { opacity, transform: [{ translateY: rise }] }]}>
+        <Image source={LOGO} style={styles.logo} />
+        <Text style={styles.wordmark}>Dawrah</Text>
+      </Animated.View>
 
-        <View style={styles.spacer} />
-
+      <Animated.View style={{ opacity }}>
         <TouchableOpacity
           style={styles.primaryBtn}
           onPress={() => navigation.navigate('Age')}
@@ -49,41 +51,29 @@ const styles = StyleSheet.create({
     paddingBottom: 48,
     paddingHorizontal: spacing.lg,
   },
-  navLogo: {
-    flexDirection: 'row',
+  // The mark sits slightly above true centre, where the eye expects it.
+  center: {
+    flex: 1,
     alignItems: 'center',
-    gap: 10,
-    paddingTop: 64,
-    marginBottom: spacing.sm,
+    justifyContent: 'center',
+    paddingBottom: spacing.xxl,
   },
-  logoImg: {
-    width: 30,
-    height: 30,
+  logo: {
+    width: 96,
+    height: 96,
     resizeMode: 'contain',
-    tintColor: colors.text,
+    // Espresso rather than navy. Against the cream ground it reads as ink on
+    // paper, which suits a mushaf app better than the cobalt used for buttons,
+    // and it keeps the blue meaning "this is the thing to press".
+    tintColor: colors.espresso,
+    marginBottom: spacing.lg,
   },
-  logoText: {
+  wordmark: {
     fontFamily: fonts.semiBold,
-    fontSize: 18,
+    fontSize: 40,
     color: colors.text,
-    letterSpacing: -0.2,
+    letterSpacing: -1,
   },
-  inner: { flex: 1 },
-  spacerTop: { flex: 0.35 },
-  headline: {
-    fontFamily: fonts.semiBold,
-    fontSize: 20,
-    color: colors.primary,
-    marginBottom: spacing.md,
-    lineHeight: 28,
-  },
-  body: {
-    fontFamily: fonts.regular,
-    fontSize: 15,
-    color: colors.textMid,
-    lineHeight: 23,
-  },
-  spacer: { flex: 1 },
   primaryBtn: {
     backgroundColor: colors.primary,
     borderRadius: 14,

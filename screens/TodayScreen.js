@@ -2,7 +2,6 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import {
   ActivityIndicator,
   Animated,
-  Button,
   Linking,
   StyleSheet,
   Text,
@@ -22,7 +21,6 @@ import {
   cancelEveningNudge,
   scheduleDailyNotification,
   scheduleEveningNudge,
-  scheduleTestNotification,
 } from '../lib/notifications';
 import { supabase } from '../lib/supabase';
 import { colors, fonts, spacing } from '../lib/theme';
@@ -603,64 +601,6 @@ export default function TodayScreen() {
           </>
         )}
 
-        {/* DEV ONLY — remove before release */}
-        {__DEV__ && (
-          <View style={{ gap: 8, marginTop: 16 }}>
-            <Button
-              title="[Dev] Notify: scheduled reminder (5s)"
-              color="#888"
-              onPress={() => scheduleTestNotification('Hifz Revision', '⏰ Time for your Quran revision. Start now.')}
-            />
-            <Button
-              title="[Dev] PreSessionQuiz"
-              color="#888"
-              onPress={() => navigation.navigate('PreSessionQuiz', { sessionId: null, juzNumber: 1 })}
-            />
-            <Button
-              title="[Dev] Recitation (Al-Baqarah 1–7)"
-              color="#888"
-              onPress={() =>
-                navigation.navigate('Recitation', {
-                  // Offsets 1-14 of juz 1: Al-Fatiha 1-7 then Al-Baqarah 1-7,
-                  // deliberately spanning the surah boundary so this dev jump
-                  // exercises the case that used to break.
-                  startOffset: 1, endOffset: 14, sessionId: null,
-                  juzNumber: 1, totalAyahsInJuz: 148, resumeFromOffset: 1,
-                })
-              }
-            />
-            <Button
-              title="[Dev] PostSessionQuiz"
-              color="#888"
-              onPress={() => navigation.navigate('PostSessionQuiz', { sessionId: null, juzNumber: 1 })}
-            />
-            <Button
-              title="[Dev] SessionSummary (latest session)"
-              color="#888"
-              onPress={async () => {
-                // Uses the most recent session rather than a null id, so the
-                // mistake cards actually have something to render.
-                const userId = await getCurrentUserId();
-                const { data } = await supabase
-                  .from('sessions')
-                  .select('id, juz_number')
-                  .eq('user_id', userId)
-                  .order('date', { ascending: false })
-                  .limit(1)
-                  .maybeSingle();
-                navigation.navigate('SessionSummary', {
-                  sessionId: data?.id ?? null,
-                  totalAyahsInJuz: getJuzTotalAyahs(data?.juz_number ?? 1),
-                });
-              }}
-            />
-            <Button
-              title="[Dev] ✦ Design Mockups (Dawrah)"
-              color={colors.primary}
-              onPress={() => navigation.navigate('Mockups')}
-            />
-          </View>
-        )}
       </Animated.View>
 
       <TabBar active="home" navigation={navigation} />

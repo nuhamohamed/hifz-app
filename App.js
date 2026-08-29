@@ -19,12 +19,9 @@ import NameScreen from './screens/onboarding/NameScreen';
 import MemorizedJuzScreen from './screens/onboarding/MemorizedJuzScreen';
 import TimeScreen from './screens/onboarding/TimeScreen';
 import AgeScreen from './screens/onboarding/AgeScreen';
-import GenderScreen from './screens/onboarding/GenderScreen';
 import NotificationsScreen from './screens/onboarding/NotificationsScreen';
 import ReminderTimeScreen from './screens/onboarding/ReminderTimeScreen';
 import AllSetScreen from './screens/onboarding/AllSetScreen';
-import DevMenuScreen from './screens/DevMenuScreen';
-import MockupNavigator from './screens/mockups/MockupNavigator';
 import { supabase } from './lib/supabase';
 import { colors } from './lib/theme';
 import { getOnboardingResumePoint } from './lib/onboarding';
@@ -90,25 +87,17 @@ function AuthErrorScreen({ message }) {
 function OnboardingNavigator({ initialRouteName }) {
   return (
     <OnboardingStack.Navigator
-      // In a dev build the tester lands on DevMenu first, so recitation is
-      // reachable without walking all eight setup screens after every database
-      // reset. __DEV__ is false in a release build, so real users go straight
-      // to their resume point and DevMenu is not registered at all.
-      initialRouteName={__DEV__ ? 'DevMenu' : initialRouteName}
+      // Everyone starts where a real person starts. The dev menu and the design
+      // mockups used to sit in front of this, which meant nobody, including the
+      // author, ever opened the app the way a tester opens it.
+      initialRouteName={initialRouteName}
       screenOptions={{ headerShown: false }}
     >
-      {__DEV__ ? (
-        <OnboardingStack.Screen name="DevMenu" component={DevMenuScreen} />
-      ) : null}
-      {__DEV__ ? (
-        <OnboardingStack.Screen name="Mockups" component={MockupNavigator} />
-      ) : null}
       <OnboardingStack.Screen name="Welcome" component={WelcomeScreen} />
       <OnboardingStack.Screen name="Age" component={AgeScreen} />
       <OnboardingStack.Screen name="Name" component={NameScreen} />
       <OnboardingStack.Screen name="Memorization" component={MemorizedJuzScreen} />
       <OnboardingStack.Screen name="Time" component={TimeScreen} />
-      <OnboardingStack.Screen name="Gender" component={GenderScreen} />
       <OnboardingStack.Screen name="Notifications" component={NotificationsScreen} />
       <OnboardingStack.Screen name="ReminderTime" component={ReminderTimeScreen} />
       <OnboardingStack.Screen name="AllSet" component={AllSetScreen} />
@@ -125,9 +114,6 @@ function MainNavigator() {
       <MainStack.Screen name="Recitation" component={RecitationScreen} />
       <MainStack.Screen name="PostSessionQuiz" component={PostSessionQuizScreen} />
       <MainStack.Screen name="SessionSummary" component={SessionSummaryScreen} />
-      {__DEV__ ? (
-        <MainStack.Screen name="Mockups" component={MockupNavigator} />
-      ) : null}
     </MainStack.Navigator>
   );
 }
