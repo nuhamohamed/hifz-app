@@ -18,6 +18,7 @@ import { getAyahLocation, getJuzTotalAyahs } from '../lib/juzSurahMap';
 import { getTodayPlan } from '../lib/planEngine';
 import { roundedEstimateMinutes } from '../lib/portionMath';
 import {
+  cancelDailyNotification,
   cancelEveningNudge,
   scheduleDailyNotification,
   scheduleEveningNudge,
@@ -264,10 +265,17 @@ export default function TodayScreen() {
         if (!notificationsScheduledRef.current) {
           notificationsScheduledRef.current = true;
           try {
-            const [remHour, remMin] = userResult.data?.notification_time
-              ? userResult.data.notification_time.split(':').map(Number)
-              : [9, 0];
-            await scheduleDailyNotification(remHour, remMin);
+            // Only when tomorrow actually holds something. Someone whose juz
+            // is finished and not due back for three weeks was still being
+            // asked every morning to open an app with nothing in it.
+            if (plan.hasWorkTomorrow) {
+              const [remHour, remMin] = userResult.data?.notification_time
+                ? userResult.data.notification_time.split(':').map(Number)
+                : [9, 0];
+              await scheduleDailyNotification(remHour, remMin);
+            } else {
+              await cancelDailyNotification();
+            }
 
             const isOverdue = !!(portion?.scheduledDate && portion.scheduledDate < today);
             if (isDone) {

@@ -1,5 +1,5 @@
-import { useEffect, useRef } from 'react';
-import { Animated, Image, StyleSheet, Text, TouchableOpacity, View } from 'react-native';
+import { useEffect, useRef, useState } from 'react';
+import { Animated, Image, Linking, StyleSheet, Text, TouchableOpacity, View } from 'react-native';
 import * as Notifications from 'expo-notifications';
 import OnboardingProgressDots from '../../components/OnboardingProgressDots';
 import { colors, fonts, spacing } from '../../lib/theme';
@@ -18,14 +18,32 @@ export default function NotificationsScreen({ route, navigation }) {
     ]).start();
   }, [opacity, scale]);
 
+  // The answer was thrown away: whatever iOS said, the next screen appeared and
+  // asked what time to be reminded, having no way to remind anyone. Someone who
+  // tapped Don't Allow, or who had refused once before so no dialog appeared at
+  // all, set a time that could never fire and was told nothing.
   const handleEnable = async () => {
-    await Notifications.requestPermissionsAsync();
-    navigation.navigate('ReminderTime', { name });
+    const { status, canAskAgain } = await Notifications.getPermissionsAsync();
+    let granted = status === 'granted';
+
+    if (!granted && canAskAgain) {
+      const asked = await Notifications.requestPermissionsAsync();
+      granted = asked.status === 'granted';
+    }
+
+    if (granted) {
+      setDenied(false);
+      navigation.navigate('ReminderTime', { name });
+      return;
+    }
+    setDenied(true);
   };
 
   const handleSkip = () => {
     navigation.navigate('AllSet', { name });
   };
+
+  const [denied, setDenied] = useState(false);
 
   return (
     <Animated.View style={[styles.screen, { opacity }]}>
@@ -55,11 +73,26 @@ export default function NotificationsScreen({ route, navigation }) {
       </Animated.View>
 
       <View style={styles.footer}>
+        {denied ? (
+          <View style={styles.deniedBox}>
+            <Text style={styles.deniedText}>
+              iOS is blocking notifications for Dawrah, so a reminder cannot be
+              set from here. Turn them on in Settings and this will work.
+            </Text>
+            <TouchableOpacity onPress={() => Linking.openSettings()} activeOpacity={0.7}>
+              <Text style={styles.deniedLink}>Open Settings</Text>
+            </TouchableOpacity>
+          </View>
+        ) : null}
         <TouchableOpacity style={styles.primaryBtn} onPress={handleEnable} activeOpacity={0.88}>
-          <Text style={styles.primaryBtnText}>Enable reminders</Text>
+          <Text style={styles.primaryBtnText}>
+            {denied ? 'Try again' : 'Enable reminders'}
+          </Text>
         </TouchableOpacity>
         <TouchableOpacity style={styles.skipBtn} onPress={handleSkip} activeOpacity={0.7}>
-          <Text style={styles.skipBtnText}>Maybe later</Text>
+          <Text style={styles.skipBtnText}>
+            {denied ? 'Continue without reminders' : 'Maybe later'}
+          </Text>
         </TouchableOpacity>
       </View>
     </Animated.View>
@@ -99,6 +132,18 @@ const styles = StyleSheet.create({
   notifMsg: { fontFamily: fonts.regular, fontSize: 14, color: colors.textMid },
   illuCaption: { fontFamily: fonts.regular, fontSize: 13, color: colors.textMuted, textAlign: 'center' },
   footer: { paddingHorizontal: spacing.lg, paddingBottom: 48, paddingTop: spacing.md, gap: 8 },
+  deniedBox: {
+    backgroundColor: colors.accentLight,
+    borderRadius: 12,
+    padding: spacing.md,
+    marginBottom: spacing.sm,
+  },
+  deniedText: {
+    fontFamily: fonts.regular, fontSize: 14, color: colors.textMid, lineHeight: 21,
+  },
+  deniedLink: {
+    fontFamily: fonts.semiBold, fontSize: 15, color: colors.primary, marginTop: spacing.sm,
+  },
   primaryBtn: { backgroundColor: colors.primary, borderRadius: 14, paddingVertical: 17, alignItems: 'center' },
   primaryBtnText: { fontFamily: fonts.semiBold, fontSize: 17, color: colors.white },
   skipBtn: { paddingVertical: 14, alignItems: 'center' },

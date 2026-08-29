@@ -1,8 +1,12 @@
 import { useEffect, useRef, useState } from 'react';
 import { Animated, StyleSheet, Text, TouchableOpacity, View } from 'react-native';
+import { useSQLiteContext } from 'expo-sqlite';
 import { getCurrentUserId } from '../../lib/auth';
 import { useOnboarding } from '../../lib/OnboardingContext';
-import { seedJuzProgressFromMemorized } from '../../lib/planEngine';
+import {
+  scheduleFirstPortionForTomorrow,
+  seedJuzProgressFromMemorized,
+} from '../../lib/planEngine';
 import { supabase } from '../../lib/supabase';
 import { colors, fonts, radius, spacing } from '../../lib/theme';
 
@@ -36,6 +40,8 @@ function StaggerLine({ children, delay, style }) {
 export default function AllSetScreen({ route }) {
   const name = route?.params?.name ?? 'there';
   const { completeOnboarding } = useOnboarding();
+  // Sizing the first portion needs the bundled mushaf pages.
+  const db = useSQLiteContext();
   const [isFinishing, setIsFinishing] = useState(false);
   const [error, setError] = useState('');
   const checkScale = useRef(new Animated.Value(0)).current;
@@ -51,12 +57,18 @@ export default function AllSetScreen({ route }) {
     ]).start();
   }, [checkScale, checkOpacity]);
 
-  const handleFinish = async () => {
+  /**
+   * @param {boolean} startTomorrow book the first portion for tomorrow instead
+   */
+  const handleFinish = async (startTomorrow) => {
     setIsFinishing(true);
     setError('');
     try {
       const userId = await getCurrentUserId();
       await seedJuzProgressFromMemorized(userId);
+      if (startTomorrow) {
+        await scheduleFirstPortionForTomorrow(db, userId);
+      }
       const { error: updateError } = await supabase
         .from('users')
         .update({ onboarding_completed: true })
@@ -80,7 +92,7 @@ export default function AllSetScreen({ route }) {
 
         <StaggerLine delay={700}>
           <Text style={styles.body}>
-            Your first session is ready. Press start and Dawrah takes it from there: a short mistake review, then your recitation, then a quick recap to lock it in.
+            Your first session is ready. Press start and Dawrah takes it from there.
           </Text>
         </StaggerLine>
 
@@ -105,13 +117,26 @@ export default function AllSetScreen({ route }) {
         <StaggerLine delay={1300}>
           <TouchableOpacity
             style={styles.primaryBtn}
-            onPress={handleFinish}
+            onPress={() => handleFinish(false)}
             activeOpacity={0.88}
             disabled={isFinishing}
           >
             <Text style={styles.primaryBtnText}>
               {isFinishing ? 'Setting up…' : 'Start my first session'}
             </Text>
+          </TouchableOpacity>
+          {/* Setting up at a moment you cannot recite is normal, and forcing a
+              first session then means starting on a day that was never going to
+              work. Choosing tomorrow books the first portion for tomorrow and
+              leaves today genuinely empty, rather than leaving a session sitting
+              there to be skipped. */}
+          <TouchableOpacity
+            style={styles.secondaryBtn}
+            onPress={() => handleFinish(true)}
+            activeOpacity={0.7}
+            disabled={isFinishing}
+          >
+            <Text style={styles.secondaryBtnText}>Start tomorrow instead</Text>
           </TouchableOpacity>
         </StaggerLine>
       </View>
@@ -120,6 +145,8 @@ export default function AllSetScreen({ route }) {
 }
 
 const styles = StyleSheet.create({
+  secondaryBtn: { paddingVertical: 14, alignItems: 'center', marginTop: spacing.xs },
+  secondaryBtnText: { fontFamily: fonts.medium, fontSize: 15, color: colors.textMid },
   screen: { flex: 1, backgroundColor: colors.background },
   inner: {
     flex: 1,
