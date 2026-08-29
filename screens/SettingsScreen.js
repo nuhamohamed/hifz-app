@@ -112,7 +112,7 @@ export default function SettingsScreen() {
         ) : null}
 
         <SettingsGroup
-          footer="Dawrah keeps your progress on this phone only. There is no sign-in, so anything erased cannot be recovered."
+          footer="Dawrah keeps your progress on this phone only. There is no sign-in yet, so anything erased cannot be recovered."
         >
           <SettingsRow
             label="Erase all my data"
