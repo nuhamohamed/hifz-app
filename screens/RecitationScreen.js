@@ -13,7 +13,7 @@ import { useNavigation } from '@react-navigation/native';
 import { Audio } from 'expo-av';
 import * as Haptics from 'expo-haptics';
 import { getCurrentUserId } from '../lib/auth';
-import { todayString as getTodayDateString } from '../lib/dates';
+import { todayString as getTodayDateString, tomorrowString } from '../lib/dates';
 import { getAyahLocation } from '../lib/juzSurahMap';
 import { normalizeArabic } from '../lib/arabicUtils';
 import { getAyah } from '../lib/quranApi';
@@ -411,13 +411,21 @@ export default function RecitationScreen(props) {
             if (mistakeError) {
               console.error('[Recitation] failed to log mistake:', mistakeError.message);
             }
+            // Due tomorrow, not today. Today's session already deals with this
+            // ayah: the recap quiz at the end reads the mistakes table by
+            // session, so it does not need a queue row dated today to find it.
+            // Dating it today meant a mistake made minutes ago counted as due
+            // for mistake review, so pausing a first session and returning to
+            // the home screen showed "Mistake Review" for mistakes made inside
+            // the session still in progress, and resuming would quiz someone on
+            // a portion they had not finished reciting.
             await supabase.from('quiz_queue').upsert(
               {
                 user_id: userId,
                 surah_number: surahNumber,
                 ayah_number: ayahNumber,
                 box_level: 0,
-                next_review_date: getTodayDateString(),
+                next_review_date: tomorrowString(),
               },
               { onConflict: 'user_id,surah_number,ayah_number' }
             );
