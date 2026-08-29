@@ -27,18 +27,24 @@ export default function SessionLengthScreen({ navigation }) {
         const userId = await getCurrentUserId();
         const { data } = await supabase
           .from('users')
-          .select('session_minutes')
+          .select('session_minutes, avg_minutes_per_page')
           .eq('id', userId)
           .maybeSingle();
         if (data?.session_minutes) setMinutes(data.session_minutes);
 
-        // Same suggestion onboarding made, recomputed rather than stored, so
-        // it follows the juz they have added or finished since.
+        // Same suggestion onboarding made, recomputed rather than stored, so it
+        // follows the juz they have added or finished since, and their measured
+        // pace. Onboarding has to assume the default because nobody has recited
+        // anything yet; by the time someone reaches this screen the app knows
+        // how long a page actually takes them, and a suggestion that ignored it
+        // would be telling a slow reciter the same number as a fast one.
         const { count } = await supabase
           .from('juz_progress')
           .select('juz_number', { count: 'exact', head: true })
           .eq('user_id', userId);
-        if (count) setRecommended(recommendedSessionMinutes(count));
+        if (count) {
+          setRecommended(recommendedSessionMinutes(count, data?.avg_minutes_per_page));
+        }
       } catch {
         // Leaves the default in place; the slider still works.
       } finally {
