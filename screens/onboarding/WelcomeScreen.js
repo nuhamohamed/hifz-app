@@ -1,8 +1,18 @@
 import { useEffect, useRef } from 'react';
 import { Animated, Image, StyleSheet, Text, TouchableOpacity, View } from 'react-native';
-import { colors, fonts, spacing } from '../../lib/theme';
+import { colors, fonts, ombre, spacing } from '../../lib/theme';
 
 const LOGO = require('../../assets/logo.png');
+
+const WORDMARK = 'Dawrah';
+
+// Blue through to brown, the two ends of the palette that already carry
+// meaning in the app: cobalt is the colour of the thing to press, espresso and
+// brown are the reading colours. Stepped per letter rather than drawn as a real
+// gradient, which would mean pulling in a masked view and a gradient library,
+// two native modules and a fresh dev build for six letters. At this size the
+// steps read as a shift rather than as bands.
+const WORDMARK_COLORS = ombre(colors.primary, colors.brown, WORDMARK.length);
 
 /**
  * The first thing anyone sees: the mark and the name, and nothing else.
@@ -28,7 +38,13 @@ export default function WelcomeScreen({ navigation }) {
     <View style={styles.screen}>
       <Animated.View style={[styles.center, { opacity, transform: [{ translateY: rise }] }]}>
         <Image source={LOGO} style={styles.logo} />
-        <Text style={styles.wordmark}>Dawrah</Text>
+        <Text style={styles.wordmark}>
+          {WORDMARK.split('').map((letter, i) => (
+            <Text key={i} style={{ color: WORDMARK_COLORS[i] }}>
+              {letter}
+            </Text>
+          ))}
+        </Text>
       </Animated.View>
 
       <Animated.View style={{ opacity }}>
@@ -71,7 +87,6 @@ const styles = StyleSheet.create({
   wordmark: {
     fontFamily: fonts.semiBold,
     fontSize: 40,
-    color: colors.text,
     letterSpacing: -1,
   },
   primaryBtn: {
