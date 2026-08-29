@@ -64,6 +64,13 @@ verified through a reload instead.
 
 ---
 
+## Deferred work has a home now
+
+Things deliberately left until after the beta live in [POST-BETA.md](POST-BETA.md),
+with the reason for waiting on each. Bugs do not go there; they go in the branch.
+
+---
+
 ## Parked: fa heard as waw
 
 Reported 28 August, deliberately not fixed. **Say the letter fa where the ayah
