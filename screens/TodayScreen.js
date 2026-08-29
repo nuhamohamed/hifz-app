@@ -3,6 +3,7 @@ import {
   ActivityIndicator,
   Animated,
   Linking,
+  ScrollView,
   StyleSheet,
   Text,
   TouchableOpacity,
@@ -167,6 +168,11 @@ export default function TodayScreen() {
   const [quizCount, setQuizCount] = useState(0);
   const [estimateMinutes, setEstimateMinutes] = useState(null);
   const [portionsWaiting, setPortionsWaiting] = useState(0);
+  // Only set on a day that holds nothing: the portion waiting in the future,
+  // carrying the date it is booked for.
+  const [nextSession, setNextSession] = useState(null);
+  // The length they chose, so the screen can tell a heavy day from a normal one.
+  const [sessionMinutes, setSessionMinutes] = useState(null);
   const [portionLoading, setPortionLoading] = useState(true);
   const [pausedSession, setPausedSession] = useState(null);
   const [sessionDoneToday, setSessionDoneToday] = useState(false);
@@ -202,7 +208,11 @@ export default function TodayScreen() {
         // quiz is never cut, so it is paid for first and the portion takes what
         // is left. Everything that does not depend on that still runs alongside.
         const [userResult, plan, pausedResult, completedResult, tomorrowResult] = await Promise.all([
-          supabase.from('users').select('name, notification_time').eq('id', userId).maybeSingle(),
+          supabase
+            .from('users')
+            .select('name, notification_time, session_minutes')
+            .eq('id', userId)
+            .maybeSingle(),
           getTodayPlan(db, userId),
           supabase
             .from('sessions')
@@ -246,12 +256,14 @@ export default function TodayScreen() {
 
         const portion = plan.portions[0] ?? null;
         setName(userResult.data?.name ?? '');
+        setSessionMinutes(userResult.data?.session_minutes ?? null);
         setPortions(plan.portions);
         // The length of the quiz that will actually run, after the overlap
         // dedupe and the leech cap, rather than the raw row count.
         setQuizCount(plan.quizItemCount);
         setEstimateMinutes(roundedEstimateMinutes(plan.estimateMinutes));
         setPortionsWaiting(plan.portionsWaiting);
+        setNextSession(plan.nextSession ?? null);
 
         // Finished today AND nothing further due. A day carrying two juz is not
         // over when the first is done, so this cannot key on the session alone.
@@ -444,6 +456,50 @@ export default function TodayScreen() {
     }
   };
 
+  /**
+   * Bring a future session forward and begin it now.
+   *
+   * The row itself is left alone: the session records which portion was worked,
+   * and the plan update finds it by juz and starting offset when the session
+   * completes, then moves the rest of the pass earlier to match. Nothing is
+   * rewritten here on the strength of a session that has not happened yet.
+   */
+  const handleStartEarly = async () => {
+    if (!nextSession) return;
+    setIsStarting(true);
+    setError('');
+    try {
+      const userId = await getCurrentUserId();
+      const { data: newSession, error: insertError } = await supabase
+        .from('sessions')
+        .insert({
+          user_id: userId,
+          date: getTodayDateString(),
+          status: 'in_progress',
+          phase: 'pre_quiz',
+          type: 'revision',
+          juz_number: nextSession.juzNumber,
+          portion_start_ayah: nextSession.portionStartAyah,
+          portion_end_ayah: nextSession.portionEndAyah,
+          last_confirmed_ayah: nextSession.portionStartAyah - 1,
+          started_at: new Date().toISOString(),
+        })
+        .select('id')
+        .single();
+
+      if (insertError) throw new Error(insertError.message);
+
+      navigation.navigate(
+        'PreSessionQuiz',
+        buildSessionParams(newSession.id, nextSession.portionStartAyah, nextSession)
+      );
+    } catch (err) {
+      setError(err.message ?? 'Failed to start session.');
+    } finally {
+      setIsStarting(false);
+    }
+  };
+
   const resumeHint = getResumeHint(pausedSession);
   const isCarriedOver = !!(pausedSession && pausedSession.date !== getTodayDateString());
   // The first portion is the one Start begins; the rest are listed and come
@@ -454,6 +510,14 @@ export default function TodayScreen() {
   // Nothing to recite and nothing due: a genuinely empty day. Saying "Quiz only"
   // and offering a Start button would be two lies in a row.
   const nothingDue = quizOnly && quizCount === 0 && !pausedSession;
+  // A day with nothing due but a session booked ahead. The screen shows that
+  // session rather than a dead end, and offers to bring it forward.
+  const showingNext = nothingDue && !!nextSession;
+  const nextSummary = portionSummary(nextSession);
+  // Above the length they asked for, so the day genuinely overruns.
+  const isHeavyDay = !!(estimateMinutes && sessionMinutes && estimateMinutes > sessionMinutes);
+  // The agenda belongs to whichever session is on screen.
+  const agendaPortions = showingNext ? [nextSession] : portions;
 
   return (
     <View style={styles.screen}>
@@ -486,6 +550,8 @@ export default function TodayScreen() {
                 <Text style={styles.portionEyebrow}>
                   {isCarriedOver
                     ? `UNFINISHED · ${formatSessionDate(pausedSession.date)}`
+                    : showingNext
+                    ? `NEXT SESSION · ${formatSessionDate(nextSession.scheduledDate)}`
                     : portions.length > 1
                     ? `JUZ ${summary.juzNumber} · FIRST OF ${portions.length}`
                     : summary
@@ -494,6 +560,11 @@ export default function TodayScreen() {
                 </Text>
                 {portionLoading ? (
                   <ActivityIndicator size="small" color={colors.primary} style={{ alignSelf: 'flex-start', marginVertical: 4 }} />
+                ) : showingNext ? (
+                  <>
+                    <Text style={styles.portionTitle}>{nextSummary.label}</Text>
+                    <Text style={styles.portionSub}>Nothing due today</Text>
+                  </>
                 ) : nothingDue ? (
                   <Text style={styles.portionTitle}>Nothing due today</Text>
                 ) : quizOnly ? (
@@ -530,13 +601,25 @@ export default function TodayScreen() {
               </View>
             ) : null}
 
-            {nothingDue ? null : (
+            {/* The agenda scrolls and the button does not. A day carrying two
+                juz, or a long portion label wrapping to three lines, used to
+                push the button past the bottom of the screen where the tab bar
+                clipped it: the whole layout was one fixed column with a spacer
+                doing the pushing, so it only fitted while the content stayed
+                short. */}
+            <ScrollView
+              style={styles.agendaScroll}
+              contentContainerStyle={styles.agendaContent}
+              showsVerticalScrollIndicator={false}
+            >
+            {nothingDue && !showingNext ? null : (
               <>
-                <Text style={styles.sectionLabel}>TODAY'S AGENDA</Text>
+                <Text style={styles.sectionLabel}>
+                  {showingNext ? "NEXT SESSION'S AGENDA" : "TODAY'S AGENDA"}
+                </Text>
                 <View style={styles.steps}>
                   <StepCard
                     step={1} icon="◈" title="Mistake Review"
-                    desc={quizOnly ? 'The ayat you slipped on' : "Primes what you'll revise"}
                     iconBg={colors.ice} iconColor={colors.primary}
                   />
                   {/* A quiz-only day has no portion, so it has no recitation and
@@ -547,7 +630,7 @@ export default function TodayScreen() {
                       mushaf order, each as its own step. They are done one after
                       the other, and stopping after the first leaves the second
                       waiting rather than losing it. */}
-                  {portions.map((p, i) => {
+                  {agendaPortions.map((p, i) => {
                     const label = portionSummary(p)?.label;
                     return (
                       <StepCard
@@ -556,7 +639,7 @@ export default function TodayScreen() {
                         icon="◉"
                         title={label ? `Recite ${label}` : "Recite today's portion"}
                         desc={
-                          portions.length > 1
+                          agendaPortions.length > 1
                             ? `Juz ${p.juzNumber}`
                             : 'We follow along as you go'
                         }
@@ -564,9 +647,9 @@ export default function TodayScreen() {
                       />
                     );
                   })}
-                  {quizOnly ? null : (
+                  {quizOnly && !showingNext ? null : (
                     <StepCard
-                      step={portions.length + 2} icon="◆" title="Recap quiz"
+                      step={agendaPortions.length + 2} icon="◆" title="Recap quiz"
                       desc="Locks it in for next time"
                       iconBg={colors.parchment} iconColor={colors.accent}
                     />
@@ -580,12 +663,15 @@ export default function TodayScreen() {
             {quizCount > 0 ? (
               <Text style={styles.quizCountHint}>{quizCount} item{quizCount === 1 ? '' : 's'} due for mistake review</Text>
             ) : null}
+            </ScrollView>
 
-            <View style={styles.spacer} />
-
+            <View style={styles.footer}>
             {/* True rather than a nudge: step 1 above genuinely is the quiz, so
-                five minutes really does buy the highest-value part of a day. */}
-            {!portionLoading && !quizOnly ? (
+                five minutes really does buy the highest-value part of a day.
+                Shown only when the day is actually above the length they chose,
+                which is when it is worth saying: a heavy review, or ground they
+                have fallen behind on. On an ordinary day it is noise. */}
+            {!portionLoading && !quizOnly && isHeavyDay ? (
               <Text style={styles.shortOnTime}>
                 Short on time? Start anyway. The review comes first and is the
                 part that matters most.
@@ -594,6 +680,23 @@ export default function TodayScreen() {
 
             {isStarting || portionLoading ? (
               <ActivityIndicator size="large" color={colors.primary} style={{ marginBottom: spacing.md }} />
+            ) : showingNext ? (
+              <>
+                {/* Working ahead moves the whole rotation earlier rather than
+                    banking a free day, so it is offered plainly and named for
+                    what it is rather than dressed up as today's work. */}
+                <TouchableOpacity
+                  style={styles.startBtn}
+                  onPress={handleStartEarly}
+                  activeOpacity={0.88}
+                >
+                  <Text style={styles.startBtnIcon}>▶</Text>
+                  <Text style={styles.startBtnText}>Start this session early</Text>
+                </TouchableOpacity>
+                <Text style={styles.earlyNote}>
+                  Doing it now moves the rest of your schedule earlier to match.
+                </Text>
+              </>
             ) : nothingDue ? (
               <Text style={styles.restDay}>
                 Nothing is due today. Rest, and come back tomorrow.
@@ -606,6 +709,7 @@ export default function TodayScreen() {
                 </Text>
               </TouchableOpacity>
             )}
+            </View>
           </>
         )}
 
@@ -619,6 +723,10 @@ export default function TodayScreen() {
 const styles = StyleSheet.create({
   screen: { flex: 1, backgroundColor: colors.background },
   inner: { flex: 1, paddingTop: 64, paddingHorizontal: spacing.lg },
+  // The scrolling middle, and the footer that never moves.
+  agendaScroll: { flex: 1 },
+  agendaContent: { paddingBottom: spacing.md },
+  footer: { paddingTop: spacing.sm, paddingBottom: spacing.md },
 
   topRow: { marginBottom: spacing.lg, paddingTop: spacing.xl },
   bismillah: { fontSize: 18, color: colors.textMid, textAlign: 'center', marginBottom: 4, fontWeight: '300' },
@@ -698,6 +806,10 @@ const styles = StyleSheet.create({
     fontFamily: fonts.regular, fontSize: 13, color: colors.textMuted,
   },
 
+  earlyNote: {
+    fontFamily: fonts.regular, fontSize: 13, color: colors.textMuted,
+    textAlign: 'center', lineHeight: 19, marginTop: spacing.sm,
+  },
   restDay: {
     fontFamily: fonts.regular, fontSize: 15, color: colors.textMid,
     textAlign: 'center', lineHeight: 22, marginBottom: spacing.lg,
