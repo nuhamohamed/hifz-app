@@ -12,7 +12,11 @@ import { useSQLiteContext } from 'expo-sqlite';
 import { CommonActions, useNavigation } from '@react-navigation/native';
 import TabBar from '../components/TabBar';
 import { getCurrentUserId } from '../lib/auth';
-import { tomorrowString as getTomorrowDateString } from '../lib/dates';
+import {
+  formatDayLabel as formatSessionDate,
+  todayString as getTodayDateString,
+  tomorrowString as getTomorrowDateString,
+} from '../lib/dates';
 import { getAyahLocation, getJuzTotalAyahs, getSurahName } from '../lib/juzSurahMap';
 import { cancelEveningNudge } from '../lib/notifications';
 import { getAyah } from '../lib/quranApi';
@@ -154,6 +158,9 @@ export default function SessionSummaryScreen({ route }) {
   const [mistakes, setMistakes] = useState([]);
   const [tomorrowText, setTomorrowText] = useState(null);
   const [juzComplete, setJuzComplete] = useState(false);
+  // Collapsed to begin with. Opening the tab to check on a day should not lead
+  // with a wall of red; the count is the summary and the detail is a choice.
+  const [mistakesOpen, setMistakesOpen] = useState(false);
   const [returnsInDays, setReturnsInDays] = useState(null);
   // Null when opened from the tab, which is the entry point with no route
   // params. Resolved below to the most recent session.
@@ -171,12 +178,18 @@ export default function SessionSummaryScreen({ route }) {
     (async () => {
       try {
         const userId = await getCurrentUserId();
+        // Completed only. This took the most recent session of any status, so
+        // a paused one counted: a session someone had started and walked away
+        // from was presented as a finished one, and because a paused portion
+        // can run to the end of its juz it drew "Juz 1 Complete!" for work
+        // nobody had done.
         const { data } = await supabase
           .from('sessions')
           .select('id')
           .eq('user_id', userId)
+          .eq('status', 'complete')
           .order('date', { ascending: false })
-          .order('started_at', { ascending: false })
+          .order('completed_at', { ascending: false })
           .limit(1)
           .maybeSingle();
         if (mounted) {
@@ -189,6 +202,19 @@ export default function SessionSummaryScreen({ route }) {
     })();
     return () => { mounted = false; };
   }, [sessionId]);
+
+  // The screen fades in once loading ends, whatever the outcome. This used to
+  // live inside the session-loading effect, which returns early when there is
+  // no session to load, so the "nothing to review yet" state was rendered at
+  // opacity zero: a blank grey screen. It was unreachable until the fallback
+  // stopped accepting paused sessions, and then it was the first thing a new
+  // person saw.
+  useEffect(() => {
+    if (isLoading) return;
+    Animated.timing(opacity, {
+      toValue: 1, duration: 600, useNativeDriver: true,
+    }).start();
+  }, [isLoading, opacity]);
 
   useEffect(() => {
     if (!resolvedSessionId) return;
@@ -203,7 +229,7 @@ export default function SessionSummaryScreen({ route }) {
         const { data: sessionData, error: sessionError } = await supabase
           .from('sessions')
           .select(
-            'id, portion_start_ayah, portion_end_ayah, juz_number, completed_at, status, plan_applied, type'
+            'id, date, portion_start_ayah, portion_end_ayah, juz_number, completed_at, status, plan_applied, type'
           )
           .eq('id', resolvedSessionId)
           .single();
@@ -328,10 +354,9 @@ export default function SessionSummaryScreen({ route }) {
       } finally {
         if (mounted) {
           setIsLoading(false);
-          Animated.parallel([
-            Animated.timing(opacity, { toValue: 1, duration: 600, useNativeDriver: true }),
-            Animated.spring(checkScale, { toValue: 1, friction: 6, tension: 50, useNativeDriver: true }),
-          ]).start();
+          Animated.spring(checkScale, {
+            toValue: 1, friction: 6, tension: 50, useNativeDriver: true,
+          }).start();
         }
       }
     })();
@@ -498,7 +523,14 @@ export default function SessionSummaryScreen({ route }) {
             <Animated.View style={[styles.checkCircle, { transform: [{ scale: checkScale }] }]}>
               <Text style={styles.checkIcon}>✓</Text>
             </Animated.View>
-            <Text style={styles.successTitle}>Session complete</Text>
+            {/* The tab is opened on days after the session as well, so the
+                heading names the day it belongs to rather than announcing a
+                completion that may have happened last week. */}
+            <Text style={styles.successTitle}>
+              {session?.date === getTodayDateString()
+                ? "Today's session"
+                : `Session · ${formatSessionDate(session?.date)}`}
+            </Text>
             <Text style={styles.successSub}>{portionLabel}</Text>
           </View>
         )}
@@ -515,17 +547,26 @@ export default function SessionSummaryScreen({ route }) {
 
         {mistakes.length > 0 ? (
           <>
-            <Text style={styles.sectionLabel}>
-              {mistakeCount} {mistakeCount === 1 ? 'ayah' : 'ayahs'} to review
-            </Text>
-            {mistakes.map((mistake, index) => (
-              <MistakeCard
-                key={`${mistake.surah_number}-${mistake.ayah_number}-${index}`}
-                mistake={mistake}
-                onDismiss={() => handleDismissMistake(index, mistake)}
-                onClearWord={(word) => handleClearWord(index, mistake, word)}
-              />
-            ))}
+            <TouchableOpacity
+              style={styles.disclosureRow}
+              onPress={() => setMistakesOpen((open) => !open)}
+              activeOpacity={0.7}
+            >
+              <Text style={styles.sectionLabel}>
+                {mistakeCount} {mistakeCount === 1 ? 'ayah' : 'ayahs'} to review
+              </Text>
+              <Text style={styles.disclosureChevron}>{mistakesOpen ? '▾' : '▸'}</Text>
+            </TouchableOpacity>
+            {mistakesOpen
+              ? mistakes.map((mistake, index) => (
+                  <MistakeCard
+                    key={`${mistake.surah_number}-${mistake.ayah_number}-${index}`}
+                    mistake={mistake}
+                    onDismiss={() => handleDismissMistake(index, mistake)}
+                    onClearWord={(word) => handleClearWord(index, mistake, word)}
+                  />
+                ))
+              : null}
           </>
         ) : (
           <View style={styles.cleanCard}>
@@ -573,6 +614,16 @@ const styles = StyleSheet.create({
     paddingTop: 64,
     paddingHorizontal: spacing.lg,
     paddingBottom: 16,
+  },
+  disclosureRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+  },
+  disclosureChevron: {
+    fontSize: 14,
+    color: colors.textMuted,
+    paddingHorizontal: spacing.xs,
   },
   successSection: { alignItems: 'center', marginBottom: spacing.lg },
   checkCircle: {

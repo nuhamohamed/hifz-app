@@ -14,7 +14,11 @@ import { useSQLiteContext } from 'expo-sqlite';
 import { useFocusEffect, useNavigation } from '@react-navigation/native';
 import TabBar from '../components/TabBar';
 import { getCurrentUserId } from '../lib/auth';
-import { todayString as getTodayDateString, tomorrowString as getTomorrowDateString } from '../lib/dates';
+import {
+  formatDayLabel as formatSessionDate,
+  todayString as getTodayDateString,
+  tomorrowString as getTomorrowDateString,
+} from '../lib/dates';
 import { getAyahLocation, getJuzTotalAyahs } from '../lib/juzSurahMap';
 import { getTodayPlan } from '../lib/planEngine';
 import { roundedEstimateMinutes } from '../lib/portionMath';
@@ -26,12 +30,6 @@ import {
 } from '../lib/notifications';
 import { supabase } from '../lib/supabase';
 import { colors, fonts, spacing } from '../lib/theme';
-
-function formatSessionDate(dateStr) {
-  const [, month, day] = dateStr.split('-').map(Number);
-  const monthName = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'][month - 1];
-  return `${monthName} ${day}`;
-}
 
 function formatTomorrowLine(tomorrow) {
   if (!tomorrow) return 'Tomorrow: Quiz only';
@@ -143,9 +141,11 @@ function StepCard({ step, icon, title, desc, iconBg, iconColor }) {
       <View style={[styles.stepIconWrap, { backgroundColor: iconBg }]}>
         <Text style={[styles.stepIcon, { color: iconColor }]}>{icon}</Text>
       </View>
+      {/* A step with no second line centres on the box rather than sitting
+          against the top of it, where an empty description used to hold space. */}
       <View style={styles.stepBody}>
         <Text style={styles.stepTitle}>{title}</Text>
-        <Text style={styles.stepDesc}>{desc}</Text>
+        {desc ? <Text style={styles.stepDesc}>{desc}</Text> : null}
       </View>
     </View>
   );
@@ -787,7 +787,7 @@ const styles = StyleSheet.create({
   stepNumText: { fontFamily: fonts.semiBold, fontSize: 13, color: colors.white },
   stepIconWrap: { width: 40, height: 40, borderRadius: 12, alignItems: 'center', justifyContent: 'center' },
   stepIcon: { fontSize: 18 },
-  stepBody: { flex: 1 },
+  stepBody: { flex: 1, justifyContent: 'center' },
   stepTitle: { fontFamily: fonts.semiBold, fontSize: 15, color: colors.text, marginBottom: 2 },
   stepDesc: { fontFamily: fonts.regular, fontSize: 13, color: colors.textMid },
 
