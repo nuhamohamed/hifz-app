@@ -187,6 +187,13 @@ CREATE TABLE public.quiz_queue (
 
 CREATE INDEX quiz_queue_user_id_idx ON public.quiz_queue (user_id);
 
+-- One row per ayah per person. Every write to this table is an upsert with
+-- onConflict 'user_id,surah_number,ayah_number', and Postgres resolves that
+-- conflict target only against a unique index on exactly these columns. Without
+-- it, mistake logging and review scheduling both fail outright.
+CREATE UNIQUE INDEX quiz_queue_user_surah_ayah_key
+  ON public.quiz_queue (user_id, surah_number, ayah_number);
+
 ALTER TABLE public.quiz_queue ENABLE ROW LEVEL SECURITY;
 
 -- -----------------------------------------------------------------------------

@@ -11,11 +11,17 @@ calls the app HifzApp and predates the whole scheduling rewrite.
 Branch `fix/beta-p0-scheduling-and-mistakes`, **31 commits ahead of `main`**, all
 pushed, working tree clean. `main` is untouched at `a5213e4`.
 
-Ten schema migrations, all applied and verified against the live Supabase
+Eleven schema migrations, all applied and verified against the live Supabase
 project `pcjmmogbjohtvnmrupya`. `supabase/schema.sql` is in step.
 
 - `009` adds `scheduled_portions.status` and `users.age`
 - `010` adds `sessions.type` (`revision` | `quiz_only`)
+- `011` records `quiz_queue`'s unique index on (user, surah, ayah)
+
+**`011` was already true of the live project and false of this repo.** The
+index existed on the database and was written down nowhere, so "schema.sql is
+in step" was wrong on that one point until now. Nothing was applied to the
+live project; the migration is `IF NOT EXISTS` under the name already in use.
 
 The task list lives in an artifact the author has, **Dawrah TestFlight
 Checklist**. It was updated on 28 August and now reads nineteen decisions, all
