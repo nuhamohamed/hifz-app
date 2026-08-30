@@ -94,12 +94,15 @@ export default function SessionLengthScreen({ navigation }) {
           <Text style={styles.valueLabel}>Each day</Text>
           <Text style={styles.value}>{minutes} min</Text>
         </View>
+        {/* Per-minute, matching onboarding. Left at quarter hours, this screen
+            would silently round someone's 40 up to 45 the moment they touched
+            the slider to change something else. */}
         <Slider
           minimumValue={15}
           maximumValue={120}
-          step={15}
+          step={1}
           value={minutes}
-          onValueChange={(v) => setMinutes(Math.ceil(v / 15) * 15)}
+          onValueChange={(v) => setMinutes(Math.round(v))}
           minimumTrackTintColor={colors.primary}
           maximumTrackTintColor={colors.border}
           thumbTintColor={colors.primary}

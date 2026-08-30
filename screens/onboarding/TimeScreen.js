@@ -83,7 +83,6 @@ export default function TimeScreen({ route, navigation }) {
         <OnboardingProgressDots current={3} total={7} />
         <Text style={styles.step}>Step 4 of 7</Text>
         <Text style={styles.question}>How much time can you spend each day?</Text>
-        <Text style={styles.sub}>We'll plan your sessions to fit within this window.</Text>
       </View>
 
       <View style={styles.sliderSection}>
@@ -91,19 +90,20 @@ export default function TimeScreen({ route, navigation }) {
           <Text style={styles.valueLabel}>Session length</Text>
           <Text style={styles.valueDisplay}>{sessionMinutes} min</Text>
         </View>
-        {/* Quarter hours only. A 5-minute step invited numbers like 35 and 50
-            that nobody plans a day around, and the recommendation is already
-            rounded up to a multiple of 5. Rounding up here as well means the
-            slider can only ever land on more time than the arithmetic asked
-            for, never less, which is the safe direction: too much time is a
-            day that ends early, too little is a backlog that never clears. */}
+        {/* Every minute is selectable. This used to snap to quarter hours, on
+            the reasoning that nobody plans a day around 35 minutes. But the
+            person choosing knows what their day looks like better than the
+            slider does, and someone with exactly 40 minutes was being rounded
+            to 45 whether that fitted or not. The recommendation is still a
+            quarter hour, rounded up, because a suggestion should be a round
+            number; what someone picks for themselves need not be. */}
         <Slider
           style={styles.slider}
           minimumValue={15}
           maximumValue={120}
-          step={15}
+          step={1}
           value={sessionMinutes}
-          onValueChange={(v) => setSessionMinutes(Math.ceil(v / 15) * 15)}
+          onValueChange={(v) => setSessionMinutes(Math.round(v))}
           minimumTrackTintColor={colors.primary}
           maximumTrackTintColor={colors.border}
           thumbTintColor={colors.primary}
@@ -161,7 +161,6 @@ const styles = StyleSheet.create({
     fontFamily: fonts.semiBold, fontSize: 26, color: colors.text,
     letterSpacing: -0.3, marginBottom: spacing.sm, lineHeight: 34,
   },
-  sub: { fontFamily: fonts.regular, fontSize: 14, color: colors.textMid, lineHeight: 21 },
   sliderSection: { flex: 1, paddingHorizontal: spacing.lg, paddingTop: spacing.xl },
   valueRow: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: spacing.sm },
   valueLabel: { fontFamily: fonts.medium, fontSize: 15, color: colors.textMid },
