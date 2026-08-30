@@ -55,6 +55,20 @@ async function loadContextBlock(surahNumber, centerAyah) {
   return block;
 }
 
+/**
+ * Consecutive commits that fail to move matchPos before we offer a way out.
+ *
+ * The recogniser sometimes cannot produce a word however carefully it is
+ * recited. When that happens nothing matches, the ayah never completes, and
+ * reciting on only produces more misses against an ayah already left behind.
+ * Without this the only escape is to pause the session and resume it.
+ *
+ * Three is roughly five to ten seconds of speech: long enough that someone
+ * pausing to think never sees it, short enough to arrive before they conclude
+ * the app is broken. Kept in step with the same constant in RecitationScreen.
+ */
+const STALLED_COMMITS_BEFORE_SKIP = 3;
+
 export default function PostSessionQuizScreen(props) {
   const navigation = useNavigation();
   const db = useSQLiteContext();
@@ -87,6 +101,8 @@ export default function PostSessionQuizScreen(props) {
   const wrongIndicesRef = useRef([]);
   const firstFailedTextRef = useRef('');
   const [mistakeMessage, setMistakeMessage] = useState('');
+  // True once the recogniser has stalled long enough to offer a way past.
+  const [canSkip, setCanSkip] = useState(false);
   const [correctFeedback, setCorrectFeedback] = useState(false);
   const [tier2AyahDisplay, setTier2AyahDisplay] = useState('');
   const [tier2TranscribedText, setTier2TranscribedText] = useState('');
@@ -105,6 +121,8 @@ export default function PostSessionQuizScreen(props) {
   const revealedWordCountRef = useRef(0);
   const letterDiffRef = useRef({});
   const liveJudgeRef = useRef(null);
+  // Consecutive commits that did not move matchPos forward.
+  const stalledCommitsRef = useRef(0);
 
   const currentItem = quizItems[currentItemIndex];
   const blockLength = blockAyahsRef.current.length;
@@ -160,7 +178,9 @@ export default function PostSessionQuizScreen(props) {
     prevMatchPosRef.current = 0;
     revealedWordCountRef.current = 0;
     letterDiffRef.current = {};
+    stalledCommitsRef.current = 0;
     setRevealedWordCount(0);
+    setCanSkip(false);
     setLiveWrongIndices([]);
     setLiveLetterDiff({});
   }, []);
@@ -353,6 +373,35 @@ export default function PostSessionQuizScreen(props) {
     [advanceToNextBlockAyah, buzzAndTone, quizItems, recordTargetAyahResult]
   );
 
+  /**
+   * Gives up on the current ayah and moves on, counting it as a mistake.
+   *
+   * Only reachable once the recogniser has stalled, so this is not a way to
+   * duck a hard ayah. It bypasses the retry and read-back states deliberately:
+   * those ask someone to recite again, which is precisely what is not working.
+   * If this is the ayah being tested, it is recorded wrong, so the spaced
+   * repetition schedule treats it the same as any other mistake.
+   */
+  const skipCurrentAyah = useCallback(async () => {
+    const words = ayahDataRef.current?.words ?? [];
+    const isTargetAyah = currentBlockIndexRef.current === targetAyahIndexRef.current;
+    const from = Math.max(0, Math.min(prevMatchPosRef.current, words.length));
+    const wrongIndices = [];
+    for (let i = from; i < words.length; i += 1) wrongIndices.push(i);
+
+    mistakeStateRef.current = 'none';
+    setMistakeMessage('');
+    setTier2AyahDisplay('');
+    setTier2TranscribedText('');
+    setTier2HighlightIndices([]);
+    setConfirmedAyahs((prev) => [
+      ...prev,
+      { textDisplay: ayahDataRef.current?.textDisplay ?? '', status: 'mistake', wrongIndices },
+    ]);
+    if (isTargetAyah) recordTargetAyahResult('wrong');
+    await advanceToNextBlockAyah();
+  }, [advanceToNextBlockAyah, recordTargetAyahResult]);
+
   onAyahCompleteRef.current = onAyahComplete;
 
   useEffect(() => {
@@ -440,6 +489,17 @@ export default function PostSessionQuizScreen(props) {
             const newRevealed = Math.max(revealedWordCountRef.current, matchedCount);
             revealedWordCountRef.current = newRevealed;
             setRevealedWordCount(newRevealed);
+
+            // Progress, so nobody is stuck. Withdraw the offer if it was out.
+            stalledCommitsRef.current = 0;
+            setCanSkip(false);
+          } else {
+            // A commit that moved nothing. One is normal, a few in a row means
+            // the recogniser is not going to produce this ayah on its own.
+            stalledCommitsRef.current += 1;
+            if (stalledCommitsRef.current >= STALLED_COMMITS_BEFORE_SKIP) {
+              setCanSkip(true);
+            }
           }
         },
         onError: (message) => { if (mounted) setError(message); },
@@ -582,7 +642,22 @@ export default function PostSessionQuizScreen(props) {
         ) : null}
       </View>
 
-      {(!hasStarted || revealedWordCount === 0 || hasFeedback) ? (
+      {canSkip ? (
+        <View style={styles.feedbackPanel}>
+          <Text style={styles.stuckHint}>
+            Not hearing you? You can move on and review this ayah later.
+          </Text>
+          <TouchableOpacity
+            style={styles.skipBtn}
+            onPress={skipCurrentAyah}
+            activeOpacity={0.85}
+            accessibilityRole="button"
+            accessibilityLabel="Skip this ayah and count it as a mistake"
+          >
+            <Text style={styles.skipBtnText}>Skip this ayah</Text>
+          </TouchableOpacity>
+        </View>
+      ) : (!hasStarted || revealedWordCount === 0 || hasFeedback) ? (
         <View style={styles.feedbackPanel}>
           {!hasStarted && !hasFeedback ? (
             <Text style={styles.reciteHint}>Tap the mic to start reciting</Text>
@@ -790,6 +865,25 @@ const styles = StyleSheet.create({
     fontWeight: '600',
     textAlign: 'center',
     marginTop: 12,
+  },
+  stuckHint: {
+    fontFamily: fonts.regular,
+    fontSize: 13,
+    color: colors.textMuted,
+    textAlign: 'center',
+    paddingBottom: 8,
+  },
+  skipBtn: {
+    alignSelf: 'center',
+    backgroundColor: colors.goldLight,
+    borderRadius: 20,
+    paddingVertical: 9,
+    paddingHorizontal: 18,
+  },
+  skipBtnText: {
+    fontFamily: fonts.semiBold,
+    fontSize: 14,
+    color: colors.brown,
   },
   bottomBar: {
     flexDirection: 'row',

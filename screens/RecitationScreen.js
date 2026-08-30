@@ -81,6 +81,22 @@ function classifyMistakeTier(wrongIndices, letterDiffByIndex) {
   return skippedEntirely ? 2 : 1;
 }
 
+/**
+ * Consecutive commits that fail to move matchPos before we offer a way out.
+ *
+ * The recogniser sometimes cannot produce a word no matter how it is recited.
+ * Al-Fatihah 3 came back as ارحمني, رحيم, اروح, يرحم across fifteen commits
+ * and never once as الرحمن. Nothing matched, so the ayah could not complete,
+ * and reciting ahead only produced more misses against an ayah already left
+ * behind. The only escape was to pause the session and resume it, which is not
+ * something anyone should have to work out mid-recitation.
+ *
+ * Three is roughly five to ten seconds of speech: long enough that a person
+ * merely pausing to think does not see it, short enough to arrive before they
+ * conclude the app is broken.
+ */
+const STALLED_COMMITS_BEFORE_SKIP = 3;
+
 export default function RecitationScreen(props) {
   const params = props.route?.params ?? props;
   const {
@@ -166,6 +182,12 @@ export default function RecitationScreen(props) {
   const letterDiffRef = useRef({});
   // Clears the "Mistake in ayah N" message after 3 s (cancelled on advance).
   const mistakeMessageTimeoutRef = useRef(null);
+  // Consecutive commits that did not move matchPos forward. Reset the moment
+  // it advances, and on every ayah change. Drives the skip offer.
+  const stalledCommitsRef = useRef(0);
+  // Ref mirror of liveText, so a skip can hand the real spoken text to
+  // onAyahComplete rather than an empty string.
+  const liveTextRef = useRef('');
   // ──────────────────────────────────────────────────────────────────────────
 
   const [skippedWordIndices, setSkippedWordIndices] = useState([]);
@@ -182,6 +204,8 @@ export default function RecitationScreen(props) {
   const [liveText, setLiveText] = useState('');
   const [revealedWordCount, setRevealedWordCount] = useState(0);
   const [mistakeMessage, setMistakeMessage] = useState('');
+  // True once the recogniser has stalled long enough to offer a way past.
+  const [canSkip, setCanSkip] = useState(false);
   // Ordered list of unique mushaf pages visited this session, for swiping back.
   const [allPages, setAllPages] = useState([]);
   const pageListRef = useRef(null);
@@ -370,6 +394,8 @@ export default function RecitationScreen(props) {
           prevMatchPosRef.current = 0;
           revealedWordCountRef.current = 0;
           letterDiffRef.current = {};
+          stalledCommitsRef.current = 0;
+          liveTextRef.current = '';
           if (mistakeMessageTimeoutRef.current) {
             clearTimeout(mistakeMessageTimeoutRef.current);
             mistakeMessageTimeoutRef.current = null;
@@ -377,6 +403,7 @@ export default function RecitationScreen(props) {
 
           // Synchronous state batch before any await.
           setRevealedWordCount(0);
+          setCanSkip(false);
           setSkippedWordIndices([]);
           setLiveWrongIndices([]);
           setLiveLetterDiff({});
@@ -491,6 +518,40 @@ export default function RecitationScreen(props) {
     },
     [loadAyah, recreateJudge, locationAt, startOffset, sessionId, totalAyahs]
   );
+
+  /**
+   * Gives up on the current ayah and moves on, counting it as a mistake.
+   *
+   * Only reachable once the recogniser has stalled, so this is not a way to
+   * skip past anything inconvenient. The ayah is scored as if it were recited
+   * wrongly: every word from the last confirmed match onwards is marked wrong,
+   * a mistake row is written, and it is queued for review tomorrow. Words the
+   * recogniser did match are left alone, so a stall on the final word does not
+   * discard the rest of the ayah.
+   *
+   * Routed through onAyahComplete rather than reimplementing the advance,
+   * because that path also freezes the recogniser, resets the judge and
+   * restarts listening. Doing any of that by hand here would drift from it.
+   */
+  const skipCurrentAyah = useCallback(() => {
+    const words = ayahDataRef.current?.words ?? [];
+    if (words.length === 0) return;
+
+    const from = Math.max(0, Math.min(prevMatchPosRef.current, words.length));
+    for (let i = from; i < words.length; i += 1) {
+      accumulatedWrongIndicesRef.current.add(i);
+      // null means the word never came back at all, as opposed to coming back
+      // misheard, which is exactly what happened here.
+      letterDiffRef.current[i] = null;
+    }
+
+    setLiveWrongIndices([...accumulatedWrongIndicesRef.current]);
+    setLiveLetterDiff({ ...letterDiffRef.current });
+    revealedWordCountRef.current = words.length;
+    setRevealedWordCount(words.length);
+
+    onAyahComplete(liveTextRef.current);
+  }, [onAyahComplete]);
 
   useEffect(() => {
     if (startedRef.current) return;
@@ -616,6 +677,7 @@ export default function RecitationScreen(props) {
           // Going-back window ended — user is speaking current ayah again.
           isGoingBackRef.current = false;
           liveJudgeRef.current?.update(dedupeConsecutiveWords(text));
+          liveTextRef.current = text;
           setLiveText(text);
         },
         onCommit: (matchedCount) => {
@@ -647,6 +709,17 @@ export default function RecitationScreen(props) {
             const newRevealed = Math.max(revealedWordCountRef.current, matchedCount);
             revealedWordCountRef.current = newRevealed;
             setRevealedWordCount(newRevealed);
+
+            // Progress, so nobody is stuck. Withdraw the offer if it was out.
+            stalledCommitsRef.current = 0;
+            setCanSkip(false);
+          } else {
+            // A commit that moved nothing. One is normal, a few in a row means
+            // the recogniser is not going to produce this ayah on its own.
+            stalledCommitsRef.current += 1;
+            if (stalledCommitsRef.current >= STALLED_COMMITS_BEFORE_SKIP) {
+              setCanSkip(true);
+            }
           }
         },
         onError: (message) => {
@@ -867,6 +940,21 @@ export default function RecitationScreen(props) {
             <Text style={styles.doneBtnText}>Done, continue to quiz</Text>
           </TouchableOpacity>
         </View>
+      ) : canSkip ? (
+        <View style={styles.feedbackPanel}>
+          <Text style={styles.stuckHint}>
+            Not hearing you? You can move on and review this ayah later.
+          </Text>
+          <TouchableOpacity
+            style={styles.skipBtn}
+            onPress={skipCurrentAyah}
+            activeOpacity={0.85}
+            accessibilityRole="button"
+            accessibilityLabel="Skip this ayah and count it as a mistake"
+          >
+            <Text style={styles.skipBtnText}>Skip this ayah</Text>
+          </TouchableOpacity>
+        </View>
       ) : !hasStarted || (currentAyahIndex === 0 && revealedWordCount === 0) || mistakeMessage ? (
         <View style={styles.feedbackPanel}>
           {mistakeMessage ? (
@@ -1043,6 +1131,25 @@ const styles = StyleSheet.create({
     textAlign: 'center',
     paddingVertical: 8,
     paddingHorizontal: 16,
+  },
+  stuckHint: {
+    fontFamily: fonts.regular,
+    fontSize: 13,
+    color: colors.textMuted,
+    textAlign: 'center',
+    paddingBottom: 8,
+  },
+  skipBtn: {
+    alignSelf: 'center',
+    backgroundColor: colors.goldLight,
+    borderRadius: 20,
+    paddingVertical: 9,
+    paddingHorizontal: 18,
+  },
+  skipBtnText: {
+    fontFamily: fonts.semiBold,
+    fontSize: 14,
+    color: colors.brown,
   },
   transitionOverlay: {
     flex: 1,
