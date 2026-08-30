@@ -31,6 +31,31 @@ this repo:
 | --- | --- |
 | `SPEECHMATICS_API_KEY` | `speechmatics-token` |
 
+### The Sentry build token
+
+`.env.sentry-build-plugin` at the project root holds `SENTRY_AUTH_TOKEN`. It is
+gitignored and must not be committed.
+
+It is a third file rather than another line in `.env` because Xcode script
+phases do not read `.env` or `.env.local`. Sentry's two build phases source
+this specific filename, and without it a **Release build fails**: both scripts
+print `error:` and exit 1 when the upload cannot authenticate. Debug builds
+pass regardless, because `SKIP_BUNDLING` short-circuits them, so the first sign
+of a missing token is a failed archive.
+
+It sits at the project root, not in `ios/.xcode.env.local`, so that
+`prebuild --clean` does not wipe it along with the rest of `ios/`.
+
+Check it with:
+
+```
+SENTRY_PROPERTIES=ios/sentry.properties node_modules/@sentry/cli/bin/sentry-cli info
+```
+
+It needs the `org:ci` scope. Without a working token you can still build by
+setting `SENTRY_DISABLE_AUTO_UPLOAD=true`, but crash reports from testers
+arrive unsymbolicated, which makes them close to useless.
+
 Restart the dev server after changing `.env`. Expo reads it when the bundle is
 built, so a running Metro will not pick up a change on its own.
 

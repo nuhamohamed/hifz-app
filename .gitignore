@@ -45,3 +45,7 @@ yarn-error.*
 .tools/
 
 .env.local
+
+# Holds SENTRY_AUTH_TOKEN. Read by Sentry's Xcode build phases, which
+# cannot see .env or .env.local. Secret: never commit.
+.env.sentry-build-plugin
