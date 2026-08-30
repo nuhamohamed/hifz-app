@@ -518,9 +518,28 @@ export default function TodayScreen() {
   const isCarriedOver = !!(pausedSession && pausedSession.date !== getTodayDateString());
   // The first portion is the one Start begins; the rest are listed and come
   // after it, one session each.
-  const nextPortion = portions[0] ?? null;
+  // A session already under way is today's work, whatever the schedule says.
+  //
+  // Starting a portion early creates a session dated today while its scheduled
+  // row stays pending on its original date. The schedule then reports nothing
+  // due today, so the day was read as quiz-only: the agenda emptied itself and
+  // the banner said "Quiz only today" directly above an offer to resume a
+  // revision of Al-Fatihah 1. Both statements came from the same screen.
+  const pausedPortion =
+    pausedSession && pausedSession.type !== 'quiz_only'
+      ? {
+          juzNumber: pausedSession.juz_number,
+          portionStartAyah: pausedSession.portion_start_ayah,
+          portionEndAyah: pausedSession.portion_end_ayah,
+        }
+      : null;
+
+  // Falls back to the session in progress. Safe for the start path too:
+  // handleStartSession looks for a paused session first and resumes it, so it
+  // only ever reaches nextPortion when there is nothing paused.
+  const nextPortion = portions[0] ?? pausedPortion ?? null;
   const summary = portionSummary(nextPortion);
-  const quizOnly = portions.length === 0;
+  const quizOnly = portions.length === 0 && !pausedPortion;
   // Nothing to recite and nothing due: a genuinely empty day. Saying "Quiz only"
   // and offering a Start button would be two lies in a row.
   const nothingDue = quizOnly && quizCount === 0 && !pausedSession;
@@ -647,7 +666,11 @@ export default function TodayScreen() {
     ? [donePortion]
     : showingNext
     ? [nextSession]
-    : portions;
+    : portions.length
+    ? portions
+    : pausedPortion
+    ? [pausedPortion]
+    : [];
 
   return (
     <View style={styles.screen}>
