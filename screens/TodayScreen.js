@@ -579,6 +579,33 @@ export default function TodayScreen() {
   // Above the length they asked for, so the day genuinely overruns.
   const isHeavyDay = !!(estimateMinutes && sessionMinutes && estimateMinutes > sessionMinutes);
 
+  // ── How far into the portion they already are ─────────────────────────────
+  // Hoisted above the banner because the banner and the progress ring both
+  // need it, and two copies of this arithmetic is how two numbers on the same
+  // screen start disagreeing.
+  const portionLength = summary ? summary.ayahCount : 0;
+  const recitedSoFar =
+    pausedSession && nextPortion
+      ? Math.max(0, (pausedSession.last_confirmed_ayah ?? 0) - nextPortion.portionStartAyah + 1)
+      : 0;
+  const portionDoneFraction =
+    portionLength > 0 ? Math.min(1, recitedSoFar / portionLength) : 0;
+
+  // What is left of the day, for a session already under way.
+  //
+  // The day's estimate less the share already recited. Approximate on purpose,
+  // and it has to be: the estimate covers the review, the portion and the recap
+  // together, and only the portion's progress is known mid-session. It is the
+  // same number the banner shows before starting, reduced by the part now
+  // behind them, which is the honest reading of "left".
+  const minutesLeft =
+    estimateMinutes && portionLength > 0
+      ? Math.max(1, Math.round(estimateMinutes * (1 - portionDoneFraction)))
+      : estimateMinutes;
+
+  const pagesDone = summary ? Math.round(summary.pages * portionDoneFraction) : 0;
+  const pagesTotal = summary ? Math.max(1, Math.round(summary.pages)) : 0;
+
   // ── What the banner is carrying ───────────────────────────────────────────
   // One card, one message: whatever the person most needs to know right now.
   // It used to be a fixed "today's portion" plus a separate all-done card that
@@ -600,10 +627,24 @@ export default function TodayScreen() {
       : 'Nothing scheduled yet';
     bannerSub = nextSession ? nextSummary.label : null;
   } else if (pausedSession) {
+    // A status banner, not a description of the work. Someone returning to a
+    // half-finished session needs one sentence telling them what happens when
+    // they press the button, and the portion range is not it: it was the bold
+    // line here, which put "Al-Fatihah 1 to Al-Baqarah 139" in front of someone
+    // who is resuming at Al-Baqarah 20 and had already recited the first
+    // nineteen. The range is the whole job, and the whole job is not the
+    // status.
     bannerEyebrow = isCarriedOver
       ? `UNFINISHED · ${formatSessionDate(pausedSession.date)}`
       : 'IN PROGRESS';
-    bannerSub = resumeHint;
+    bannerTitleOverride = resumeHint;
+    // Progress and what is left, which is what the range was standing in for.
+    bannerSub =
+      pagesTotal > 0 && minutesLeft
+        ? `${pagesDone} of ${pagesTotal} page${pagesTotal === 1 ? '' : 's'} · about ${minutesLeft} min left`
+        : minutesLeft
+        ? `about ${minutesLeft} min left`
+        : null;
   } else if (showingNext) {
     bannerEyebrow = 'NOTHING DUE TODAY';
     bannerTitleOverride = `Next session · ${formatSessionDate(nextSession.scheduledDate)}`;
@@ -677,16 +718,7 @@ export default function TodayScreen() {
   // against those, so a day without a recap can still fill the ring.
   const RING_WEIGHT = { review: 25, recite: 65, recap: 10 };
 
-  const portionLength = summary ? summary.ayahCount : 0;
-  const recitedSoFar =
-    pausedSession && nextPortion
-      ? Math.max(0, (pausedSession.last_confirmed_ayah ?? 0) - nextPortion.portionStartAyah + 1)
-      : 0;
-  const reciteFraction = sessionDoneToday
-    ? 1
-    : portionLength > 0
-    ? Math.min(1, recitedSoFar / portionLength)
-    : 0;
+  const reciteFraction = sessionDoneToday ? 1 : portionDoneFraction;
 
   const ringParts = [];
   if (hasReviewStep) ringParts.push([RING_WEIGHT.review, quizStepDone ? 1 : 0]);
