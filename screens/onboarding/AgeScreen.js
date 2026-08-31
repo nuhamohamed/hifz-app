@@ -125,7 +125,7 @@ export default function AgeScreen({ navigation }) {
                 Dawrah is for ages {MINIMUM_AGE} and over
               </Text>
               <Text style={styles.noteText}>
-                We are sorry. Your hifz matters just as much, and we hope to be
+                We are sorry. Your hifdh matters just as much, and we hope to be
                 able to welcome you before long. Nothing you have entered has
                 been saved.
               </Text>
