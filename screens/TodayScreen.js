@@ -19,7 +19,7 @@ import {
   todayString as getTodayDateString,
 } from '../lib/dates';
 import { getAyahLocation, getJuzTotalAyahs } from '../lib/juzSurahMap';
-import { getTodayPlan } from '../lib/planEngine';
+import { getTodayPlan, portionPagesFor } from '../lib/planEngine';
 import { roundedEstimateMinutes } from '../lib/portionMath';
 import {
   cancelDailyNotification,
@@ -182,6 +182,9 @@ export default function TodayScreen() {
   const [doneMistakeCount, setDoneMistakeCount] = useState(0);
   const [portionLoading, setPortionLoading] = useState(true);
   const [pausedSession, setPausedSession] = useState(null);
+  // Pages in the paused session's OWN range, which the portion list cannot
+  // supply because it re-sizes every row for today.
+  const [pausedPortionPages, setPausedPortionPages] = useState(0);
   const [sessionDoneToday, setSessionDoneToday] = useState(false);
   const [isStarting, setIsStarting] = useState(false);
   const [error, setError] = useState('');
@@ -319,6 +322,22 @@ export default function TodayScreen() {
 
         if (!pausedResult.error && pausedResult.data) {
           setPausedSession(pausedResult.data);
+
+          const p = pausedResult.data;
+          if (p.type !== 'quiz_only' && p.portion_start_ayah && p.portion_end_ayah) {
+            try {
+              const pages = await portionPagesFor(
+                db,
+                p.juz_number ?? 1,
+                p.portion_start_ayah,
+                p.portion_end_ayah
+              );
+              if (mounted) setPausedPortionPages(pages);
+            } catch {
+              // A missing page count costs a detail line, not the screen.
+              if (mounted) setPausedPortionPages(0);
+            }
+          }
         }
       } catch (err) {
         if (mounted) setError(err.message ?? "Failed to load today's plan.");
@@ -560,13 +579,24 @@ export default function TodayScreen() {
           juzNumber: pausedSession.juz_number,
           portionStartAyah: pausedSession.portion_start_ayah,
           portionEndAyah: pausedSession.portion_end_ayah,
+          pages: pausedPortionPages,
         }
       : null;
 
   // Falls back to the session in progress. Safe for the start path too:
   // handleStartSession looks for a paused session first and resumes it, so it
   // only ever reaches nextPortion when there is nothing paused.
-  const nextPortion = portions[0] ?? pausedPortion ?? null;
+  // The paused session first, not the plan's portion.
+  //
+  // This was the other way round, and it made the progress ring wrong in a way
+  // that read as roughly half done for someone barely started. A session that
+  // is paused is committed to the range on its own row, but the portion list is
+  // re-sized for today every time it is read, so the two are different lengths.
+  // Progress was then the ayahs recited under the paused range divided by the
+  // length of a freshly-sized one: 19 of 139 recited, but shown against a
+  // portion re-cut to about 40, which is half. The numerator and the
+  // denominator have to come from the same portion.
+  const nextPortion = pausedPortion ?? portions[0] ?? null;
   const summary = portionSummary(nextPortion);
   const quizOnly = portions.length === 0 && !pausedPortion;
   // Nothing to recite and nothing due: a genuinely empty day. Saying "Quiz only"
@@ -603,7 +633,12 @@ export default function TodayScreen() {
       ? Math.max(1, Math.round(estimateMinutes * (1 - portionDoneFraction)))
       : estimateMinutes;
 
-  const pagesDone = summary ? Math.round(summary.pages * portionDoneFraction) : 0;
+  // Pages still to recite. What is left is the useful half: someone resuming
+  // wants to know the size of what is in front of them, not to be scored on
+  // what is behind.
+  const pagesLeft = summary
+    ? Math.max(1, Math.round(summary.pages * (1 - portionDoneFraction)))
+    : 0;
   const pagesTotal = summary ? Math.max(1, Math.round(summary.pages)) : 0;
 
   // ── What the banner is carrying ───────────────────────────────────────────
@@ -638,13 +673,30 @@ export default function TodayScreen() {
       ? `UNFINISHED · ${formatSessionDate(pausedSession.date)}`
       : 'IN PROGRESS';
     bannerTitleOverride = resumeHint;
-    // Progress and what is left, which is what the range was standing in for.
-    bannerSub =
-      pagesTotal > 0 && minutesLeft
-        ? `${pagesDone} of ${pagesTotal} page${pagesTotal === 1 ? '' : 's'} · about ${minutesLeft} min left`
-        : minutesLeft
-        ? `about ${minutesLeft} min left`
-        : null;
+    // What is left, in the unit that matches the phase they stopped in. Someone
+    // paused inside the review is not part-way through a portion, so pages
+    // would be answering a question they did not ask.
+    const pausedPhase = pausedSession.phase ?? 'pre_quiz';
+    if (pausedPhase === 'pre_quiz') {
+      // Answering an item moves its due date off today, so the due count is
+      // already the count still to do rather than the count it started with.
+      bannerSub =
+        quizCount > 0
+          ? `${quizCount} question${quizCount === 1 ? '' : 's'} left`
+          : null;
+    } else if (pausedPhase === 'revision') {
+      bannerSub =
+        pagesLeft > 0 && minutesLeft
+          ? `${pagesLeft} page${pagesLeft === 1 ? '' : 's'} · about ${minutesLeft} min left`
+          : minutesLeft
+          ? `about ${minutesLeft} min left`
+          : null;
+    } else {
+      // The recap. Its items come from this session's mistakes rather than from
+      // a due date, so answering one does not remove it from the list and there
+      // is nothing here that can honestly be called "left".
+      bannerSub = null;
+    }
   } else if (showingNext) {
     bannerEyebrow = 'NOTHING DUE TODAY';
     bannerTitleOverride = `Next session · ${formatSessionDate(nextSession.scheduledDate)}`;
@@ -834,11 +886,18 @@ export default function TodayScreen() {
                         step={i + firstPortionStep}
                         icon="◉"
                         title={label ? `Recite ${label}` : "Recite today's portion"}
-                        desc={
-                          agendaPortions.length > 1
-                            ? `Juz ${p.juzNumber}`
-                            : 'We follow along as you go'
-                        }
+                        desc={(() => {
+                          // The size of the thing, in the unit the rest of the
+                          // screen uses. Mistake Review states its count and
+                          // this said "We follow along as you go", which is a
+                          // reassurance rather than an answer to "how much?".
+                          const pg = Math.max(1, Math.round(p.pages ?? 0));
+                          const size = p.pages ? `${pg} page${pg === 1 ? '' : 's'}` : null;
+                          if (agendaPortions.length > 1) {
+                            return size ? `Juz ${p.juzNumber} · ${size}` : `Juz ${p.juzNumber}`;
+                          }
+                          return size ?? 'We follow along as you go';
+                        })()}
                         iconBg={colors.parchment} iconColor={colors.brown}
                         done={reciteStepDone}
                       />
