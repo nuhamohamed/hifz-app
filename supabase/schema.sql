@@ -156,11 +156,21 @@ CREATE TABLE public.mistakes (
   ayah_number integer NOT NULL,
   tier integer NOT NULL,
   wrong_words text[] NOT NULL DEFAULT '{}',
-  created_at timestamptz NOT NULL DEFAULT now()
+  created_at timestamptz NOT NULL DEFAULT now(),
+  -- What the recogniser actually heard, kept beside the expected words so the
+  -- summary can show someone the comparison and judge a misflag for themselves.
+  transcribed_text text,
+  -- Set when the person cleared this as a misflag. Every read filters on
+  -- `dismissed_at IS NULL`, so a dismissed row counts for nothing while still
+  -- being on the record: it is the only evidence of a recogniser false
+  -- positive, and deleting it also rewrote every historical mistake count.
+  dismissed_at timestamptz
 );
 
 CREATE INDEX mistakes_user_id_idx ON public.mistakes (user_id);
 CREATE INDEX mistakes_session_id_idx ON public.mistakes (session_id);
+CREATE INDEX mistakes_live_session_idx
+  ON public.mistakes (session_id) WHERE dismissed_at IS NULL;
 
 ALTER TABLE public.mistakes ENABLE ROW LEVEL SECURITY;
 

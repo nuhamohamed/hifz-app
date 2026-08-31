@@ -571,6 +571,7 @@ export default function RecitationScreen(props) {
             .from('mistakes')
             .select('surah_number, ayah_number, wrong_words')
             .eq('session_id', sessionId)
+            .is('dismissed_at', null)
             .order('ayah_number', { ascending: true });
 
           // Keyed on surah *and* ayah. Keyed on ayah alone, a portion spanning

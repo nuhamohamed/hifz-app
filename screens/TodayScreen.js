@@ -19,7 +19,11 @@ import {
   todayString as getTodayDateString,
 } from '../lib/dates';
 import { getAyahLocation, getJuzTotalAyahs } from '../lib/juzSurahMap';
-import { getTodayPlan, portionPagesFor } from '../lib/planEngine';
+import {
+  applyPendingSessionPlans,
+  getTodayPlan,
+  portionPagesFor,
+} from '../lib/planEngine';
 import { roundedEstimateMinutes } from '../lib/portionMath';
 import {
   cancelDailyNotification,
@@ -242,6 +246,23 @@ export default function TodayScreen() {
         // the portion cannot be sized until the due quiz has been costed: the
         // quiz is never cut, so it is paid for first and the portion takes what
         // is left. Everything that does not depend on that still runs alongside.
+        // Before the plan, not alongside it. A session finished but not yet
+        // scored has not moved its juz on, so planning first would build
+        // today from progress that is one session out of date. Awaited on its
+        // own for the same reason: Promise.all would race it against the very
+        // query that reads what it writes.
+        //
+        // This is also where a session gets scored at all now. The summary
+        // screen used to do it on mount, before the person could clear a
+        // misflag, so corrections never undid what the misflag cost.
+        try {
+          await applyPendingSessionPlans(db, userId);
+        } catch (planErr) {
+          // A failed scoring leaves the session unscored and it is retried on
+          // the next load. Better than blanking the screen over it.
+          console.error('[Today] could not score a finished session:', planErr?.message);
+        }
+
         const [userResult, plan, pausedResult, completedResult] = await Promise.all([
           supabase
             .from('users')
@@ -310,7 +331,8 @@ export default function TodayScreen() {
           const { count: mistakeCount } = await supabase
             .from('mistakes')
             .select('ayah_number', { count: 'exact', head: true })
-            .eq('session_id', completedResult.data.id);
+            .eq('session_id', completedResult.data.id)
+            .is('dismissed_at', null);
           if (mounted) setDoneMistakeCount(mistakeCount ?? 0);
         } else if (mounted) {
           setDoneMistakeCount(0);

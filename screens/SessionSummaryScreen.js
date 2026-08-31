@@ -21,7 +21,7 @@ import {
 import { getAyahLocation, getJuzTotalAyahs, getSurahName } from '../lib/juzSurahMap';
 import { cancelEveningNudge } from '../lib/notifications';
 import { getAyah } from '../lib/quranApi';
-import { updateJuzProgressAfterSession } from '../lib/planEngine';
+import { previewNextInterval } from '../lib/planEngine';
 import { removeFromQuizQueue } from '../lib/quizEngine';
 import { supabase } from '../lib/supabase';
 import { colors, fonts, spacing } from '../lib/theme';
@@ -292,34 +292,37 @@ export default function SessionSummaryScreen({ route }) {
         // a tab, and opening it resolves to the most recent session whatever
         // that session was. Without it, visiting the tab after a quiz-only day
         // would advance the recitation plan off a portion nobody recited.
-        if (sessionData.status === 'complete' && !sessionData.plan_applied && !isQuizOnly) {
-          await supabase
-            .from('sessions')
-            .update({ plan_applied: true })
-            .eq('id', resolvedSessionId);
-          await updateJuzProgressAfterSession(
-            db,
-            userId,
-            resolvedSessionId,
-            sessionData.juz_number,
-            sessionData.portion_start_ayah,
-            sessionData.portion_end_ayah,
-            totalAyahsInJuz
-          );
-        }
+        // Scoring deliberately does NOT happen here any more.
+        //
+        // It used to run on mount, which put it before the one thing this
+        // screen exists for. Someone misheard five times had the session judged
+        // as five mistakes, the portion halved and the juz pulled forward, and
+        // was only then shown the list and invited to say the app had misheard
+        // them. Clearing all five removed the mistakes and left every
+        // consequence of them standing.
+        //
+        // applyPendingSessionPlans() on the Today screen does it instead, on
+        // the way back, by which point the corrections are in the table.
+        // plan_applied still guards it, so a session is scored exactly once.
 
         // The pass/fail gate is gone. Finishing a juz is finishing a juz; what
         // is worth telling someone is when it comes back, which the spaced
         // repetition schedule has just worked out.
         let returnsIn = null;
-        if (isJuzComplete) {
-          const { data: progressData } = await supabase
-            .from('juz_progress')
-            .select('interval_days')
-            .eq('user_id', userId)
-            .eq('juz_number', sessionData.juz_number)
-            .maybeSingle();
-          returnsIn = progressData?.interval_days ?? null;
+        if (isJuzComplete && !isQuizOnly) {
+          // Computed rather than read. juz_progress still holds the previous
+          // pass's interval until scoring runs, so reading it would tell
+          // someone the wrong day. Same function the real scoring uses.
+          try {
+            returnsIn = await previewNextInterval(
+              db,
+              userId,
+              resolvedSessionId,
+              sessionData.juz_number
+            );
+          } catch {
+            returnsIn = null;
+          }
         }
 
         const { data: tomorrow, error: tomorrowError } = await supabase
@@ -355,6 +358,7 @@ export default function SessionSummaryScreen({ route }) {
           .from('mistakes')
           .select('ayah_number, surah_number, wrong_words, transcribed_text')
           .eq('session_id', resolvedSessionId)
+          .is('dismissed_at', null)
           .order('ayah_number', { ascending: true });
 
         if (mistakesError) {
@@ -420,12 +424,19 @@ export default function SessionSummaryScreen({ route }) {
    */
   const removeMistakeEntirely = useCallback(async (mistake) => {
     if (!resolvedSessionId) return;
+    // Marked, not deleted. The row is the only evidence the recogniser flagged
+    // this ayah and that the person disagreed, which together are the app's
+    // false-positive rate. Deleting it also rewrote history: any
+    // mistakes-over-time figure changed underneath you whenever an old session
+    // was corrected. Every read filters `dismissed_at is null`, so it counts for
+    // nothing while still being on the record.
     await supabase
       .from('mistakes')
-      .delete()
+      .update({ dismissed_at: new Date().toISOString() })
       .eq('session_id', resolvedSessionId)
       .eq('surah_number', mistake.surah_number)
-      .eq('ayah_number', mistake.ayah_number);
+      .eq('ayah_number', mistake.ayah_number)
+      .is('dismissed_at', null);
 
     try {
       const userId = await getCurrentUserId();
@@ -468,7 +479,8 @@ export default function SessionSummaryScreen({ route }) {
       .update({ wrong_words: remaining })
       .eq('session_id', resolvedSessionId)
       .eq('surah_number', mistake.surah_number)
-      .eq('ayah_number', mistake.ayah_number);
+      .eq('ayah_number', mistake.ayah_number)
+      .is('dismissed_at', null);
     if (error) {
       console.error('[Summary] failed to clear a word:', error.message);
     }
