@@ -120,6 +120,10 @@ export default function PreSessionQuizScreen(props) {
   const liveJudgeRef = useRef(null);
   // Consecutive commits that did not move matchPos forward.
   const stalledCommitsRef = useRef(0);
+  // Guards skipCurrentAyah against a second press while the first is still
+  // in flight. It awaits updateQuizResult before the transition screen
+  // mounts, and the skip button is still on screen for that whole round trip.
+  const isSkippingRef = useRef(false);
 
   const currentItem = quizItems[currentItemIndex];
   const blockLength = blockAyahsRef.current.length;
@@ -400,6 +404,9 @@ export default function PreSessionQuizScreen(props) {
    * repetition schedule treats it the same as any other mistake.
    */
   const skipCurrentAyah = useCallback(async () => {
+    if (isSkippingRef.current) return;
+    isSkippingRef.current = true;
+
     const words = ayahDataRef.current?.words ?? [];
     const isTargetAyah = currentBlockIndexRef.current === targetAyahIndexRef.current;
     const from = Math.max(0, Math.min(prevMatchPosRef.current, words.length));
@@ -416,7 +423,12 @@ export default function PreSessionQuizScreen(props) {
       { textDisplay: ayahDataRef.current?.textDisplay ?? '', status: 'mistake', wrongIndices },
     ]);
     if (isTargetAyah) recordTargetAyahResult('wrong');
-    await advanceToNextBlockAyah();
+
+    try {
+      await advanceToNextBlockAyah();
+    } finally {
+      isSkippingRef.current = false;
+    }
   }, [advanceToNextBlockAyah, recordTargetAyahResult]);
 
   onAyahCompleteRef.current = onAyahComplete;
