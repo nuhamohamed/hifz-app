@@ -210,18 +210,49 @@ export default function RecitationScreen(props) {
   const pageListRef = useRef(null);
   const { width: screenWidth } = useWindowDimensions();
 
+  /**
+   * Add this visit's reciting time to whatever the session already had.
+   *
+   * recitation_seconds used to be overwritten with the time since this screen
+   * mounted, and the screen mounts again on every resume. So a portion recited
+   * across two sittings stored only the second one, while refreshMeasuredPace()
+   * divided it by the pages of the whole portion. Every resumed session made
+   * the person look faster than they are, their measured pace drifted down,
+   * and a too-fast pace hands out portions too long to finish, which is what
+   * makes people pause in the first place.
+   *
+   * Read-then-add rather than an atomic increment: one person recites on one
+   * device at a time, and the alternative is a database function for a number
+   * that is already wall-clock and approximate.
+   */
+  const bankRecitationSeconds = useCallback(async () => {
+    const startedAt = recitationStartedAt.current;
+    if (!sessionId || !startedAt) return;
+
+    const leg = Math.round((Date.now() - startedAt) / 1000);
+    // Reset first, so a second call cannot bank the same stretch twice.
+    recitationStartedAt.current = Date.now();
+    if (leg <= 0) return;
+
+    const { data: row } = await supabase
+      .from('sessions')
+      .select('recitation_seconds')
+      .eq('id', sessionId)
+      .maybeSingle();
+
+    await supabase
+      .from('sessions')
+      .update({ recitation_seconds: (row?.recitation_seconds ?? 0) + leg })
+      .eq('id', sessionId);
+  }, [sessionId]);
+
   const finishRevisionAndNavigate = useCallback(async () => {
     await stopListening();
+    await bankRecitationSeconds();
     if (sessionId) {
-      const startedAt = recitationStartedAt.current;
       await supabase
         .from('sessions')
-        .update({
-          phase: 'post_quiz',
-          recitation_seconds: startedAt
-            ? Math.round((Date.now() - startedAt) / 1000)
-            : null,
-        })
+        .update({ phase: 'post_quiz' })
         .eq('id', sessionId);
     }
     setShowTransition(true);
@@ -773,6 +804,9 @@ export default function RecitationScreen(props) {
   }, [isLoading, error, pulseAnim]);
 
   const handlePauseSession = async () => {
+    // Banked here too, or the whole first sitting is lost: this is the exit
+    // people actually take mid-portion.
+    await bankRecitationSeconds();
     if (sessionId) {
       await supabase
         .from('sessions')
