@@ -390,9 +390,38 @@ export default function TodayScreen() {
       if (fetchError) throw new Error(fetchError.message);
 
       if (paused) {
-        if (paused.date !== today) {
+        const resumedOnNewDay = paused.date !== today;
+        if (resumedOnNewDay) {
           await supabase.from('sessions').update({ date: today }).eq('id', paused.id);
         }
+
+        // Resuming across a day boundary is not the same as resuming later the
+        // same day. The review a session passed through was answered against
+        // the due list of the day it started on, and anything that has fallen
+        // due since, including the mistakes made in this very session, was not
+        // in it. Walking straight back into the portion steps over all of it.
+        //
+        // Only from 'revision'. A session paused inside the recap quiz has
+        // already finished reciting, and the pre-quiz exits to Recitation, so
+        // sending it there would restart a portion that was done.
+        //
+        // The place in the portion is safe: navigateForPausedSession puts
+        // last_confirmed_ayah + 1 into resumeFromOffset, the pre-quiz replaces
+        // to Recitation with those same params, and Recitation reads
+        // resumeFromOffset for its starting index. The quiz is a detour, not a
+        // restart.
+        const needsTodaysReview =
+          resumedOnNewDay && quizCount > 0 && (paused.phase ?? 'pre_quiz') === 'revision';
+
+        if (needsTodaysReview) {
+          await supabase
+            .from('sessions')
+            .update({ phase: 'pre_quiz' })
+            .eq('id', paused.id);
+          navigateForPausedSession({ ...paused, date: today, phase: 'pre_quiz' });
+          return;
+        }
+
         navigateForPausedSession(paused);
         return;
       }
@@ -605,7 +634,18 @@ export default function TodayScreen() {
   // ── Which agenda steps are behind them ────────────────────────────────────
   // Phase is written as the session moves, so a paused session already knows
   // how far it reached. Finishing the day crosses everything out.
-  const phase = pausedSession?.phase ?? null;
+  // Only today's session may say anything about today's progress.
+  //
+  // The paused-session query has no date filter, so this used to read the phase
+  // of a session paused on an earlier day. Pause mid-recitation on Monday, and
+  // the mistakes made in it fall due on Tuesday: Tuesday's agenda then showed
+  // Mistake Review and immediately crossed it off, because Monday's session was
+  // still sitting at phase 'revision'. The step was reported done by a value
+  // from a day that had already ended, for a review that had never run.
+  const phase =
+    pausedSession && pausedSession.date === getTodayDateString()
+      ? pausedSession.phase ?? null
+      : null;
   const quizStepDone = sessionDoneToday || phase === 'revision' || phase === 'post_quiz';
   const reciteStepDone = sessionDoneToday || phase === 'post_quiz';
   const recapStepDone = sessionDoneToday;
