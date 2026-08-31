@@ -13,7 +13,6 @@ import { useNavigation } from '@react-navigation/native';
 import { Audio } from 'expo-av';
 import * as Haptics from 'expo-haptics';
 import { getCurrentUserId } from '../lib/auth';
-import { todayString as getTodayDateString, tomorrowString } from '../lib/dates';
 import { getAyahLocation } from '../lib/juzSurahMap';
 import { normalizeArabic } from '../lib/arabicUtils';
 import { getAyah } from '../lib/quranApi';
@@ -438,24 +437,27 @@ export default function RecitationScreen(props) {
             if (mistakeError) {
               console.error('[Recitation] failed to log mistake:', mistakeError.message);
             }
-            // Due tomorrow, not today. Today's session already deals with this
-            // ayah: the recap quiz at the end reads the mistakes table by
-            // session, so it does not need a queue row dated today to find it.
-            // Dating it today meant a mistake made minutes ago counted as due
-            // for mistake review, so pausing a first session and returning to
-            // the home screen showed "Mistake Review" for mistakes made inside
-            // the session still in progress, and resuming would quiz someone on
-            // a portion they had not finished reciting.
-            await supabase.from('quiz_queue').upsert(
-              {
-                user_id: userId,
-                surah_number: surahNumber,
-                ayah_number: ayahNumber,
-                box_level: 0,
-                next_review_date: tomorrowString(),
-              },
-              { onConflict: 'user_id,surah_number,ayah_number' }
-            );
+            // Deliberately no quiz_queue row here. The mistakes row above is
+            // the record; the queue row is what puts an ayah into Mistake
+            // Review, and it is not this screen's to write.
+            //
+            // Writing it here scheduled mistakes out of a session that might
+            // never finish. Pause halfway and the queue row still fell due the
+            // next morning, but the session summary, which is the only place a
+            // misflag can be cleared, only ever resolves a completed session.
+            // So the review window never opened and the app went on testing
+            // someone on words it had misheard, with no way to say so.
+            //
+            // fetchPostSessionItems() writes these rows instead, from the same
+            // mistakes table, keyed by session. It runs when the recap quiz
+            // starts, which is to say once the portion is actually finished,
+            // and it picks up every mistake in the session including the ones
+            // made before a pause. The correction window on the summary screen
+            // comes immediately after.
+            //
+            // The trade: a session abandoned for good never schedules its
+            // mistakes. That is the intended reading of an abandoned session,
+            // and the mistakes rows still exist either way.
           }
           await supabase
             .from('sessions')
