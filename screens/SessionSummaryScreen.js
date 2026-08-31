@@ -21,7 +21,7 @@ import {
 import { getAyahLocation, getJuzTotalAyahs, getSurahName } from '../lib/juzSurahMap';
 import { cancelEveningNudge } from '../lib/notifications';
 import { getAyah } from '../lib/quranApi';
-import { previewNextInterval } from '../lib/planEngine';
+import { getPortionsForDate, previewNextInterval } from '../lib/planEngine';
 import { removeFromQuizQueue } from '../lib/quizEngine';
 import { supabase } from '../lib/supabase';
 import { colors, fonts, spacing } from '../lib/theme';
@@ -58,15 +58,9 @@ function upNextLabel(scheduledDate) {
   return formatSessionDate(scheduledDate).toUpperCase();
 }
 
-function formatTomorrowLine(tomorrow) {
-  const start = getAyahLocation(
-    tomorrow.juz_number,
-    tomorrow.portion_start_ayah
-  );
-  const end = getAyahLocation(
-    tomorrow.juz_number,
-    tomorrow.portion_end_ayah
-  );
+function formatPortionLine(portion) {
+  const start = getAyahLocation(portion.juzNumber, portion.portionStartAyah);
+  const end = getAyahLocation(portion.juzNumber, portion.portionEndAyah);
   if (start.surahNumber === end.surahNumber) {
     return `${start.surahName} · ${start.ayahNumber}–${end.ayahNumber}`;
   }
@@ -325,32 +319,38 @@ export default function SessionSummaryScreen({ route }) {
           }
         }
 
-        const { data: tomorrow, error: tomorrowError } = await supabase
-          .from('scheduled_portions')
-          .select('juz_number, portion_start_ayah, portion_end_ayah, type, scheduled_date')
-          .eq('user_id', userId)
-          .eq('status', 'pending')
-          // Anything already due counts as well as tomorrow's own row, ordered
-          // exactly as getTodayPortion() orders it. Matching tomorrow's date
-          // exactly told anyone with a backlog that tomorrow was quiz-only,
-          // when in fact they had overdue portions waiting.
-          .lte('scheduled_date', getTomorrowDateString())
-          .order('scheduled_date', { ascending: true })
-          .order('juz_number', { ascending: true })
-          .order('portion_start_ayah', { ascending: true })
-          .limit(1)
-          .maybeSingle();
-
-        if (tomorrowError) {
-          throw new Error(tomorrowError.message);
-        }
-
+        // Asked of the same engine the agenda asks, rather than queried out of
+        // scheduled_portions here. The old query disagreed with the agenda in
+        // three ways: `.limit(1)` announced a two-juz day as one juz, it read
+        // the stored range while the agenda re-sizes every row to fit the day,
+        // and it costed nothing for the review while the agenda pays for the
+        // quiz first and gives the portion what is left. Two screens quietly
+        // disagreeing about the same day is worse than either being wrong,
+        // because nothing looks broken.
+        //
+        // This session is passed in because it has finished but is not yet
+        // scored, scoring having been moved after the corrections below. Its
+        // rows are still pending, so without this the preview would offer back
+        // the portion just recited.
         let nextTomorrowText = null;
-        if (tomorrow?.type === 'quiz_only') {
-          nextTomorrowText = 'Quiz only';
-        } else if (tomorrow) {
-          nextTomorrowText = formatTomorrowLine(tomorrow);
-        } else {
+        try {
+          const tomorrowPortions = await getPortionsForDate(
+            db,
+            userId,
+            getTomorrowDateString(),
+            isQuizOnly
+              ? null
+              : {
+                  juzNumber: sessionData.juz_number,
+                  portionStartAyah: sessionData.portion_start_ayah,
+                  portionEndAyah: sessionData.portion_end_ayah,
+                }
+          );
+
+          nextTomorrowText = tomorrowPortions.length
+            ? tomorrowPortions.map(formatPortionLine).join('\n')
+            : 'Quiz only';
+        } catch {
           nextTomorrowText = 'Quiz only';
         }
 
