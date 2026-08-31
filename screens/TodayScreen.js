@@ -108,12 +108,35 @@ function SessionRing({ fraction: rawFraction = 0, size = 80, stroke = 7 }) {
   const half = size / 2;
   const angle = fraction * 360;
 
-  const rightRotation = `${Math.min(angle, 180) - 180}deg`;
-  const leftRotation = `${Math.max(0, angle - 180)}deg`;
+  // +45 because the coloured arc below is not where you would guess.
+  //
+  // A CSS-style border mitres at the diagonals, so borderTop spans 315 to 45
+  // degrees and borderRight spans 45 to 135. Together they are a true half
+  // circle, but centred on 45 rather than on 90, so without this offset the
+  // arc sits a corner short at the top and a corner long at the bottom.
+  const ARC_OFFSET = 45;
+
+  const rightRotation = `${Math.min(angle, 180) - 180 + ARC_OFFSET}deg`;
+  const leftRotation = `${Math.max(0, angle - 180) + ARC_OFFSET}deg`;
 
   const ringBase = {
     position: 'absolute', width: size, height: size,
     borderRadius: half, borderWidth: stroke,
+  };
+
+  // Half a ring, not a whole one. This is the entire fix for a ring that used
+  // to report three states.
+  //
+  // Both rotating halves carried borderColor: primary, which colours all four
+  // sides, and a complete circle is unchanged by rotation. So the clip showed a
+  // full half ring the instant the fraction went above zero, whatever the
+  // fraction was: 1% and 49% both rendered as exactly half. Colouring only the
+  // top and right gives a 180 degree arc that rotation can actually sweep.
+  const arc = {
+    ...ringBase,
+    borderColor: 'transparent',
+    borderTopColor: colors.primary,
+    borderRightColor: colors.primary,
   };
 
   return (
@@ -121,12 +144,12 @@ function SessionRing({ fraction: rawFraction = 0, size = 80, stroke = 7 }) {
       <View style={[ringBase, { borderColor: colors.primaryDim }]} />
       {angle > 0 && (
         <View style={{ position: 'absolute', left: half, width: half, height: size, overflow: 'hidden' }}>
-          <View style={[ringBase, { left: -half, borderColor: colors.primary, transform: [{ rotate: rightRotation }] }]} />
+          <View style={[arc, { left: -half, transform: [{ rotate: rightRotation }] }]} />
         </View>
       )}
       {angle > 180 && (
         <View style={{ position: 'absolute', left: 0, width: half, height: size, overflow: 'hidden' }}>
-          <View style={[ringBase, { borderColor: colors.primary, transform: [{ rotate: leftRotation }] }]} />
+          <View style={[arc, { transform: [{ rotate: leftRotation }] }]} />
         </View>
       )}
       <Text style={{ fontFamily: fonts.regular, fontSize: 7.5, color: colors.textMuted, letterSpacing: 0.5, textTransform: 'uppercase', textAlign: 'center', lineHeight: 12 }}>{'Session\nProgress'}</Text>
