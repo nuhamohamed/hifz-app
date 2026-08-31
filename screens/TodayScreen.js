@@ -259,7 +259,7 @@ export default function TodayScreen() {
             .maybeSingle(),
           supabase
             .from('sessions')
-            .select('id, juz_number, portion_start_ayah, portion_end_ayah')
+            .select('id, juz_number, portion_start_ayah, portion_end_ayah, type')
             .eq('user_id', userId)
             .eq('status', 'complete')
             .eq('date', today)
@@ -285,8 +285,14 @@ export default function TodayScreen() {
         const isDone =
           !completedResult.error && !!completedResult.data && plan.portions.length === 0;
         setSessionDoneToday(isDone);
+        // Deliberately not filtered to revision in the query above: a finished
+        // quiz-only day is still a finished day, and excluding it there would
+        // stop the screen ever saying "all done" after one. It is filtered
+        // here instead, where the columns are actually read. A quiz-only row
+        // carries juz 1 and portion 1-1 as filler, so building a portion from
+        // it put a phantom "Recite Al-Fatihah 1-1" step on the finished agenda.
         setDonePortion(
-          isDone && completedResult.data
+          isDone && completedResult.data && completedResult.data.type !== 'quiz_only'
             ? {
                 juzNumber: completedResult.data.juz_number,
                 portionStartAyah: completedResult.data.portion_start_ayah,
