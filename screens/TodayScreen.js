@@ -73,7 +73,10 @@ function portionSummary(todayPortion) {
 function getResumeHint(pausedSession) {
   if (!pausedSession) return null;
   const phase = pausedSession.phase ?? 'pre_quiz';
-  if (phase === 'pre_quiz') return 'Resuming pre-session quiz';
+  // Named as the agenda names them. 'pre_quiz' and 'post_quiz' are the column
+  // values; nobody using the app has seen those words, and the banner is the
+  // one line telling them what the button does.
+  if (phase === 'pre_quiz') return 'Resuming mistake review';
   if (phase === 'revision') {
     // last_confirmed_ayah is a juz offset, so it has to be resolved to a real
     // surah and ayah before it means anything to a person.
@@ -87,7 +90,7 @@ function getResumeHint(pausedSession) {
       return 'Resuming revision';
     }
   }
-  if (phase === 'post_quiz') return 'Resuming post-session quiz';
+  if (phase === 'post_quiz') return 'Resuming recap quiz';
   return null;
 }
 
