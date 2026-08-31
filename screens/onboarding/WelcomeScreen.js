@@ -1,5 +1,5 @@
 import { useEffect, useRef } from 'react';
-import { Animated, Image, StyleSheet, Text, TouchableOpacity, View } from 'react-native';
+import { Animated, Easing, Image, StyleSheet, Text, TouchableOpacity, View } from 'react-native';
 import { colors, fonts, ombre, spacing } from '../../lib/theme';
 
 const LOGO = require('../../assets/logo.png');
@@ -24,30 +24,85 @@ const WORDMARK_COLORS = ombre(colors.primary, colors.brown, WORDMARK.length);
  * says the same thing more honestly.
  */
 export default function WelcomeScreen({ navigation }) {
-  const opacity = useRef(new Animated.Value(0)).current;
-  const rise = useRef(new Animated.Value(16)).current;
+  // Three stages rather than one fade, so the screen assembles itself in the
+  // order you would read it: mark, then name, then the thing to press. A single
+  // group fade puts the button in front of someone before they have looked at
+  // the logo, which is the opposite of what this screen is for.
+  const markOpacity = useRef(new Animated.Value(0)).current;
+  const markScale = useRef(new Animated.Value(0.86)).current;
+  const wordmarkOpacity = useRef(new Animated.Value(0)).current;
+  const wordmarkRise = useRef(new Animated.Value(14)).current;
+  const buttonOpacity = useRef(new Animated.Value(0)).current;
 
   useEffect(() => {
-    Animated.parallel([
-      Animated.timing(opacity, { toValue: 1, duration: 900, delay: 150, useNativeDriver: true }),
-      Animated.timing(rise, { toValue: 0, duration: 800, delay: 150, useNativeDriver: true }),
+    Animated.sequence([
+      // The mark alone, slowly. Scale starts just under 1 so it settles into
+      // place rather than appearing at its final size; easing out means most of
+      // the movement happens early and the last of it is almost imperceptible.
+      Animated.parallel([
+        Animated.timing(markOpacity, {
+          toValue: 1,
+          duration: 1400,
+          delay: 200,
+          easing: Easing.out(Easing.cubic),
+          useNativeDriver: true,
+        }),
+        Animated.timing(markScale, {
+          toValue: 1,
+          duration: 1600,
+          delay: 200,
+          easing: Easing.out(Easing.cubic),
+          useNativeDriver: true,
+        }),
+      ]),
+      Animated.parallel([
+        Animated.timing(wordmarkOpacity, {
+          toValue: 1,
+          duration: 700,
+          easing: Easing.out(Easing.quad),
+          useNativeDriver: true,
+        }),
+        Animated.timing(wordmarkRise, {
+          toValue: 0,
+          duration: 700,
+          easing: Easing.out(Easing.quad),
+          useNativeDriver: true,
+        }),
+      ]),
+      Animated.timing(buttonOpacity, {
+        toValue: 1,
+        duration: 600,
+        easing: Easing.out(Easing.quad),
+        useNativeDriver: true,
+      }),
     ]).start();
-  }, [opacity, rise]);
+  }, [markOpacity, markScale, wordmarkOpacity, wordmarkRise, buttonOpacity]);
 
   return (
     <View style={styles.screen}>
-      <Animated.View style={[styles.center, { opacity, transform: [{ translateY: rise }] }]}>
-        <Image source={LOGO} style={styles.logo} />
-        <Text style={styles.wordmark}>
+      <View style={styles.center}>
+        <Animated.Image
+          source={LOGO}
+          style={[
+            styles.logo,
+            { opacity: markOpacity, transform: [{ scale: markScale }] },
+          ]}
+        />
+        <Animated.Text
+          style={[
+            styles.wordmark,
+            { opacity: wordmarkOpacity, transform: [{ translateY: wordmarkRise }] },
+          ]}
+        >
           {WORDMARK.split('').map((letter, i) => (
             <Text key={i} style={{ color: WORDMARK_COLORS[i] }}>
               {letter}
             </Text>
           ))}
-        </Text>
-      </Animated.View>
+        </Animated.Text>
+      </View>
 
-      <Animated.View style={{ opacity }}>
+      <Animated.View style={{ opacity: buttonOpacity }}>
         <TouchableOpacity
           style={styles.primaryBtn}
           onPress={() => navigation.navigate('Age')}
@@ -78,10 +133,10 @@ const styles = StyleSheet.create({
     width: 96,
     height: 96,
     resizeMode: 'contain',
-    // Espresso rather than navy. Against the cream ground it reads as ink on
-    // paper, which suits a mushaf app better than the cobalt used for buttons,
-    // and it keeps the blue meaning "this is the thing to press".
-    tintColor: colors.espresso,
+    // Brand blue. It matches the blue end of the wordmark's ombre directly
+    // beneath it, so the mark and the first letter of the name are the same
+    // colour and read as one lockup rather than two separate objects.
+    tintColor: colors.blue,
     marginBottom: spacing.lg,
   },
   wordmark: {
