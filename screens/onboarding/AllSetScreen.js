@@ -116,7 +116,7 @@ export default function AllSetScreen({ route }) {
             summary as a perfect recitation, which is the wrong lesson. */}
         <StaggerLine delay={1300} style={styles.hintRow}>
           <View style={styles.hintCard}>
-            <Text style={styles.hintIcon}>◌</Text>
+            <Text style={styles.hintIcon}>◈</Text>
             <Text style={styles.hintText}>Tashkeel detection isn't supported yet, so a slip in a vowel ending won't be flagged. It's coming.</Text>
           </View>
         </StaggerLine>
