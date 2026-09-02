@@ -99,7 +99,7 @@ export default function AllSetScreen({ route }) {
         <StaggerLine delay={900} style={styles.hintRow}>
           <View style={styles.hintCard}>
             <Text style={styles.hintIcon}>🎙</Text>
-            <Text style={styles.hintText}>Just recite naturally. We follow along word by word no tapping, no scrolling.</Text>
+            <Text style={styles.hintText}>Just recite naturally. We follow along word by word. No tapping, no scrolling.</Text>
           </View>
         </StaggerLine>
 
@@ -107,6 +107,17 @@ export default function AllSetScreen({ route }) {
           <View style={styles.hintCard}>
             <Text style={styles.hintIcon}>✦</Text>
             <Text style={styles.hintText}>Mistakes are saved automatically and worked into future sessions.</Text>
+          </View>
+        </StaggerLine>
+
+        {/* Said here rather than discovered later. normalizeArabic() strips
+            tashkeel from both sides before comparing, so a vowel ending cannot
+            be flagged today. Someone told nothing about it reads a clean
+            summary as a perfect recitation, which is the wrong lesson. */}
+        <StaggerLine delay={1300} style={styles.hintRow}>
+          <View style={styles.hintCard}>
+            <Text style={styles.hintIcon}>◌</Text>
+            <Text style={styles.hintText}>Tashkeel detection isn't supported yet, so a slip in a vowel ending won't be flagged. It's coming.</Text>
           </View>
         </StaggerLine>
 
