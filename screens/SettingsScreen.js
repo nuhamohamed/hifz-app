@@ -4,6 +4,7 @@ import { useFocusEffect, useNavigation } from '@react-navigation/native';
 import TabBar from '../components/TabBar';
 import SettingsGroup from './settings/SettingsGroup';
 import SettingsRow from './settings/SettingsRow';
+import SettingsStaticRow from './settings/SettingsStaticRow';
 import { getCurrentUserId, isAnonymous } from '../lib/auth';
 import { supabase } from '../lib/supabase';
 import { colors, fonts, spacing } from '../lib/theme';
@@ -27,6 +28,7 @@ export default function SettingsScreen() {
   const navigation = useNavigation();
   const [settings, setSettings] = useState(null);
   const [anonymous, setAnonymous] = useState(null);
+  const [userId, setUserId] = useState(null);
   const [isLoading, setIsLoading] = useState(true);
   const [error, setError] = useState('');
 
@@ -38,6 +40,7 @@ export default function SettingsScreen() {
       (async () => {
         try {
           const userId = await getCurrentUserId();
+          if (mounted) setUserId(userId);
           const { data, error: fetchError } = await supabase
             .from('users')
             .select('session_minutes, notification_time')
@@ -105,11 +108,19 @@ export default function SettingsScreen() {
           />
         </SettingsGroup>
 
-        {anonymous === false ? (
-          <SettingsGroup title="Account">
+        <SettingsGroup
+          title="Account"
+          footer="Include this ID if you write to us about your data. With no sign-in yet, it is the only way to find your records."
+        >
+          <SettingsStaticRow
+            label="Account ID"
+            value={userId ?? 'Not available'}
+            last={anonymous !== false}
+          />
+          {anonymous === false ? (
             <SettingsRow label="Sign out" onPress={handleSignOut} last />
-          </SettingsGroup>
-        ) : null}
+          ) : null}
+        </SettingsGroup>
 
         <SettingsGroup
           footer="Dawrah keeps your progress on this phone only. There is no sign-in yet, so anything erased cannot be recovered."
