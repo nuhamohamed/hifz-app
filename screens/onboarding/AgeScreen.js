@@ -98,10 +98,6 @@ export default function AgeScreen({ navigation }) {
         <View style={styles.content}>
           <Text style={styles.step}>Step 1 of 7</Text>
           <Text style={styles.question}>How old are you?</Text>
-          <Text style={styles.sub}>
-            It helps us understand who Dawrah is for. We ask once and never show
-            it to anyone.
-          </Text>
 
           <TextInput
             style={[
@@ -152,7 +148,7 @@ const styles = StyleSheet.create({
   screen: { flex: 1, backgroundColor: colors.background },
   inner: {
     flex: 1,
-    paddingTop: 64,
+    paddingTop: 80,
     paddingHorizontal: spacing.lg,
     paddingBottom: 48,
   },
@@ -170,15 +166,8 @@ const styles = StyleSheet.create({
     fontSize: 28,
     color: colors.text,
     letterSpacing: -0.3,
-    marginBottom: spacing.sm,
-    lineHeight: 36,
-  },
-  sub: {
-    fontFamily: fonts.regular,
-    fontSize: 15,
-    color: colors.textMid,
     marginBottom: spacing.xl,
-    lineHeight: 22,
+    lineHeight: 36,
   },
   input: {
     backgroundColor: colors.card,

@@ -56,12 +56,15 @@ export default function NameScreen({ navigation }) {
       behavior={Platform.OS === 'ios' ? 'padding' : undefined}
     >
       <Animated.View style={[styles.inner, { opacity, transform: [{ translateY }] }]}>
+        <TouchableOpacity style={styles.backBtn} onPress={() => navigation.goBack()} activeOpacity={0.7}>
+          <Text style={styles.backBtnText}>← Back</Text>
+        </TouchableOpacity>
         <OnboardingProgressDots current={1} total={7} />
 
         <View style={styles.content}>
           <Text style={styles.step}>Step 2 of 7</Text>
           <Text style={styles.question}>What should we call you?</Text>
-          <Text style={styles.sub}>We'll use this to personalise your experience.</Text>
+          <Text style={styles.sub}>We'll use this to personalize your experience.</Text>
 
           <TextInput
             style={[styles.input, name.length > 0 && styles.inputFocused]}
@@ -93,10 +96,12 @@ const styles = StyleSheet.create({
   screen: { flex: 1, backgroundColor: colors.background },
   inner: {
     flex: 1,
-    paddingTop: 64,
+    paddingTop: 80,
     paddingHorizontal: spacing.lg,
     paddingBottom: 48,
   },
+  backBtn: { paddingBottom: spacing.sm, alignSelf: 'flex-start' },
+  backBtnText: { fontFamily: fonts.medium, fontSize: 14, color: colors.textMid },
   content: { flex: 1 },
   step: {
     fontFamily: fonts.medium,

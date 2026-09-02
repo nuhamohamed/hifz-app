@@ -157,7 +157,7 @@ const styles = StyleSheet.create({
     flex: 1,
     justifyContent: 'center',
     padding: spacing.lg,
-    paddingTop: 64,
+    paddingTop: 80,
   },
   title: {
     fontFamily: fonts.semiBold,

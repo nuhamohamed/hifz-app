@@ -150,7 +150,7 @@ const styles = StyleSheet.create({
     marginTop: spacing.lg,
   },
   screen: { flex: 1, backgroundColor: colors.background },
-  header: { paddingTop: 64, paddingHorizontal: spacing.lg, paddingBottom: spacing.md },
+  header: { paddingTop: 80, paddingHorizontal: spacing.lg, paddingBottom: spacing.md },
   backBtn: { paddingBottom: spacing.sm, alignSelf: 'flex-start' },
   backBtnText: { fontFamily: fonts.medium, fontSize: 14, color: colors.textMid },
   step: {
