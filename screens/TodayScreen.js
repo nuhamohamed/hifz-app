@@ -810,7 +810,13 @@ export default function TodayScreen() {
   // saw it, so listing it would be inventing a step after the fact. A session
   // paused part way keeps it: the portion is unfinished, and whether it earns a
   // recap cannot be known until it is.
-  const hasRecapStep = !quizOnly && (sessionDoneToday ? doneMistakeCount > 0 : true);
+  // Whether the agenda *on screen* involves reciting. When the next session is
+  // being previewed this is not today's answer: `quizOnly` is true precisely
+  // because today has no portion, which is the reason the preview is showing at
+  // all. Reading it directly listed a recitation step with no recap under it.
+  const agendaIsQuizOnly = showingNext ? false : quizOnly;
+
+  const hasRecapStep = !agendaIsQuizOnly && (sessionDoneToday ? doneMistakeCount > 0 : true);
 
   // Numbering follows what is actually shown rather than fixed positions.
   const firstPortionStep = hasReviewStep ? 2 : 1;
@@ -828,7 +834,7 @@ export default function TodayScreen() {
 
   const ringParts = [];
   if (hasReviewStep) ringParts.push([RING_WEIGHT.review, quizStepDone ? 1 : 0]);
-  if (!quizOnly) ringParts.push([RING_WEIGHT.recite, reciteFraction]);
+  if (!agendaIsQuizOnly) ringParts.push([RING_WEIGHT.recite, reciteFraction]);
   if (hasRecapStep) ringParts.push([RING_WEIGHT.recap, recapStepDone ? 1 : 0]);
 
   const ringWeightTotal = ringParts.reduce((sum, [w]) => sum + w, 0);
@@ -960,7 +966,7 @@ export default function TodayScreen() {
                   {hasRecapStep ? (
                     <StepCard
                       step={agendaPortions.length + firstPortionStep} icon="◆" title="Recap quiz"
-                      desc="Goes back over the mistakes you make today"
+                      desc="Goes over the mistakes from this portion"
                       iconBg={colors.parchment} iconColor={colors.accent}
                       done={recapStepDone}
                     />
