@@ -966,7 +966,7 @@ export default function TodayScreen() {
                   {hasRecapStep ? (
                     <StepCard
                       step={agendaPortions.length + firstPortionStep} icon="◆" title="Recap quiz"
-                      desc="Goes over the mistakes from this portion"
+                      desc="Goes over any mistakes"
                       iconBg={colors.parchment} iconColor={colors.accent}
                       done={recapStepDone}
                     />
