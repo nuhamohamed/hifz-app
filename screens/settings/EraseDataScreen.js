@@ -25,7 +25,7 @@ export default function EraseDataScreen({ navigation }) {
   const confirm = () => {
     Alert.alert(
       'Erase all your data?',
-      'Every session, mistake, review and memorised juz is deleted, and you go back through setup. This cannot be undone and there is no way to recover it.',
+      'Every session, mistake, review and memorized juz is deleted, and you go back through setup. This cannot be undone and there is no way to recover it.',
       [
         { text: 'Cancel', style: 'cancel' },
         {
@@ -71,7 +71,7 @@ export default function EraseDataScreen({ navigation }) {
           'Every session you have recited',
           'Every mistake and the words in it',
           'Your schedule and juz progress',
-          'The juz you told us you had memorised',
+          'The juz you told us you had memorized',
         ].map((item) => (
           <Text key={item} style={styles.listItem}>
             •  {item}

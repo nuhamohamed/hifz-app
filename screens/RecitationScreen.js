@@ -999,7 +999,7 @@ export default function RecitationScreen(props) {
           ) : !hasStarted ? (
             <Text style={styles.reciteHint}>Tap the mic to start reciting</Text>
           ) : (
-            <Text style={styles.reciteHint}>Recite from the grey portion</Text>
+            <Text style={styles.reciteHint}>Recite from the gray portion</Text>
           )}
         </View>
       ) : null}

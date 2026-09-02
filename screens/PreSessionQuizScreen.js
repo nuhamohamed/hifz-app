@@ -691,7 +691,7 @@ export default function PreSessionQuizScreen(props) {
           {!hasStarted && !hasFeedback ? (
             <Text style={styles.reciteHint}>Tap the mic to start reciting</Text>
           ) : revealedWordCount === 0 && !hasFeedback ? (
-            <Text style={styles.reciteHint}>Recite from the grey portion</Text>
+            <Text style={styles.reciteHint}>Recite from the gray portion</Text>
           ) : null}
           {mistakeMessage ? (
             <Text style={styles.mistakeMessage}>{mistakeMessage}</Text>
