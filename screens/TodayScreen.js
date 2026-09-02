@@ -236,7 +236,17 @@ export default function TodayScreen() {
 
     (async () => {
       try {
-        setPortionLoading(true);
+        // Only blank the screen when there is nothing on it yet. A refocus
+        // refreshes in place instead.
+        //
+        // This effect re-runs on every return to the tab, and the work below is
+        // four sequential network legs: the user id, then scoring any finished
+        // session on its own, then the batched reads, then the mistake count.
+        // Clearing to a spinner first meant an unchanged screen looked like it
+        // was loading for about a second every time somebody switched tabs and
+        // came back. The queries still run; the screen just keeps showing the
+        // last good answer until the new one arrives.
+        if (refreshKey === 0) setPortionLoading(true);
         setError('');
 
         const today = getTodayDateString();
