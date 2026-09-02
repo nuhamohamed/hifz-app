@@ -175,36 +175,25 @@ export default function MemorizedJuzScreen({ route, navigation }) {
     setIsSaving(true);
     try {
       const userId = await getCurrentUserId();
-      const savedJuzProgress = new Set();
 
-      const upsertJuzProgress = async (juzNumber) => {
-        if (savedJuzProgress.has(juzNumber)) return;
-        savedJuzProgress.add(juzNumber);
-        const { error: e } = await supabase.from('juz_progress').upsert(
-          // No portion size written here. This screen runs before the app has
-          // asked how many minutes they have, so any number set now is a guess.
-          // It used to write 7, which then overrode the real calculation for
-          // ever: someone asking for 30 minutes got a 90-second session, every
-          // day. Portion size is derived from session_minutes and their pace
-          // each time getTodayPortion() runs.
-          { user_id: userId, juz_number: juzNumber, pass_mistakes: 0, first_pass_complete: false },
-          { onConflict: 'user_id,juz_number' }
-        );
-        if (e) throw new Error(e.message);
-      };
+      // Collected in memory first, then written in two requests at the end.
+      // This used to await two round trips per portion inside the loops below,
+      // so someone selecting all thirty juz waited on sixty sequential calls,
+      // which is why this screen took so long to move on.
+      const portions = [];
+      const juzNumbers = new Set();
 
-      const insertPortion = async (juzNumber, surah_start, ayah_start, surah_end, ayah_end) => {
-        await upsertJuzProgress(juzNumber);
-        const { error: e } = await supabase.from('memorized_portions').insert(
-          { user_id: userId, juz_number: juzNumber, surah_start, ayah_start, surah_end, ayah_end }
-        );
-        if (e) throw new Error(e.message);
+      const insertPortion = (juzNumber, surah_start, ayah_start, surah_end, ayah_end) => {
+        juzNumbers.add(juzNumber);
+        portions.push({
+          user_id: userId, juz_number: juzNumber, surah_start, ayah_start, surah_end, ayah_end,
+        });
       };
 
       // Full juzaat
       for (const juzNumber of fullJuz) {
         const range = getJuzSurahRange(juzNumber);
-        await insertPortion(juzNumber, range.surah_start, range.ayah_start, range.surah_end, range.ayah_end);
+        insertPortion(juzNumber, range.surah_start, range.ayah_start, range.surah_end, range.ayah_end);
       }
 
       // Full surahs (within non-full juzaat)
@@ -214,7 +203,7 @@ export default function MemorizedJuzScreen({ route, navigation }) {
         if (fullJuz.has(juzNumber)) continue; // already covered
         const seg = JUZ_DATA[juzNumber - 1]?.surahs.find((s) => s.surahNumber === parseInt(surahStr));
         if (!seg) continue;
-        await insertPortion(juzNumber, seg.surahNumber, seg.startAyah, seg.surahNumber, seg.endAyah);
+        insertPortion(juzNumber, seg.surahNumber, seg.startAyah, seg.surahNumber, seg.endAyah);
       }
 
       // Partial ayah ranges
@@ -224,8 +213,27 @@ export default function MemorizedJuzScreen({ route, navigation }) {
         if (fullJuz.has(juzNumber) || fullSurah.has(surahKey)) continue;
         const seg = JUZ_DATA[juzNumber - 1]?.surahs.find((s) => s.surahNumber === parseInt(surahStr));
         if (!seg) continue;
-        await insertPortion(juzNumber, seg.surahNumber, seg.startAyah, seg.surahNumber, ayahNum);
+        insertPortion(juzNumber, seg.surahNumber, seg.startAyah, seg.surahNumber, ayahNum);
       }
+
+      // No portion size written here. This screen runs before the app has asked
+      // how many minutes they have, so any number set now is a guess. It used
+      // to write 7, which then overrode the real calculation for ever: someone
+      // asking for 30 minutes got a 90-second session, every day. Portion size
+      // is derived from session_minutes and their pace each time
+      // getTodayPortion() runs.
+      const { error: progressError } = await supabase.from('juz_progress').upsert(
+        [...juzNumbers].map((juz_number) => ({
+          user_id: userId, juz_number, pass_mistakes: 0, first_pass_complete: false,
+        })),
+        { onConflict: 'user_id,juz_number' }
+      );
+      if (progressError) throw new Error(progressError.message);
+
+      const { error: portionsError } = await supabase
+        .from('memorized_portions')
+        .insert(portions);
+      if (portionsError) throw new Error(portionsError.message);
 
       navigation.navigate('Time', { name });
     } catch (err) {
@@ -354,7 +362,7 @@ export default function MemorizedJuzScreen({ route, navigation }) {
 
 const styles = StyleSheet.create({
   screen: { flex: 1, backgroundColor: colors.background },
-  header: { paddingTop: 64, paddingHorizontal: spacing.lg, paddingBottom: spacing.md },
+  header: { paddingTop: 80, paddingHorizontal: spacing.lg, paddingBottom: spacing.md },
   backBtn: { paddingBottom: spacing.sm, alignSelf: 'flex-start' },
   backBtnText: { fontFamily: fonts.medium, fontSize: 14, color: colors.textMid },
   step: {
