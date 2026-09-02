@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from 'react';
 import { Animated, Image, Linking, StyleSheet, Text, TouchableOpacity, View } from 'react-native';
 import * as Notifications from 'expo-notifications';
 import OnboardingProgressDots from '../../components/OnboardingProgressDots';
+import { dailyReminderBody } from '../../lib/notifications';
 import { colors, fonts, spacing } from '../../lib/theme';
 
 const LOGO = require('../../assets/logo.png');
@@ -65,7 +66,7 @@ export default function NotificationsScreen({ route, navigation }) {
             </View>
             <View style={styles.notifBody}>
               <Text style={styles.notifTitle}>Dawrah · now</Text>
-              <Text style={styles.notifMsg}>Time for your revision, {name}. ✦</Text>
+              <Text style={styles.notifMsg}>{dailyReminderBody(name === 'there' ? null : name)}</Text>
             </View>
           </View>
         </View>
