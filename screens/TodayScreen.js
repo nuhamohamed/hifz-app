@@ -24,7 +24,10 @@ import {
   getTodayPlan,
   portionPagesFor,
 } from '../lib/planEngine';
-import { roundedEstimateMinutes } from '../lib/portionMath';
+import {
+  postSessionQuizMinutes,
+  roundedEstimateMinutes,
+} from '../lib/portionMath';
 import {
   cancelDailyNotification,
   cancelEveningNudge,
@@ -744,9 +747,15 @@ export default function TodayScreen() {
     if (pausedPhase === 'pre_quiz') {
       // Answering an item moves its due date off today, so the due count is
       // already the count still to do rather than the count it started with.
+      // The time is the whole day's, undiminished: nothing has been recited
+      // yet, so there is no share to take off it.
       bannerSub =
-        quizCount > 0
+        quizCount > 0 && minutesLeft
+          ? `${quizCount} question${quizCount === 1 ? '' : 's'} · about ${minutesLeft} min left`
+          : quizCount > 0
           ? `${quizCount} question${quizCount === 1 ? '' : 's'} left`
+          : minutesLeft
+          ? `about ${minutesLeft} min left`
           : null;
     } else if (pausedPhase === 'revision') {
       bannerSub =
@@ -758,8 +767,17 @@ export default function TodayScreen() {
     } else {
       // The recap. Its items come from this session's mistakes rather than from
       // a due date, so answering one does not remove it from the list and there
-      // is nothing here that can honestly be called "left".
-      bannerSub = null;
+      // is nothing here that can honestly be called a count "left".
+      //
+      // A time still can be. minutesLeft is no use here: the portion is fully
+      // recited by this phase, so it scales the day's estimate by zero and
+      // clamps to a flat "1 min" that is not a measurement of anything. The
+      // recap's own allowance is, and it is the one part of the day still
+      // ahead of them.
+      const recapMinutes = roundedEstimateMinutes(
+        postSessionQuizMinutes(summary?.pages ?? 0)
+      );
+      bannerSub = recapMinutes ? `about ${recapMinutes} min left` : null;
     }
   } else if (showingNext) {
     bannerEyebrow = 'NOTHING DUE TODAY';
@@ -776,6 +794,19 @@ export default function TodayScreen() {
             Math.round(summary.pages) === 1 ? '' : 's'
           } · ${estimateMinutes} min`
         : null;
+  } else if (quizOnly && quizCount > 0) {
+    // The eyebrow defaults to "TODAY'S PORTION", which sat above the words
+    // "Quiz only today" and contradicted them in the same breath. A day with no
+    // portion should not be announcing one.
+    bannerEyebrow = 'MISTAKE REVIEW';
+    // A quiz-only day was also the one shape of day that priced itself and then
+    // said nothing. There is no portion, so the branch above it never ran, and
+    // this line was left empty even though the estimate is real: it is costed
+    // from the ayahs actually due.
+    bannerSub =
+      estimateMinutes
+        ? `${quizCount} question${quizCount === 1 ? '' : 's'} · about ${estimateMinutes} min`
+        : `${quizCount} question${quizCount === 1 ? '' : 's'}`;
   }
 
   const bannerTitle =
