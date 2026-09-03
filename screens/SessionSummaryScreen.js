@@ -18,6 +18,7 @@ import {
   todayString as getTodayDateString,
   tomorrowString as getTomorrowDateString,
 } from '../lib/dates';
+import { normalizeArabic } from '../lib/arabicUtils';
 import { getAyahLocation, getJuzTotalAyahs, getSurahName } from '../lib/juzSurahMap';
 import { cancelEveningNudge } from '../lib/notifications';
 import { getAyah } from '../lib/quranApi';
@@ -81,7 +82,7 @@ function buildWrongWordIndices(words, wrongWords) {
   return indices;
 }
 
-function AyahTextWithHighlights({ words, wrongWords, isDisconnectedLetters, onClearWord }) {
+function AyahTextWithHighlights({ words, wrongWords, isDisconnectedLetters }) {
   if (isDisconnectedLetters) {
     const text = words.map((w) => w.textCompare).join(' ');
     return <Text style={styles.compWord}>{text}</Text>;
@@ -94,23 +95,67 @@ function AyahTextWithHighlights({ words, wrongWords, isDisconnectedLetters, onCl
     <Text style={styles.compWord}>
       {displayWords.map((word, i) =>
         wrongIndices.has(i) ? (
-          // Each flagged word clears on its own. The app cannot tell a real
-          // memory slip from the recogniser mishearing a word; the person
-          // reading the transcript beside the expected text can.
-          <Text
-            key={i}
-            style={styles.ayahWordWrong}
-            onPress={onClearWord ? () => onClearWord(word) : undefined}
-            suppressHighlighting={false}
-          >
+          // Green says "this is the word it should have been". It is not the
+          // control: what gets tapped is the red word opposite, because that is
+          // the one being disputed.
+          <Text key={i} style={styles.compCorrection}>
             {word}{' '}
           </Text>
         ) : (
-          <Text key={i} style={styles.compCorrect}>
+          <Text key={i} style={styles.compNeutral}>
             {word}{' '}
           </Text>
         )
       )}
+    </Text>
+  );
+}
+
+/**
+ * The transcript, with the words that are not in this ayah picked out.
+ *
+ * `transcribed_text` is stored as one string, so there is no index to line up
+ * against `wrong_words` and no honest way to say which heard word stood in for
+ * which expected one. What can be said is which words are not in the ayah at
+ * all, and those are the ones worth colouring. The whole line used to be red,
+ * which claimed the entire recitation was wrong when almost all of it was right.
+ */
+function TranscriptWithSlips({ text, words, onClearSlip }) {
+  const spoken = (text ?? '').trim().split(/\s+/).filter(Boolean);
+  if (spoken.length === 0) {
+    return <Text style={[styles.compWord, styles.compNeutral]}>—</Text>;
+  }
+  const expected = new Set(
+    words.map((w) => normalizeArabic(w.textCompare ?? w.textDisplay)).filter(Boolean)
+  );
+  let slipOrdinal = -1;
+  return (
+    <Text style={styles.compWord}>
+      {spoken.map((word, i) => {
+        const isSlip = !expected.has(normalizeArabic(word));
+        if (!isSlip) {
+          return (
+            <Text key={i} style={styles.compNeutral}>
+              {word}{' '}
+            </Text>
+          );
+        }
+        slipOrdinal += 1;
+        const ordinal = slipOrdinal;
+        // The red word is the claim being disputed, so the red word is what
+        // clears it. The app cannot tell a real memory slip from the recogniser
+        // mishearing a word; the person reading both columns can.
+        return (
+          <Text
+            key={i}
+            style={styles.compSlip}
+            onPress={onClearSlip ? () => onClearSlip(ordinal) : undefined}
+            suppressHighlighting={false}
+          >
+            {word}{' '}
+          </Text>
+        );
+      })}
     </Text>
   );
 }
@@ -124,49 +169,87 @@ function StatPill({ value, label, color }) {
   );
 }
 
-function MistakeCard({ mistake, onDismiss, onClearWord }) {
+/**
+ * One mistake, openable on its own.
+ *
+ * A day with several mistakes was several full comparisons stacked up, and the
+ * list scrolled past the one being looked for. Closed, a card is its ayah and
+ * its word count, which is enough to find the right one; open, it is the whole
+ * comparison. The first opens by default so the common case, a single mistake,
+ * does not cost a second tap.
+ */
+function MistakeCard({ mistake, onDismiss, onClearWord, defaultOpen }) {
+  const [open, setOpen] = useState(defaultOpen);
   const wrongCount = mistake.wrong_words?.length ?? 0;
 
   return (
     <View style={styles.mistakeCard}>
-      <View style={styles.mistakeCardHeader}>
+      <TouchableOpacity
+        style={[styles.mistakeCardHeader, open && styles.mistakeCardHeaderOpen]}
+        onPress={() => setOpen((wasOpen) => !wasOpen)}
+        activeOpacity={0.7}
+        accessibilityRole="button"
+        accessibilityState={{ expanded: open }}
+        accessibilityLabel={`${getSurahName(mistake.surah_number)} ${mistake.ayah_number}, ${
+          wrongCount === 1 ? '1 word' : `${wrongCount} words`
+        }`}
+      >
         <Text style={styles.mistakeAyahLabel}>
           {getSurahName(mistake.surah_number)} {mistake.ayah_number}
         </Text>
         {/* Tiers are gone: every mistake counts the same. The count of flagged
             words is the useful detail now, since clearing them all is what
             removes the ayah. */}
-        <View style={[styles.badge, styles.badgeConfirmed]}>
-          <Text style={[styles.badgeText, styles.badgeTextConfirmed]}>
-            {wrongCount === 1 ? '1 word' : `${wrongCount} words`}
-          </Text>
+        <View style={styles.mistakeCardHeaderEnd}>
+          <View style={[styles.badge, styles.badgeConfirmed]}>
+            <Text style={[styles.badgeText, styles.badgeTextConfirmed]}>
+              {wrongCount === 1 ? '1 word' : `${wrongCount} words`}
+            </Text>
+          </View>
+          <Text style={styles.cardChevron}>{open ? '\u25be' : '\u25b8'}</Text>
         </View>
-      </View>
-
-      <View style={styles.compRow}>
-        <View style={styles.compCol}>
-          <Text style={styles.compLabel}>What you said</Text>
-          <Text style={[styles.compWord, styles.compWrong]}>
-            {mistake.transcribed_text || '—'}
-          </Text>
-        </View>
-        <View style={styles.compDivider} />
-        <View style={styles.compCol}>
-          <Text style={styles.compLabel}>Expected</Text>
-          <AyahTextWithHighlights
-            words={mistake.words}
-            wrongWords={mistake.wrong_words}
-            isDisconnectedLetters={mistake.isDisconnectedLetters}
-            onClearWord={onClearWord}
-          />
-        </View>
-      </View>
-
-      <Text style={styles.tapHint}>Tap a red word if the app misheard you.</Text>
-
-      <TouchableOpacity style={styles.notMistakeBtn} onPress={onDismiss} activeOpacity={0.7}>
-        <Text style={styles.notMistakeBtnText}>Not a mistake at all</Text>
       </TouchableOpacity>
+
+      {open ? (
+        <>
+          <View style={styles.compRow}>
+            <View style={styles.compCol}>
+              <Text style={styles.compLabel}>What you said</Text>
+              <TranscriptWithSlips
+                text={mistake.transcribed_text}
+                words={mistake.words}
+                onClearSlip={(ordinal) => {
+                  // Both lists run in recitation order, so the nth word heard
+                  // that is not in the ayah answers to the nth word flagged.
+                  // Where the counts disagree, the last flag is the safe one to
+                  // clear: it never clears a flag the tap was not aimed at.
+                  const flagged = mistake.wrong_words ?? [];
+                  if (flagged.length === 0) return;
+                  onClearWord(flagged[Math.min(ordinal, flagged.length - 1)]);
+                }}
+              />
+            </View>
+            <View style={styles.compDivider} />
+            <View style={styles.compCol}>
+              <Text style={styles.compLabel}>Expected</Text>
+              <AyahTextWithHighlights
+                words={mistake.words}
+                wrongWords={mistake.wrong_words}
+                isDisconnectedLetters={mistake.isDisconnectedLetters}
+              />
+            </View>
+          </View>
+
+          {/* Red is only on the word actually said wrong, green on the word it
+              should have been. Red is the disputed claim, so red is the one
+              that clears. */}
+          <Text style={styles.tapHint}>Tap a red word if the app misheard you.</Text>
+
+          <TouchableOpacity style={styles.notMistakeBtn} onPress={onDismiss} activeOpacity={0.7}>
+            <Text style={styles.notMistakeBtnText}>Not a mistake at all</Text>
+          </TouchableOpacity>
+        </>
+      ) : null}
     </View>
   );
 }
@@ -407,10 +490,6 @@ export default function SessionSummaryScreen({ route }) {
 
   // Tiers are dropped, so there is one count, not two.
   const mistakeCount = mistakes.length;
-  // Not the same as mistakesOpen. Clearing the last mistake off an open list
-  // leaves the flag true with nothing to show, and the tick would stay hidden
-  // on a screen that has just become a clean one.
-  const listExpanded = mistakesOpen && mistakeCount > 0;
 
   /**
    * Stops an ayah being a mistake at all: removes the record that feeds the juz
@@ -571,14 +650,15 @@ export default function SessionSummaryScreen({ route }) {
           </View>
         ) : (
           <View style={styles.successSection}>
-            {/* The tick is decoration and it is the tallest thing up here. With
-                the list open, the room it takes is room the list cannot scroll
-                in, so it stands down until the list is closed again. */}
-            {listExpanded ? null : (
-              <Animated.View style={[styles.checkCircle, { transform: [{ scale: checkScale }] }]}>
-                <Text style={styles.checkIcon}>✓</Text>
-              </Animated.View>
-            )}
+            {/* The tick used to stand down while the list was open, to hand the
+                list the room it takes. That was solving a problem the list does
+                not have: it scrolls, so a shorter region shows fewer mistakes
+                rather than losing any. What it cost was the one element that
+                says the session is finished, on the screen whose whole job is
+                to say so, and only on the days there was something to review. */}
+            <Animated.View style={[styles.checkCircle, { transform: [{ scale: checkScale }] }]}>
+              <Text style={styles.checkIcon}>✓</Text>
+            </Animated.View>
             {/* The tab is opened on days after the session as well, so the
                 heading names the day it belongs to rather than announcing a
                 completion that may have happened last week. */}
@@ -624,6 +704,7 @@ export default function SessionSummaryScreen({ route }) {
                   <MistakeCard
                     key={`${mistake.surah_number}-${mistake.ayah_number}-${index}`}
                     mistake={mistake}
+                    defaultOpen={index === 0}
                     onDismiss={() => handleDismissMistake(index, mistake)}
                     onClearWord={(word) => handleClearWord(index, mistake, word)}
                   />
@@ -760,8 +841,11 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     justifyContent: 'space-between',
     alignItems: 'center',
-    marginBottom: spacing.sm,
   },
+  // Only an open card needs the gap; a closed one is the header and nothing else.
+  mistakeCardHeaderOpen: { marginBottom: spacing.sm },
+  mistakeCardHeaderEnd: { flexDirection: 'row', alignItems: 'center', gap: spacing.sm },
+  cardChevron: { fontSize: 14, color: colors.textMuted },
   mistakeAyahLabel: { fontFamily: fonts.semiBold, fontSize: 15, color: colors.text },
   tapHint: {
     fontFamily: fonts.regular,
@@ -789,10 +873,12 @@ const styles = StyleSheet.create({
     marginBottom: 4, textTransform: 'uppercase', letterSpacing: 0.6,
   },
   compWord: { fontFamily: 'UthmanicHafs', fontSize: 18, writingDirection: 'rtl', lineHeight: 30 },
-  compWrong: { color: colors.error },
-  compCorrect: { color: colors.success },
-
-  ayahWordWrong: { color: colors.error },
+  // Both columns read as plain text, and colour is spent only on the one word
+  // the comparison is about: red for what was said, green for what it should
+  // have been. Colouring a whole column made the difference impossible to spot.
+  compNeutral: { color: colors.text },
+  compSlip: { color: colors.error },
+  compCorrection: { color: colors.success },
 
   badge: { borderRadius: 8, paddingVertical: 4, paddingHorizontal: 10 },
   badgeSlip: { backgroundColor: colors.accentLight },
@@ -818,15 +904,23 @@ const styles = StyleSheet.create({
   cleanIcon: { fontSize: 18, color: colors.success },
   cleanText: { fontFamily: fonts.medium, fontSize: 14, color: colors.success, flex: 1 },
 
+  // Brown, not blue: the button under it is the primary blue, and two filled
+  // blue blocks stacked read as one control split in two.
   nextCard: {
-    backgroundColor: colors.primary, borderRadius: 16, padding: spacing.md,
+    backgroundColor: colors.brown, borderRadius: 16, padding: spacing.md,
     marginBottom: spacing.md,
   },
   nextLabel: {
-    fontFamily: fonts.semiBold, fontSize: 10, color: 'rgba(255,255,255,0.55)',
+    fontFamily: fonts.semiBold, fontSize: 10, color: 'rgba(255,255,255,0.6)',
     letterSpacing: 1.2, textTransform: 'uppercase', marginBottom: 4,
   },
-  nextTitle: { fontFamily: fonts.semiBold, fontSize: 20, color: colors.white, letterSpacing: -0.2 },
+  // Optical, not layout: both lines are laid out at the same x, but measured in
+  // ink the eyebrow's T starts 0.1px in and the portion's A starts 1.6px in, so
+  // the two read as stepped. The nudge puts them on one edge.
+  nextTitle: {
+    fontFamily: fonts.semiBold, fontSize: 20, color: colors.white,
+    letterSpacing: -0.2, marginLeft: -1.5,
+  },
 
   error: {
     fontFamily: fonts.regular,

@@ -2,6 +2,7 @@
   "expo": {
     "name": "Dawrah",
     "slug": "dawrah",
+    "owner": "nuhamohameds-team",
     "scheme": "dawrah",
     "version": "1.0.0",
     "orientation": "portrait",
@@ -20,7 +21,6 @@
         "ITSAppUsesNonExemptEncryption": false
       },
       "bundleIdentifier": "ai.dawrah.app",
-      "buildNumber": "3",
       "appleTeamId": "FZ75DRL752",
       "privacyManifests": {
         "NSPrivacyTracking": false,
@@ -67,7 +67,8 @@
             ]
           }
         ]
-      }
+      },
+      "buildNumber": "4"
     },
     "android": {
       "permissions": [
@@ -111,6 +112,11 @@
           "organization": "dawrah"
         }
       ]
-    ]
+    ],
+    "extra": {
+      "eas": {
+        "projectId": "d185f302-4fee-4ea8-a0ff-33e00b011577"
+      }
+    }
   }
 }

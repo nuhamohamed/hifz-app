@@ -1,7 +1,7 @@
 {
   "cli": {
     "version": ">= 22.0.0",
-    "appVersionSource": "remote"
+    "appVersionSource": "local"
   },
   "build": {
     "development": {
@@ -18,7 +18,6 @@
       }
     },
     "production": {
-      "autoIncrement": true,
       "ios": {
         "resourceClass": "m-medium"
       }
@@ -29,7 +28,7 @@
       "ios": {
         "appleId": "REPLACE_WITH_YOUR_APPLE_ID_EMAIL",
         "ascAppId": "REPLACE_AFTER_CREATING_THE_APP_IN_APP_STORE_CONNECT",
-        "appleTeamId": "REPLACE_WITH_YOUR_TEAM_ID"
+        "appleTeamId": "FZ75DRL752"
       }
     }
   }

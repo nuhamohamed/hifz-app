@@ -18,15 +18,18 @@ import { normalizeArabic } from '../lib/arabicUtils';
 import { getAyah } from '../lib/quranApi';
 import { supabase } from '../lib/supabase';
 import {
+  ListeningCancelled,
   startListening,
   stopListening,
   resetUtterance,
   resumeListening,
+  rewindUtterance,
 } from '../lib/realtimeTranscription';
-import { createLiveJudge } from '../lib/liveWordJudge';
+import { createLiveJudge, findAyahRestart } from '../lib/liveWordJudge';
 import { useSQLiteContext } from 'expo-sqlite';
 import MushafPage from '../components/MushafPage';
 import { getPageForAyah } from '../lib/mushafDb';
+import { reportHandledError } from '../lib/sentry';
 import { colors, fonts, radius, spacing } from '../lib/theme';
 
 // Remove consecutive duplicate words (stutters) before passing to the live judge.
@@ -187,6 +190,18 @@ export default function RecitationScreen(props) {
   // Ref mirror of liveText, so a skip can hand the real spoken text to
   // onAyahComplete rather than an empty string.
   const liveTextRef = useRef('');
+  // Wrong words a restart of this ayah must not erase: the slip that sent the
+  // reciter back to the top, plus anything Reveal or skip detection put there.
+  // Everything else standing at that moment came from aligning an abandoned
+  // half-attempt against the whole ayah, and was never really recited wrong.
+  const stickyWrongIndicesRef = useRef(new Set());
+  const stickyLetterDiffRef = useRef({});
+  // Transcript of the attempts a restart threw away, kept only so the logged
+  // mistake still shows everything that was actually said.
+  const discardedAttemptsRef = useRef('');
+  // True from a restart until the next commit lands, so the words re-covered
+  // in one breath are not read as a jump over words that were skipped.
+  const justRestartedRef = useRef(false);
   // ──────────────────────────────────────────────────────────────────────────
 
   const [skippedWordIndices, setSkippedWordIndices] = useState([]);
@@ -287,6 +302,9 @@ export default function RecitationScreen(props) {
     if (!words || wordIndex >= words.length) return;
     accumulatedWrongIndicesRef.current.add(wordIndex);
     letterDiffRef.current[wordIndex] = null;
+    // Asked for outright, so a restart does not take it back.
+    stickyWrongIndicesRef.current.add(wordIndex);
+    stickyLetterDiffRef.current[wordIndex] = null;
     setLiveWrongIndices([...accumulatedWrongIndicesRef.current]);
     setLiveLetterDiff((prev) => ({ ...prev, [wordIndex]: null }));
     revealedWordCountRef.current = wordIndex + 1;
@@ -361,6 +379,10 @@ export default function RecitationScreen(props) {
         return norm ? norm.split(/\s+/).filter(Boolean) : [];
       },
       onMistake: () => {
+        // Freeze the board as it stands: this is the slip itself, and it
+        // survives however many times the ayah is started over afterwards.
+        stickyWrongIndicesRef.current = new Set(accumulatedWrongIndicesRef.current);
+        stickyLetterDiffRef.current = { ...letterDiffRef.current };
         if (ayahDataRef.current.isDisconnectedLetters) return;
         buzzAndTone();
         showMistakeMessage();
@@ -394,6 +416,46 @@ export default function RecitationScreen(props) {
     });
   }, [buzzAndTone, showMistakeMessage]);
 
+  /**
+   * The reciter has gone back to the first word of the ayah they are on.
+   *
+   * Starting an ayah again after a slip is how people actually correct
+   * themselves, and it used to be punished twice over. The abandoned attempt
+   * stayed in the transcript, so the second run at the opening had to be
+   * aligned as extra words and half the ayah came back red; and the matcher,
+   * still waiting on the word that was fumbled, sat through the whole re-read
+   * without advancing, which counts as a stall and puts the skip button out.
+   *
+   * The slip that caused the restart still stands. Nothing the restart itself
+   * produces does.
+   *
+   * @param {number} restartAt index of the new attempt in the live word stream
+   */
+  const handleAyahRestart = useCallback((restartAt) => {
+    // restartAt counts the unstable partial tail too, which the recogniser has
+    // not committed and so cannot rewind. rewindUtterance clamps to what it
+    // actually holds, which is the whole abandoned attempt either way.
+    const { discarded } = rewindUtterance(restartAt);
+    discardedAttemptsRef.current = [discardedAttemptsRef.current, discarded]
+      .filter(Boolean)
+      .join(' ');
+
+    accumulatedWrongIndicesRef.current = new Set(stickyWrongIndicesRef.current);
+    letterDiffRef.current = { ...stickyLetterDiffRef.current };
+    setLiveWrongIndices([...accumulatedWrongIndicesRef.current]);
+    setLiveLetterDiff({ ...letterDiffRef.current });
+
+    // The matcher is back at the top of the ayah, so the next commit is a
+    // fresh start rather than another commit that failed to move.
+    justRestartedRef.current = true;
+    prevMatchPosRef.current = 0;
+    stalledCommitsRef.current = 0;
+    setCanSkip(false);
+
+    // Words already shown stay shown. They have been read, and pulling them
+    // back off the page mid-recitation helps nobody.
+  }, []);
+
   const onAyahComplete = useCallback(
     async (accumulatedText) => {
       try {
@@ -426,6 +488,10 @@ export default function RecitationScreen(props) {
           letterDiffRef.current = {};
           stalledCommitsRef.current = 0;
           liveTextRef.current = '';
+          stickyWrongIndicesRef.current = new Set();
+          stickyLetterDiffRef.current = {};
+          discardedAttemptsRef.current = '';
+          justRestartedRef.current = false;
           if (mistakeMessageTimeoutRef.current) {
             clearTimeout(mistakeMessageTimeoutRef.current);
             mistakeMessageTimeoutRef.current = null;
@@ -539,13 +605,18 @@ export default function RecitationScreen(props) {
             ...locationAt(currentAyahIndexRef.current),
             tier: classifyMistakeTier(wrongIndices, letterDiffByIndex),
             wrong_words: wrongIndices.map((i) => words[i]?.textDisplay ?? ''),
-            transcribed_text: accumulatedText,
+            // Attempts abandoned by a restart are prepended, so the record
+            // still shows the slip even though it was judged separately.
+            transcribed_text: [discardedAttemptsRef.current, accumulatedText]
+              .filter(Boolean)
+              .join(' '),
           };
         }
 
         await advanceAyah({ confirmedEntry, mistakeInsert });
       } catch (err) {
         resumeListening();
+        reportHandledError('recitation.ayahComplete', err);
         setError(err?.message ?? 'Failed to process ayah completion.');
       }
     },
@@ -650,6 +721,7 @@ export default function RecitationScreen(props) {
         // rather than inlined, so the connection logic still exists once.
       } catch (err) {
         if (mounted) {
+          reportHandledError('recitation.startSession', err);
           setError(err.message ?? 'Failed to start recitation session.');
         }
       } finally {
@@ -710,6 +782,25 @@ export default function RecitationScreen(props) {
           }
           // Going-back window ended — user is speaking current ayah again.
           isGoingBackRef.current = false;
+
+          // Only look for a restart once something has already gone wrong on
+          // this ayah. An ayah that repeats its own opening would otherwise
+          // look like a restart in the middle of a flawless recitation.
+          if (accumulatedWrongIndicesRef.current.size > 0) {
+            const spoken = normalizeArabic(text).split(/\s+/).filter(Boolean);
+            const restartAt = findAyahRestart(spoken, getExpectedWords());
+            if (restartAt > 0) {
+              handleAyahRestart(restartAt);
+              // This update still carries the abandoned attempt in front of the
+              // new one. The next partial arrives without it.
+              const retry = spoken.slice(restartAt).join(' ');
+              liveJudgeRef.current?.update(dedupeConsecutiveWords(retry));
+              liveTextRef.current = retry;
+              setLiveText(retry);
+              return;
+            }
+          }
+
           liveJudgeRef.current?.update(dedupeConsecutiveWords(text));
           liveTextRef.current = text;
           setLiveText(text);
@@ -722,12 +813,21 @@ export default function RecitationScreen(props) {
             // matchPos advanced — user is on current ayah.
             isGoingBackRef.current = false;
 
-            if (matchedCount > prev + 1) {
+            // After a restart the first commit re-covers ground in one go,
+            // which is a jump in the numbers but not in the recitation.
+            const afterRestart = justRestartedRef.current;
+            justRestartedRef.current = false;
+
+            if (!afterRestart && matchedCount > prev + 1) {
               // Jump of >1: skipped word(s) — reveal in red immediately.
               // spoken = null signals the whole word was omitted (no partial diff).
               const skipStart = prev;
               for (let i = skipStart; i < matchedCount - 1; i++) {
                 accumulatedWrongIndicesRef.current.add(i);
+                letterDiffRef.current[i] = null;
+                // Words genuinely passed over. A restart does not undo them.
+                stickyWrongIndicesRef.current.add(i);
+                stickyLetterDiffRef.current[i] = null;
               }
               setLiveWrongIndices([...accumulatedWrongIndicesRef.current]);
               setLiveLetterDiff((existing) => {
@@ -757,6 +857,7 @@ export default function RecitationScreen(props) {
           }
         },
         onError: (message) => {
+          reportHandledError('recitation.transcription', message);
           if (mounted) setError(message);
         },
         onAutoStop: (reason) => {
@@ -764,6 +865,11 @@ export default function RecitationScreen(props) {
         },
       });
       } catch (err) {
+        // The screen turned the microphone off, or started again, before this
+        // attempt finished. Nothing failed and nobody is waiting on it, so it
+        // is neither an error to show nor one to report.
+        if (err instanceof ListeningCancelled) return;
+        reportHandledError('recitation.startListening', err);
         if (mounted) setError(err.message ?? 'Could not start listening.');
       }
     })();
@@ -779,6 +885,7 @@ export default function RecitationScreen(props) {
     listenAttempt,
     getExpectedWords,
     onAyahComplete,
+    handleAyahRestart,
     buzzAndTone,
     showMistakeMessage,
   ]);
@@ -992,12 +1099,19 @@ export default function RecitationScreen(props) {
             <Text style={styles.skipBtnText}>Skip this ayah</Text>
           </TouchableOpacity>
         </View>
-      ) : !hasStarted || (currentAyahIndex === 0 && revealedWordCount === 0) || mistakeMessage ? (
+      ) : !hasStarted
+        || (currentAyahIndex === initialAyahIndex && revealedWordCount === 0)
+        || mistakeMessage ? (
         <View style={styles.feedbackPanel}>
           {mistakeMessage ? (
             <Text style={styles.feedbackMessage}>{mistakeMessage}</Text>
           ) : !hasStarted ? (
             <Text style={styles.reciteHint}>Tap the mic to start reciting</Text>
+          ) : resumeFromOffset > startOffset ? (
+            /* Resuming, so there is no grey cue to point at: the ayahs already
+               recited are behind them in black and the next one is where they
+               stopped. */
+            <Text style={styles.reciteHint}>Recite from where you left off</Text>
           ) : (
             <Text style={styles.reciteHint}>Recite from the gray portion</Text>
           )}
@@ -1019,22 +1133,29 @@ export default function RecitationScreen(props) {
             <ActivityIndicator size="small" color={colors.accent} />
           ) : (
             <TouchableOpacity
-              onPress={() => setHasStarted(true)}
-              disabled={hasStarted}
+              onPress={() => setHasStarted((wasStarted) => !wasStarted)}
               activeOpacity={0.7}
               accessibilityRole="button"
-              accessibilityLabel={hasStarted ? 'Listening' : 'Start reciting'}
+              accessibilityState={{ selected: hasStarted }}
+              accessibilityLabel={hasStarted ? 'Stop listening' : 'Start reciting'}
             >
               <View style={styles.micWrap}>
                 <Animated.View
-                  style={[styles.micRing, { opacity: isListening ? pulseAnim : 0.15, transform: [{ scale: isListening ? pulseAnim : 1 }] }]}
+                  style={[
+                    styles.micRing,
+                    hasStarted && styles.micRingLive,
+                    { opacity: isListening ? pulseAnim : 0.15, transform: [{ scale: isListening ? pulseAnim : 1 }] },
+                  ]}
                 />
-                <View style={[styles.micCircle, !hasStarted && styles.micCircleIdle]}>
+                <View style={[styles.micCircle, hasStarted && styles.micCircleLive]}>
                   <Text style={styles.micEmoji}>🎙</Text>
                 </View>
               </View>
             </TouchableOpacity>
           )}
+          {/* Under the microphone it is labelling, and the slot is held open
+              either way so the bar does not change height as it toggles. */}
+          <Text style={[styles.micLabel, !isListening && styles.micLabelOff]}>Listening</Text>
         </View>
 
         <TouchableOpacity
@@ -1216,17 +1337,24 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
   },
   micWrap: { alignItems: 'center', justifyContent: 'center', width: 48, height: 48 },
+  micLabel: {
+    fontFamily: fonts.medium, fontSize: 11, color: colors.accent, marginTop: 2,
+  },
+  micLabelOff: { opacity: 0 },
   micRing: {
     position: 'absolute', width: 42, height: 42,
     borderRadius: 21, backgroundColor: colors.primaryDim,
   },
+  micRingLive: { backgroundColor: colors.accentLight },
+  // Blue is the resting control, the same blue as every other thing on the
+  // screen that is waiting to be pressed. Orange means the microphone is open,
+  // which is the one state worth spending the accent colour on: pressing it
+  // again closes it and the blue comes back.
   micCircle: {
     width: 34, height: 34, borderRadius: 17,
     backgroundColor: colors.primary, alignItems: 'center', justifyContent: 'center',
   },
-  // Untapped, it reads as a control waiting to be pressed rather than an
-  // indicator of something already happening.
-  micCircleIdle: {
+  micCircleLive: {
     backgroundColor: colors.accent,
   },
   micEmoji: { fontSize: 16 },
