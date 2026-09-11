@@ -715,7 +715,12 @@ export default function PreSessionQuizScreen(props) {
         // attempt finished. Nothing failed and nobody is waiting on it, so it
         // is neither an error to show nor one to report.
         if (err instanceof ListeningCancelled) return;
-        reportHandledError('preQuiz.startListening', err);
+        reportHandledError('preQuiz.startListening', err, {
+          // The reason the recorder actually had, which its own error
+          // message throws away. Without it every cause looks the same.
+          nativeReason: err?.nativeReason ?? null,
+          cause: err?.cause?.message ?? null,
+        });
         if (mounted) setError(err.message ?? 'Could not start listening.');
       }
     })();
