@@ -25,7 +25,7 @@ import {
   resumeListening,
   rewindUtterance,
 } from '../lib/realtimeTranscription';
-import { createLiveJudge, findAyahRestart } from '../lib/liveWordJudge';
+import { createLiveJudge, findAyahRestart, hasSelfCorrectedSlip } from '../lib/liveWordJudge';
 import { useSQLiteContext } from 'expo-sqlite';
 import MushafPage from '../components/MushafPage';
 import { getPageForAyah } from '../lib/mushafDb';
@@ -66,21 +66,21 @@ function isGoingBack(text, confirmedAyahWords) {
   return false;
 }
 
-// Tiers are dropped: every mistake now counts equally everywhere. The app
-// reveals the correct word the instant you err, so there is no unaided
-// recovery to observe and the slip-versus-gap split was guesswork.
-//
-// mistakes.tier is NOT NULL, so something has to go in it. This still writes
-// the old severity heuristic, which drives nothing. It is due to be repurposed
-// to record whether Reveal was pressed, which is a real signal worth having a
-// few weeks of beta data on.
-function classifyMistakeTier(wrongIndices, letterDiffByIndex) {
-  if (wrongIndices.length >= 2) return 2;
-  // spoken === null means the word was skipped rather than mispronounced.
-  const skippedEntirely = wrongIndices.some(
-    (i) => (letterDiffByIndex ?? {})[i] == null
-  );
-  return skippedEntirely ? 2 : 1;
+// True when 3+ of the spoken words appear in order inside `expected`, or when
+// everything said so far does and there are simply fewer than three of them.
+// The same sequential test isGoingBack uses, pointed at one word list.
+function runsThrough(spoken, expected) {
+  if (spoken.length === 0 || expected.length === 0) return false;
+  let idx = 0;
+  let streak = 0;
+  for (const w of spoken) {
+    while (idx < expected.length && expected[idx] !== w) idx++;
+    if (idx >= expected.length) break;
+    streak++;
+    idx++;
+    if (streak >= 3) return true;
+  }
+  return streak > 0 && streak === spoken.length;
 }
 
 /**
@@ -133,13 +133,19 @@ export default function RecitationScreen(props) {
   const [currentAyahDisplay, setCurrentAyahDisplay] = useState('');
   const [isLoading, setIsLoading] = useState(true);
   const [error, setError] = useState('');
-  // Set when the microphone closed itself: 90 seconds of silence, or two hours
+  // Set when the microphone closed itself: two minutes of silence, or two hours
   // in one sitting. Null while listening.
   const [micClosedReason, setMicClosedReason] = useState(null);
   // Nothing is listening until the mic is tapped. The microphone used to open
   // itself on arrival, which meant the screen asked people to recite while it
   // was already recording, and gave them no way to get ready first.
   const [hasStarted, setHasStarted] = useState(false);
+  // True once the microphone is genuinely open. The screen used to go live the
+  // instant the mic was tapped, while the token fetch and the connection still
+  // had a second or two to run, so it told people to recite before anything
+  // could hear them. The audio is held from this moment on, so this is the
+  // honest point to say so.
+  const [micReady, setMicReady] = useState(false);
   // Bumped to restart listening after the microphone closed itself. The whole
   // setup lives in one effect, so re-running it is the honest way back in
   // rather than duplicating the connection logic.
@@ -196,12 +202,19 @@ export default function RecitationScreen(props) {
   // half-attempt against the whole ayah, and was never really recited wrong.
   const stickyWrongIndicesRef = useRef(new Set());
   const stickyLetterDiffRef = useRef({});
+  // The latest verdict from each source, index → spoken word (null = the word
+  // was not said at all). Held whole, and replaced rather than added to, so a
+  // word the aligner stops objecting to loses its mark. The old code only ever
+  // added, which made the first doubt about a word permanent for the ayah.
+  const commitFaultsRef = useRef(new Map());
+  const partialFaultsRef = useRef(new Map());
+  // Words the reciter asked to be shown. The only marks the end-of-ayah
+  // reconciliation cannot overturn: they were not a judgement about the
+  // recitation, so there is nothing for a later alignment to disagree with.
+  const revealedWrongRef = useRef(new Set());
   // Transcript of the attempts a restart threw away, kept only so the logged
   // mistake still shows everything that was actually said.
   const discardedAttemptsRef = useRef('');
-  // True from a restart until the next commit lands, so the words re-covered
-  // in one breath are not read as a jump over words that were skipped.
-  const justRestartedRef = useRef(false);
   // ──────────────────────────────────────────────────────────────────────────
 
   const [skippedWordIndices, setSkippedWordIndices] = useState([]);
@@ -296,20 +309,44 @@ export default function RecitationScreen(props) {
 
   finishRevisionRef.current = finishRevisionAndNavigate;
 
+  /**
+   * Recompute what is marked wrong from the three things that can mark it: the
+   * frozen slip and anything asked for outright (sticky), the last committed
+   * alignment, and the last live one. Sticky is applied last-resort-first
+   * because it is a record of what happened, not an opinion that can change.
+   */
+  const applyMarks = useCallback(() => {
+    const next = new Set(stickyWrongIndicesRef.current);
+    const diff = { ...stickyLetterDiffRef.current };
+    for (const [index, spoken] of commitFaultsRef.current) {
+      next.add(index);
+      diff[index] = spoken;
+    }
+    for (const [index, spoken] of partialFaultsRef.current) {
+      next.add(index);
+      diff[index] = spoken;
+    }
+    // Refs updated synchronously so onAyahComplete can read the final diff
+    // before React flushes the state below.
+    accumulatedWrongIndicesRef.current = next;
+    letterDiffRef.current = diff;
+    setLiveWrongIndices([...next]);
+    setLiveLetterDiff(diff);
+    return next;
+  }, []);
+
   const revealNextWord = useCallback(() => {
     const wordIndex = revealedWordCountRef.current;
     const words = ayahDataRef.current?.words;
     if (!words || wordIndex >= words.length) return;
-    accumulatedWrongIndicesRef.current.add(wordIndex);
-    letterDiffRef.current[wordIndex] = null;
-    // Asked for outright, so a restart does not take it back.
+    // Asked for outright, so neither a restart nor a later re-solve takes it back.
+    revealedWrongRef.current.add(wordIndex);
     stickyWrongIndicesRef.current.add(wordIndex);
     stickyLetterDiffRef.current[wordIndex] = null;
-    setLiveWrongIndices([...accumulatedWrongIndicesRef.current]);
-    setLiveLetterDiff((prev) => ({ ...prev, [wordIndex]: null }));
+    applyMarks();
     revealedWordCountRef.current = wordIndex + 1;
     setRevealedWordCount(wordIndex + 1);
-  }, []);
+  }, [applyMarks]);
 
   const getExpectedWords = useCallback(() => {
     if (ayahDataRef.current?.isDisconnectedLetters) return [];
@@ -365,6 +402,59 @@ export default function RecitationScreen(props) {
     }
   }, []);
 
+  /**
+   * Has the reciter doubled back to an ayah they already finished?
+   *
+   * Entering the state also clears any marks this ayah picked up from at or
+   * after the current position, because those came from words that were never
+   * meant for this ayah in the first place.
+   *
+   * Used from two places. The partials see it first and most often, since they
+   * carry the running text and arrive several times a second. The committed
+   * words then ask again before being judged, and a commit on its own is often
+   * only two or three words, too few to recognise: that is why an already
+   * open going-back state counts as an answer on its own. The partials are the
+   * detector, this is the memory of what they found.
+   */
+  /**
+   * Do these words fit the ayah currently on screen?
+   *
+   * Matched against the whole ayah rather than from the position reached, so
+   * that someone starting the ayah again from its first word reads as working
+   * on this ayah, which it is, and goes to the restart handling that exists
+   * for it rather than being taken for a jump back to an earlier one.
+   */
+  const matchesCurrentAyah = useCallback((text) => {
+    const spoken = normalizeArabic(text ?? '').split(/\s+/).filter(Boolean);
+    return runsThrough(spoken, getExpectedWords());
+  }, [getExpectedWords]);
+
+  const checkGoingBack = useCallback((text) => {
+    // The ayah in front of them wins any tie.
+    //
+    // The Qur'an repeats itself by design, and a refrain makes the test below
+    // fire on a perfectly ordinary recitation: Ar-Rahman 16 is word for word
+    // Ar-Rahman 13, so reciting 16 looks exactly like doubling back to 13.
+    // That was survivable while going-back only suppressed marks. It is not
+    // survivable now that it drops the words: the ayah on screen would never
+    // see them, never complete, and the reciter would be stuck on an ayah they
+    // were reciting correctly. So if the words fit the ayah they are on, that
+    // is the reading, whatever else they also resemble.
+    if (matchesCurrentAyah(text)) return false;
+    if (!isGoingBack(text, confirmedAyahWordsRef.current)) return false;
+    if (!isGoingBackRef.current) {
+      isGoingBackRef.current = true;
+      // Scrub indices at or beyond current matchPos — those came from
+      // going-back words misread against this ayah, not real mistakes.
+      const pos = prevMatchPosRef.current;
+      [...accumulatedWrongIndicesRef.current].forEach((i) => {
+        if (i >= pos) accumulatedWrongIndicesRef.current.delete(i);
+      });
+      setLiveWrongIndices([...accumulatedWrongIndicesRef.current]);
+    }
+    return true;
+  }, [matchesCurrentAyah]);
+
   const showMistakeMessage = useCallback(() => {
     const ayahLabel = currentAyahIndexRef.current + 1;
     if (mistakeMessageTimeoutRef.current) clearTimeout(mistakeMessageTimeoutRef.current);
@@ -390,22 +480,15 @@ export default function RecitationScreen(props) {
       onMarksChange: (entries) => {
         // entries: [{index, status, spoken}] — discard if going-back detected.
         if (isGoingBackRef.current) return;
-        entries.forEach(({ index }) => accumulatedWrongIndicesRef.current.add(index));
-        const allWrong = [...accumulatedWrongIndicesRef.current];
-        setLiveWrongIndices(allWrong);
-        // Update ref synchronously so onAyahComplete can read the final diff
-        // before React flushes the async setState below.
-        entries.forEach(({ index, spoken }) => {
-          letterDiffRef.current[index] = spoken ?? null;
-        });
-        // Store spoken word per index for letter-level diff rendering.
-        setLiveLetterDiff((prev) => {
-          const next = { ...prev };
-          entries.forEach(({ index, spoken }) => { next[index] = spoken ?? null; });
-          return next;
-        });
+        // Replaced wholesale, not merged: the judge re-solves the whole ayah on
+        // every partial, so a slot it no longer objects to must be able to lose
+        // its mark. Anything that should outlive a re-solve lives in sticky.
+        partialFaultsRef.current = new Map(
+          entries.map(({ index, spoken }) => [index, spoken ?? null])
+        );
+        const allWrong = applyMarks();
         // Reveal any wrong word not yet reached by matchPos so it shows red now.
-        if (allWrong.length > 0) {
+        if (allWrong.size > 0) {
           const maxWrong = Math.max(...allWrong);
           if (maxWrong >= revealedWordCountRef.current) {
             revealedWordCountRef.current = maxWrong + 1;
@@ -414,7 +497,7 @@ export default function RecitationScreen(props) {
         }
       },
     });
-  }, [buzzAndTone, showMistakeMessage]);
+  }, [applyMarks, buzzAndTone, showMistakeMessage]);
 
   /**
    * The reciter has gone back to the first word of the ayah they are on.
@@ -440,21 +523,19 @@ export default function RecitationScreen(props) {
       .filter(Boolean)
       .join(' ');
 
-    accumulatedWrongIndicesRef.current = new Set(stickyWrongIndicesRef.current);
-    letterDiffRef.current = { ...stickyLetterDiffRef.current };
-    setLiveWrongIndices([...accumulatedWrongIndicesRef.current]);
-    setLiveLetterDiff({ ...letterDiffRef.current });
+    commitFaultsRef.current = new Map();
+    partialFaultsRef.current = new Map();
+    applyMarks();
 
     // The matcher is back at the top of the ayah, so the next commit is a
     // fresh start rather than another commit that failed to move.
-    justRestartedRef.current = true;
     prevMatchPosRef.current = 0;
     stalledCommitsRef.current = 0;
     setCanSkip(false);
 
     // Words already shown stay shown. They have been read, and pulling them
     // back off the page mid-recitation helps nobody.
-  }, []);
+  }, [applyMarks]);
 
   const onAyahComplete = useCallback(
     async (accumulatedText) => {
@@ -482,6 +563,9 @@ export default function RecitationScreen(props) {
 
           // Reset all per-ayah tracking.
           accumulatedWrongIndicesRef.current = new Set();
+          commitFaultsRef.current = new Map();
+          partialFaultsRef.current = new Map();
+          revealedWrongRef.current = new Set();
           isGoingBackRef.current = false;
           prevMatchPosRef.current = 0;
           revealedWordCountRef.current = 0;
@@ -491,7 +575,6 @@ export default function RecitationScreen(props) {
           stickyWrongIndicesRef.current = new Set();
           stickyLetterDiffRef.current = {};
           discardedAttemptsRef.current = '';
-          justRestartedRef.current = false;
           if (mistakeMessageTimeoutRef.current) {
             clearTimeout(mistakeMessageTimeoutRef.current);
             mistakeMessageTimeoutRef.current = null;
@@ -514,6 +597,24 @@ export default function RecitationScreen(props) {
             await stopListening();
             return;
           }
+
+          // The next ayah is loaded and the freeze lifted before anything is
+          // written to the database, not after.
+          //
+          // These two writes used to sit inside the freeze, so on a phone
+          // network the app spent a round trip or two deaf to a reciter who
+          // was already saying the next ayah. What they said in that time was
+          // dropped, and the ayah was then marked wrong for missing the words
+          // they had just recited. Nothing here needs to finish before the
+          // reciter can carry on, so none of it is in their way any more.
+          //
+          // The trade is a millisecond-wide window where the app has moved on
+          // but the database has not, so a crash in it costs one ayah of saved
+          // progress. Re-reciting one ayah is a far smaller harm than being
+          // marked wrong on every one of them.
+          await loadAyah(nextIndex);
+          recreateJudge();
+          resumeListening();
 
           if (mistakeInsert && sessionId) {
             const { userId, surahNumber, ayahNumber, tier, wrong_words, transcribed_text } =
@@ -563,10 +664,6 @@ export default function RecitationScreen(props) {
             // surah restarted it in the wrong place.
             .update({ last_confirmed_ayah: startOffset + completedIndex })
             .eq('id', sessionId);
-
-          await loadAyah(nextIndex);
-          recreateJudge();
-          resumeListening();
         };
         // ─────────────────────────────────────────────────────────────────
 
@@ -584,7 +681,60 @@ export default function RecitationScreen(props) {
         // substitutions in the last 1–2 words (e.g. حساب instead of عذاب) are
         // caught and their spoken form recorded in letterDiffRef for letter diff.
         // Must run before reading accumulatedWrongIndicesRef and letterDiffRef.
+        //
+        // Everything standing at this point was decided while the ayah was
+        // still arriving, when a word said twice is indistinguishable from a
+        // word said wrongly. Going back a few words to correct yourself
+        // reliably produced a red word somewhere ahead of where you were, and
+        // it was frozen on sight and never revisited, even though a second
+        // later the alignment worked out what had happened and came up clean.
+        //
+        // So the live marks are cleared and the final pass over the whole ayah
+        // decides. It is the only reading of the recitation made with all of it
+        // in hand. What the reciter asked to be shown outright survives, having
+        // never been a judgement in the first place.
+        const frozenSlip = new Set(stickyWrongIndicesRef.current);
+        const frozenSlipDiff = { ...stickyLetterDiffRef.current };
+
+        isGoingBackRef.current = false;
+        commitFaultsRef.current = new Map();
+        partialFaultsRef.current = new Map();
+        stickyWrongIndicesRef.current = new Set(revealedWrongRef.current);
+        stickyLetterDiffRef.current = Object.fromEntries(
+          [...revealedWrongRef.current].map((index) => [index, null])
+        );
         liveJudgeRef.current?.finalUpdate(dedupeConsecutiveWords(accumulatedText));
+
+        // The ayah can finish correct and still have been got wrong on the way:
+        // the reciter said the wrong word, or jumped one, heard it, and went
+        // back to fix it. Reading only the final state would call that a clean
+        // recitation, which for hifz it is not — a word that had to be caught
+        // and repaired is exactly the word worth revising.
+        //
+        // So a clean finish is checked against what was actually said. If the
+        // words the alignment discarded are nothing more than the ayah being
+        // re-trodden, there was no mistake to keep. If they contain anything
+        // else, the marks that stood at the moment of the slip go back up.
+        if (frozenSlip.size > 0) {
+          const expectedNorm = normalizeArabic(ayahDataRef.current.textCompare ?? '');
+          const spokenNorm = normalizeArabic(accumulatedText ?? '');
+          const finishedClean = [...accumulatedWrongIndicesRef.current].every((index) =>
+            revealedWrongRef.current.has(index)
+          );
+          if (
+            finishedClean &&
+            hasSelfCorrectedSlip(
+              expectedNorm.split(/\s+/).filter(Boolean),
+              spokenNorm.split(/\s+/).filter(Boolean)
+            )
+          ) {
+            frozenSlip.forEach((index) => {
+              stickyWrongIndicesRef.current.add(index);
+              stickyLetterDiffRef.current[index] = frozenSlipDiff[index] ?? null;
+            });
+            applyMarks();
+          }
+        }
 
         const wrongIndices = [...accumulatedWrongIndicesRef.current].sort((a, b) => a - b);
         const letterDiffByIndex = wrongIndices.length > 0 ? { ...letterDiffRef.current } : undefined;
@@ -603,7 +753,6 @@ export default function RecitationScreen(props) {
             userId,
             // Carries its own surah, because the portion may span several.
             ...locationAt(currentAyahIndexRef.current),
-            tier: classifyMistakeTier(wrongIndices, letterDiffByIndex),
             wrong_words: wrongIndices.map((i) => words[i]?.textDisplay ?? ''),
             // Attempts abandoned by a restart are prepended, so the record
             // still shows the slip even though it was judged separately.
@@ -620,7 +769,7 @@ export default function RecitationScreen(props) {
         setError(err?.message ?? 'Failed to process ayah completion.');
       }
     },
-    [loadAyah, recreateJudge, locationAt, startOffset, sessionId, totalAyahs]
+    [applyMarks, loadAyah, recreateJudge, locationAt, startOffset, sessionId, totalAyahs]
   );
 
   /**
@@ -709,6 +858,37 @@ export default function RecitationScreen(props) {
               return norm ? norm.split(/\s+/).filter(Boolean) : [];
             });
           }
+
+          // Seed the swipeable page list with the pages recited in the earlier
+          // sitting. allPages is otherwise built only as the reciter advances,
+          // so someone resuming opened on the page they stopped at with nothing
+          // behind it: the ayahs they had already recited were restored into
+          // confirmedAyahs and rendered, but there was no page to swipe back to
+          // and see them on. Resuming the next day made a session look as
+          // though it had started at the middle of the portion.
+          //
+          // Mushaf pages run in order and a portion is a contiguous run of
+          // ayahs, so every page between the portion's first ayah and the one
+          // being resumed at was visited. That makes this two lookups rather
+          // than one per ayah already recited.
+          const firstLoc = getAyahLocation(juzNumber, startOffset);
+          const resumeLoc = getAyahLocation(juzNumber, resumeFromOffset);
+          const [firstPage, resumePage] = await Promise.all([
+            getPageForAyah(db, firstLoc.surahNumber, firstLoc.ayahNumber),
+            getPageForAyah(db, resumeLoc.surahNumber, resumeLoc.ayahNumber),
+          ]);
+          if (mounted && firstPage != null && resumePage != null) {
+            const priorPages = [];
+            for (let p = firstPage; p <= resumePage; p++) priorPages.push(p);
+            // The page effect fires on mount with the resumed ayah, so the
+            // current page may already be in the list. Prepend around whatever
+            // is there rather than replacing it, and keep the current page last
+            // so the auto-scroll still lands on it.
+            setAllPages((prev) => [
+              ...priorPages,
+              ...prev.filter((p) => !priorPages.includes(p)),
+            ]);
+          }
         }
 
         await loadAyah(initialAyahIndex);
@@ -742,6 +922,7 @@ export default function RecitationScreen(props) {
     resumeFromOffset,
     startOffset,
     juzNumber,
+    db,
   ]);
 
   /**
@@ -760,26 +941,51 @@ export default function RecitationScreen(props) {
     if (!hasStarted || isLoading || error) return;
 
     let mounted = true;
+    // Every run of this effect opens the microphone again, so the claim starts
+    // false again with it.
+    setMicReady(false);
 
     (async () => {
       try {
       await startListening({
         getExpectedWords,
         onAyahComplete,
-        onPartial: (text) => {
-          if (isGoingBack(text, confirmedAyahWordsRef.current)) {
-            if (!isGoingBackRef.current) {
-              isGoingBackRef.current = true;
-              // Scrub indices at or beyond current matchPos — those came from
-              // going-back words misread against this ayah, not real mistakes.
-              const pos = prevMatchPosRef.current;
-              [...accumulatedWrongIndicesRef.current].forEach((i) => {
-                if (i >= pos) accumulatedWrongIndicesRef.current.delete(i);
-              });
-              setLiveWrongIndices([...accumulatedWrongIndicesRef.current]);
+        onListening: () => {
+          if (mounted) setMicReady(true);
+        },
+        // Committed words are dropped rather than judged while the reciter is
+        // back on an earlier ayah. Without this the position held but the
+        // marks did not: words from the old ayah were still aligned against
+        // the current one, and what that produced was written into its record.
+        isGoingBack: (text) => {
+          const goingBack = isGoingBackRef.current || checkGoingBack(text);
+          if (goingBack) {
+            // A dropped commit never reaches onCommit, so the stall counter
+            // would sit still and the way out would never be offered. That
+            // matters most in the case this is wrong about: someone reciting
+            // the ayah in front of them, misheard as words from an earlier
+            // one, would be stuck with nothing to do but pause the session.
+            //
+            // It costs the offer appearing during a long deliberate look back,
+            // which is only an offer, and it withdraws itself the moment the
+            // ayah moves again.
+            stalledCommitsRef.current += 1;
+            if (stalledCommitsRef.current >= STALLED_COMMITS_BEFORE_SKIP) {
+              setCanSkip(true);
             }
-            return;
           }
+          return goingBack;
+        },
+        onPartial: (text, partialText) => {
+          // Asked about what they are saying now, not the running text.
+          //
+          // `text` carries every word already committed for this ayah in front
+          // of the partial, so it always contains the current ayah, and the
+          // tie-break inside checkGoingBack would answer "this is the ayah
+          // they are on" every single time and never see a look back at all.
+          // The raw partial is the only part that says where they actually
+          // are.
+          if (checkGoingBack(partialText ?? text)) return;
           // Going-back window ended — user is speaking current ayah again.
           isGoingBackRef.current = false;
 
@@ -805,41 +1011,42 @@ export default function RecitationScreen(props) {
           liveTextRef.current = text;
           setLiveText(text);
         },
-        onCommit: (matchedCount) => {
+        onCommit: (matchedCount, statuses = []) => {
           const prev = prevMatchPosRef.current;
           prevMatchPosRef.current = matchedCount;
+
+          // The aligner names every word it was unhappy with, and says whether
+          // it was said wrong or not said at all. Mistakes used to be read off
+          // the size of the position jump instead, which could not tell a
+          // genuine skip from several correct words arriving in one commit: a
+          // three-word commit opening an ayah moved the position 0 → 3 and
+          // painted the first two words red on a clean recitation.
+          //
+          // Replaced whole rather than added to, and re-synced on every commit
+          // rather than only on the ones that advance, so a slot the aligner
+          // reconsiders gives its mark back as soon as it changes its mind.
+          const before = commitFaultsRef.current;
+          commitFaultsRef.current = new Map(
+            statuses
+              .filter((entry) => entry.status !== 'correct')
+              .map(({ index, spoken }) => [index, spoken ?? null])
+          );
+          applyMarks();
+
+          // Once per newly faulted word, rather than once per commit, and never
+          // again for a word already standing red.
+          const isNewFault = [...commitFaultsRef.current.keys()].some(
+            (index) => !before.has(index)
+          );
+          if (isNewFault && !ayahDataRef.current?.isDisconnectedLetters) {
+            buzzAndTone();
+            showMistakeMessage();
+          }
 
           if (matchedCount > prev) {
             // matchPos advanced — user is on current ayah.
             isGoingBackRef.current = false;
 
-            // After a restart the first commit re-covers ground in one go,
-            // which is a jump in the numbers but not in the recitation.
-            const afterRestart = justRestartedRef.current;
-            justRestartedRef.current = false;
-
-            if (!afterRestart && matchedCount > prev + 1) {
-              // Jump of >1: skipped word(s) — reveal in red immediately.
-              // spoken = null signals the whole word was omitted (no partial diff).
-              const skipStart = prev;
-              for (let i = skipStart; i < matchedCount - 1; i++) {
-                accumulatedWrongIndicesRef.current.add(i);
-                letterDiffRef.current[i] = null;
-                // Words genuinely passed over. A restart does not undo them.
-                stickyWrongIndicesRef.current.add(i);
-                stickyLetterDiffRef.current[i] = null;
-              }
-              setLiveWrongIndices([...accumulatedWrongIndicesRef.current]);
-              setLiveLetterDiff((existing) => {
-                const next = { ...existing };
-                for (let i = skipStart; i < matchedCount - 1; i++) next[i] = null;
-                return next;
-              });
-              if (!ayahDataRef.current?.isDisconnectedLetters) {
-                buzzAndTone();
-                showMistakeMessage();
-              }
-            }
             const newRevealed = Math.max(revealedWordCountRef.current, matchedCount);
             revealedWordCountRef.current = newRevealed;
             setRevealedWordCount(newRevealed);
@@ -861,7 +1068,10 @@ export default function RecitationScreen(props) {
           if (mounted) setError(message);
         },
         onAutoStop: (reason) => {
-          if (mounted) setMicClosedReason(reason);
+          if (mounted) {
+            setMicReady(false);
+            setMicClosedReason(reason);
+          }
         },
       });
       } catch (err) {
@@ -876,6 +1086,7 @@ export default function RecitationScreen(props) {
 
     return () => {
       mounted = false;
+      setMicReady(false);
       stopListening();
     };
   }, [
@@ -883,6 +1094,7 @@ export default function RecitationScreen(props) {
     isLoading,
     error,
     listenAttempt,
+    checkGoingBack,
     getExpectedWords,
     onAyahComplete,
     handleAyahRestart,
@@ -980,7 +1192,18 @@ export default function RecitationScreen(props) {
           skippedWordIndices,
           letterDiffByIndex: liveLetterDiff,
         };
-      } else if (currentAyahIndex === 0) {
+      } else if (currentAyahIndex === initialAyahIndex) {
+        // The first ayah of this sitting, greyed as a prompt. It used to be
+        // the first ayah of the portion and nothing else, so anyone resuming
+        // after a pause arrived at a blank page: the ayahs already recited sat
+        // behind them in black and the one they were meant to continue with
+        // showed nothing at all. Resuming mid-portion is the moment a person
+        // is least likely to remember where they were, which makes it the
+        // worst one to give no prompt.
+        //
+        // Someone interrupted in the middle of an ayah resumes at the top of
+        // it, because an ayah only counts once it is finished, so the whole
+        // ayah is the right thing to show either way.
         map[currentKey] = { wrongIndices: [], cue: true };
       }
       // ayahs after the first stay hidden until the user starts reciting them
@@ -990,6 +1213,7 @@ export default function RecitationScreen(props) {
     confirmedAyahs,
     locationAt,
     currentAyahIndex,
+    initialAyahIndex,
     liveWrongIndices,
     liveLetterDiff,
     revealedWordCount,
@@ -997,7 +1221,7 @@ export default function RecitationScreen(props) {
   ]);
 
   const displayAyahNumber = Math.min(currentAyahIndex + 1, totalAyahs);
-  const isListening = hasStarted && !isLoading && !error && !showTransition && !isRevisionComplete;
+  const isListening = hasStarted && micReady && !isLoading && !error && !showTransition && !isRevisionComplete;
 
   // "Al-Baqarah 142-252", or "Al-Baqarah 282 to Ali Imran 83" when the portion
   // spans two surahs, which most portions in most juz do.
@@ -1041,7 +1265,7 @@ export default function RecitationScreen(props) {
           <Text style={styles.micPausedBody}>
             {micClosedReason === 'ceiling'
               ? 'That has been a long sitting. Tap to carry on.'
-              : 'The microphone turned itself off after a quiet minute and a half. Tap to carry on.'}
+              : 'The microphone turned itself off after two quiet minutes. Tap to carry on.'}
           </Text>
         </TouchableOpacity>
       ) : null}
@@ -1107,10 +1331,12 @@ export default function RecitationScreen(props) {
             <Text style={styles.feedbackMessage}>{mistakeMessage}</Text>
           ) : !hasStarted ? (
             <Text style={styles.reciteHint}>Tap the mic to start reciting</Text>
+          ) : !micReady ? (
+            <Text style={styles.reciteHint}>Opening the microphone, one moment</Text>
           ) : resumeFromOffset > startOffset ? (
-            /* Resuming, so there is no grey cue to point at: the ayahs already
-               recited are behind them in black and the next one is where they
-               stopped. */
+            /* The ayah to continue from is greyed in, the same prompt a fresh
+               session gets, and the ayahs already recited sit behind it in
+               black. This says which of the two to read. */
             <Text style={styles.reciteHint}>Recite from where you left off</Text>
           ) : (
             <Text style={styles.reciteHint}>Recite from the gray portion</Text>
@@ -1154,8 +1380,12 @@ export default function RecitationScreen(props) {
             </TouchableOpacity>
           )}
           {/* Under the microphone it is labelling, and the slot is held open
-              either way so the bar does not change height as it toggles. */}
-          <Text style={[styles.micLabel, !isListening && styles.micLabelOff]}>Listening</Text>
+              either way so the bar does not change height as it toggles. It
+              says Connecting rather than Listening until the microphone is
+              actually open, which is the only moment the word is true. */}
+          <Text style={[styles.micLabel, !isListening && styles.micLabelOff]}>
+            {hasStarted && !micReady ? 'Connecting' : 'Listening'}
+          </Text>
         </View>
 
         <TouchableOpacity

@@ -18,14 +18,11 @@ import {
   todayString as getTodayDateString,
   tomorrowString as getTomorrowDateString,
 } from '../lib/dates';
-import { normalizeArabic } from '../lib/arabicUtils';
-import { getAyahLocation, getJuzTotalAyahs, getSurahName } from '../lib/juzSurahMap';
+import { getAyahLocation, getJuzTotalAyahs } from '../lib/juzSurahMap';
 import { cancelEveningNudge } from '../lib/notifications';
-import { getAyah } from '../lib/quranApi';
 import { getPortionsForDate, previewNextInterval } from '../lib/planEngine';
-import { removeFromQuizQueue } from '../lib/quizEngine';
 import { supabase } from '../lib/supabase';
-import { colors, fonts, spacing } from '../lib/theme';
+import { colors, fonts, radius, spacing } from '../lib/theme';
 
 /**
  * What to call the session on screen.
@@ -68,98 +65,6 @@ function formatPortionLine(portion) {
   return `${start.surahName} ${start.ayahNumber} to ${end.surahName} ${end.ayahNumber}`;
 }
 
-function buildWrongWordIndices(words, wrongWords) {
-  const remaining = [...(wrongWords ?? [])];
-  const indices = new Set();
-  words.forEach((word, i) => {
-    const display = word.textDisplay;
-    const idx = remaining.indexOf(display);
-    if (idx >= 0) {
-      indices.add(i);
-      remaining.splice(idx, 1);
-    }
-  });
-  return indices;
-}
-
-function AyahTextWithHighlights({ words, wrongWords, isDisconnectedLetters }) {
-  if (isDisconnectedLetters) {
-    const text = words.map((w) => w.textCompare).join(' ');
-    return <Text style={styles.compWord}>{text}</Text>;
-  }
-
-  const wrongIndices = buildWrongWordIndices(words, wrongWords);
-  const displayWords = words.map((w) => w.textDisplay);
-
-  return (
-    <Text style={styles.compWord}>
-      {displayWords.map((word, i) =>
-        wrongIndices.has(i) ? (
-          // Green says "this is the word it should have been". It is not the
-          // control: what gets tapped is the red word opposite, because that is
-          // the one being disputed.
-          <Text key={i} style={styles.compCorrection}>
-            {word}{' '}
-          </Text>
-        ) : (
-          <Text key={i} style={styles.compNeutral}>
-            {word}{' '}
-          </Text>
-        )
-      )}
-    </Text>
-  );
-}
-
-/**
- * The transcript, with the words that are not in this ayah picked out.
- *
- * `transcribed_text` is stored as one string, so there is no index to line up
- * against `wrong_words` and no honest way to say which heard word stood in for
- * which expected one. What can be said is which words are not in the ayah at
- * all, and those are the ones worth colouring. The whole line used to be red,
- * which claimed the entire recitation was wrong when almost all of it was right.
- */
-function TranscriptWithSlips({ text, words, onClearSlip }) {
-  const spoken = (text ?? '').trim().split(/\s+/).filter(Boolean);
-  if (spoken.length === 0) {
-    return <Text style={[styles.compWord, styles.compNeutral]}>—</Text>;
-  }
-  const expected = new Set(
-    words.map((w) => normalizeArabic(w.textCompare ?? w.textDisplay)).filter(Boolean)
-  );
-  let slipOrdinal = -1;
-  return (
-    <Text style={styles.compWord}>
-      {spoken.map((word, i) => {
-        const isSlip = !expected.has(normalizeArabic(word));
-        if (!isSlip) {
-          return (
-            <Text key={i} style={styles.compNeutral}>
-              {word}{' '}
-            </Text>
-          );
-        }
-        slipOrdinal += 1;
-        const ordinal = slipOrdinal;
-        // The red word is the claim being disputed, so the red word is what
-        // clears it. The app cannot tell a real memory slip from the recogniser
-        // mishearing a word; the person reading both columns can.
-        return (
-          <Text
-            key={i}
-            style={styles.compSlip}
-            onPress={onClearSlip ? () => onClearSlip(ordinal) : undefined}
-            suppressHighlighting={false}
-          >
-            {word}{' '}
-          </Text>
-        );
-      })}
-    </Text>
-  );
-}
-
 function StatPill({ value, label, color }) {
   return (
     <View style={styles.statPill}>
@@ -178,81 +83,6 @@ function StatPill({ value, label, color }) {
  * comparison. The first opens by default so the common case, a single mistake,
  * does not cost a second tap.
  */
-function MistakeCard({ mistake, onDismiss, onClearWord, defaultOpen }) {
-  const [open, setOpen] = useState(defaultOpen);
-  const wrongCount = mistake.wrong_words?.length ?? 0;
-
-  return (
-    <View style={styles.mistakeCard}>
-      <TouchableOpacity
-        style={[styles.mistakeCardHeader, open && styles.mistakeCardHeaderOpen]}
-        onPress={() => setOpen((wasOpen) => !wasOpen)}
-        activeOpacity={0.7}
-        accessibilityRole="button"
-        accessibilityState={{ expanded: open }}
-        accessibilityLabel={`${getSurahName(mistake.surah_number)} ${mistake.ayah_number}, ${
-          wrongCount === 1 ? '1 word' : `${wrongCount} words`
-        }`}
-      >
-        <Text style={styles.mistakeAyahLabel}>
-          {getSurahName(mistake.surah_number)} {mistake.ayah_number}
-        </Text>
-        {/* Tiers are gone: every mistake counts the same. The count of flagged
-            words is the useful detail now, since clearing them all is what
-            removes the ayah. */}
-        <View style={styles.mistakeCardHeaderEnd}>
-          <View style={[styles.badge, styles.badgeConfirmed]}>
-            <Text style={[styles.badgeText, styles.badgeTextConfirmed]}>
-              {wrongCount === 1 ? '1 word' : `${wrongCount} words`}
-            </Text>
-          </View>
-          <Text style={styles.cardChevron}>{open ? '\u25be' : '\u25b8'}</Text>
-        </View>
-      </TouchableOpacity>
-
-      {open ? (
-        <>
-          <View style={styles.compRow}>
-            <View style={styles.compCol}>
-              <Text style={styles.compLabel}>What you said</Text>
-              <TranscriptWithSlips
-                text={mistake.transcribed_text}
-                words={mistake.words}
-                onClearSlip={(ordinal) => {
-                  // Both lists run in recitation order, so the nth word heard
-                  // that is not in the ayah answers to the nth word flagged.
-                  // Where the counts disagree, the last flag is the safe one to
-                  // clear: it never clears a flag the tap was not aimed at.
-                  const flagged = mistake.wrong_words ?? [];
-                  if (flagged.length === 0) return;
-                  onClearWord(flagged[Math.min(ordinal, flagged.length - 1)]);
-                }}
-              />
-            </View>
-            <View style={styles.compDivider} />
-            <View style={styles.compCol}>
-              <Text style={styles.compLabel}>Expected</Text>
-              <AyahTextWithHighlights
-                words={mistake.words}
-                wrongWords={mistake.wrong_words}
-                isDisconnectedLetters={mistake.isDisconnectedLetters}
-              />
-            </View>
-          </View>
-
-          {/* Red is only on the word actually said wrong, green on the word it
-              should have been. Red is the disputed claim, so red is the one
-              that clears. */}
-          <Text style={styles.tapHint}>Tap a red word if the app misheard you.</Text>
-
-          <TouchableOpacity style={styles.notMistakeBtn} onPress={onDismiss} activeOpacity={0.7}>
-            <Text style={styles.notMistakeBtnText}>Not a mistake at all</Text>
-          </TouchableOpacity>
-        </>
-      ) : null}
-    </View>
-  );
-}
 
 export default function SessionSummaryScreen({ route }) {
   const navigation = useNavigation();
@@ -265,13 +95,14 @@ export default function SessionSummaryScreen({ route }) {
   const [isLoading, setIsLoading] = useState(true);
   const [error, setError] = useState('');
   const [session, setSession] = useState(null);
-  const [mistakes, setMistakes] = useState([]);
+  const [mistakeCounts, setMistakeCounts] = useState({ recitation: 0, review: 0 });
+  // Whether there is anything at all to offer for correction, across both parts.
+  const totalMistakes = mistakeCounts.recitation + mistakeCounts.review;
   const [tomorrowText, setTomorrowText] = useState(null);
   const [nextLabel, setNextLabel] = useState('TOMORROW');
   const [juzComplete, setJuzComplete] = useState(false);
   // Collapsed to begin with. Opening the tab to check on a day should not lead
   // with a wall of red; the count is the summary and the detail is a choice.
-  const [mistakesOpen, setMistakesOpen] = useState(false);
   const [returnsInDays, setReturnsInDays] = useState(null);
   // Null when opened from the tab, which is the entry point with no route
   // params. Resolved below to the most recent session.
@@ -437,34 +268,31 @@ export default function SessionSummaryScreen({ route }) {
           nextTomorrowText = 'Quiz only';
         }
 
+        // Only the counts. The ayah text behind each mistake is loaded by the
+        // page that shows them, which is the one that needs it: fetching every
+        // ayah here made the summary wait on work it then did not display.
         const { data: mistakesData, error: mistakesError } = await supabase
           .from('mistakes')
-          .select('ayah_number, surah_number, wrong_words, transcribed_text')
+          .select('source')
           .eq('session_id', resolvedSessionId)
-          .is('dismissed_at', null)
-          .order('ayah_number', { ascending: true });
+          .is('dismissed_at', null);
 
         if (mistakesError) {
           throw new Error(mistakesError.message);
         }
 
-        const enrichedMistakes = await Promise.all(
-          (mistakesData ?? []).map(async (m) => {
-            const ayah = await getAyah(m.surah_number, m.ayah_number);
-            return {
-              ...m,
-              words: ayah.words,
-              isDisconnectedLetters: ayah.isDisconnectedLetters,
-            };
-          })
-        );
+        const counts = { recitation: 0, review: 0 };
+        for (const m of mistakesData ?? []) {
+          const key = m.source === 'review' ? 'review' : 'recitation';
+          counts[key] += 1;
+        }
 
         if (!mounted) {
           return;
         }
 
         setSession(sessionData);
-        setMistakes(enrichedMistakes);
+        setMistakeCounts(counts);
         setTomorrowText(nextTomorrowText);
         setNextLabel(upNextLabel(tomorrow?.scheduled_date));
         setJuzComplete(isJuzComplete);
@@ -489,81 +317,7 @@ export default function SessionSummaryScreen({ route }) {
   }, [resolvedSessionId, totalAyahsInJuzParam]);
 
   // Tiers are dropped, so there is one count, not two.
-  const mistakeCount = mistakes.length;
 
-  /**
-   * Stops an ayah being a mistake at all: removes the record that feeds the juz
-   * count AND the review queue entry.
-   *
-   * The old version deleted only the mistake row, so a misflagged ayah kept
-   * being quizzed every morning after the person had said it was fine. It also
-   * matched on ayah number with no surah filter, so dismissing Al-Baqarah 5
-   * removed Ali Imran 5 from the same session, and filtered on tier, which no
-   * longer means anything.
-   */
-  const removeMistakeEntirely = useCallback(async (mistake) => {
-    if (!resolvedSessionId) return;
-    // Marked, not deleted. The row is the only evidence the recogniser flagged
-    // this ayah and that the person disagreed, which together are the app's
-    // false-positive rate. Deleting it also rewrote history: any
-    // mistakes-over-time figure changed underneath you whenever an old session
-    // was corrected. Every read filters `dismissed_at is null`, so it counts for
-    // nothing while still being on the record.
-    await supabase
-      .from('mistakes')
-      .update({ dismissed_at: new Date().toISOString() })
-      .eq('session_id', resolvedSessionId)
-      .eq('surah_number', mistake.surah_number)
-      .eq('ayah_number', mistake.ayah_number)
-      .is('dismissed_at', null);
-
-    try {
-      const userId = await getCurrentUserId();
-      await removeFromQuizQueue(userId, mistake.surah_number, mistake.ayah_number);
-    } catch (err) {
-      console.error('[Summary] failed to clear the review queue:', err.message);
-    }
-  }, [resolvedSessionId]);
-
-  const handleDismissMistake = useCallback(async (index, mistake) => {
-    setMistakes((prev) => prev.filter((_, i) => i !== index));
-    await removeMistakeEntirely(mistake);
-  }, [removeMistakeEntirely]);
-
-  /**
-   * Clears one misheard word. A mistake is still one ayah however many words
-   * are wrong in it, so clearing some words leaves the ayah counted. Only when
-   * every flagged word is gone does the ayah stop being a mistake.
-   */
-  const handleClearWord = useCallback(async (index, mistake, word) => {
-    const remaining = [...(mistake.wrong_words ?? [])];
-    const at = remaining.indexOf(word);
-    if (at < 0) return;
-    remaining.splice(at, 1);
-
-    setMistakes((prev) =>
-      remaining.length === 0
-        ? prev.filter((_, i) => i !== index)
-        : prev.map((m, i) => (i === index ? { ...m, wrong_words: remaining } : m))
-    );
-
-    if (remaining.length === 0) {
-      await removeMistakeEntirely(mistake);
-      return;
-    }
-
-    if (!resolvedSessionId) return;
-    const { error } = await supabase
-      .from('mistakes')
-      .update({ wrong_words: remaining })
-      .eq('session_id', resolvedSessionId)
-      .eq('surah_number', mistake.surah_number)
-      .eq('ayah_number', mistake.ayah_number)
-      .is('dismissed_at', null);
-    if (error) {
-      console.error('[Summary] failed to clear a word:', error.message);
-    }
-  }, [resolvedSessionId, removeMistakeEntirely]);
 
   // Arriving at the end of a session gets a "back to home" button, since there
   // is a flow to leave. Arriving from the tab gets the tab bar instead.
@@ -670,49 +424,62 @@ export default function SessionSummaryScreen({ route }) {
         <View style={styles.statsRow}>
           <StatPill value={String(ayahCount)} label="ayat recited" color={colors.primary} />
           <View style={styles.statDivider} />
+          {/* Recitation only, which is what this number has always counted and
+              what the one beside it measures. Review mistakes are made in ayahs
+              outside the portion, and blocks overlap each other and the portion,
+              so folding them in gives a rate over the wrong denominator and
+              quietly changes what every past session's figure meant. The review
+              has its own count in the rows below. */}
           <StatPill
-            value={String(mistakes.length)}
-            label={mistakes.length === 1 ? 'mistake' : 'mistakes'}
-            color={mistakes.length === 0 ? colors.success : colors.error}
+            value={String(mistakeCounts.recitation)}
+            // Named for the portion, because that is all it counts. Unqualified,
+            // a green zero here sat directly above a Mistake Review row holding
+            // three ayahs, and the two read as contradicting each other.
+            label={mistakeCounts.recitation === 1 ? 'portion mistake' : 'portion mistakes'}
+            color={mistakeCounts.recitation === 0 ? colors.success : colors.error}
           />
         </View>
 
-        {/* The mistake list is the only part of this screen that grows without
-            bound, so it is the only part that scrolls. A bad day used to push
-            up next off the bottom of the page; now the list scrolls inside its
-            own region and the next session stays on screen. When the list is
-            closed a filler holds that space open, so up next sits in the same
-            place either way rather than jumping as the list opens. */}
-        {mistakes.length > 0 ? (
+        {/* One row per part of the session, each opening the page where those
+            mistakes are corrected. They used to be one list of recitation
+            mistakes inline, which left no room for the Mistake Review's own and
+            pushed up next off the bottom on a bad day. A count apiece keeps the
+            summary a fixed height and gives the review somewhere to live. */}
+        {totalMistakes > 0 ? (
           <>
-            <TouchableOpacity
-              style={styles.disclosureRow}
-              onPress={() => setMistakesOpen((open) => !open)}
-              activeOpacity={0.7}
-            >
-              <Text style={styles.sectionLabel}>
-                {mistakeCount} {mistakeCount === 1 ? 'ayah' : 'ayahs'} to review
-              </Text>
-              <Text style={styles.disclosureChevron}>{mistakesOpen ? '▾' : '▸'}</Text>
-            </TouchableOpacity>
-            {mistakesOpen ? (
-              <ScrollView
-                style={styles.mistakeScroll}
-                contentContainerStyle={styles.mistakeScrollContent}
-              >
-                {mistakes.map((mistake, index) => (
-                  <MistakeCard
-                    key={`${mistake.surah_number}-${mistake.ayah_number}-${index}`}
-                    mistake={mistake}
-                    defaultOpen={index === 0}
-                    onDismiss={() => handleDismissMistake(index, mistake)}
-                    onClearWord={(word) => handleClearWord(index, mistake, word)}
-                  />
-                ))}
-              </ScrollView>
-            ) : (
-              <View style={styles.filler} />
-            )}
+            <Text style={styles.sectionLabel}>TO REVIEW</Text>
+            {[
+              { key: 'review', label: 'Mistake Review', count: mistakeCounts.review },
+              { key: 'recitation', label: 'Recitation', count: mistakeCounts.recitation },
+            ]
+              // A part with nothing flagged is not worth a row to tap into.
+              .filter((row) => row.count > 0)
+              .map((row) => (
+                <TouchableOpacity
+                  key={row.key}
+                  style={styles.sourceCard}
+                  activeOpacity={0.7}
+                  accessibilityRole="button"
+                  accessibilityLabel={`${row.label}, ${row.count} ${
+                    row.count === 1 ? 'ayah' : 'ayahs'
+                  } to review`}
+                  onPress={() =>
+                    navigation.navigate('SessionMistakes', {
+                      sessionId: resolvedSessionId,
+                      source: row.key,
+                    })
+                  }
+                >
+                  <View>
+                    <Text style={styles.sourceCardTitle}>{row.label}</Text>
+                    <Text style={styles.sourceCardCount}>
+                      {row.count} {row.count === 1 ? 'ayah' : 'ayahs'}
+                    </Text>
+                  </View>
+                  <Text style={styles.cardChevron}>{'\u25b8'}</Text>
+                </TouchableOpacity>
+              ))}
+            <View style={styles.filler} />
           </>
         ) : (
           <>
@@ -749,6 +516,18 @@ export default function SessionSummaryScreen({ route }) {
 }
 
 const styles = StyleSheet.create({
+  sourceCard: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    backgroundColor: colors.surface,
+    borderRadius: radius.md,
+    paddingVertical: spacing.md,
+    paddingHorizontal: spacing.md,
+    marginBottom: spacing.sm,
+  },
+  sourceCardTitle: { fontFamily: fonts.semiBold, fontSize: 16, color: colors.text },
+  sourceCardCount: { fontFamily: fonts.regular, fontSize: 13, color: colors.textMuted, marginTop: 2 },
   screen: { flex: 1, backgroundColor: colors.background },
   centered: {
     flex: 1,
@@ -766,21 +545,8 @@ const styles = StyleSheet.create({
     paddingHorizontal: spacing.lg,
     paddingBottom: 16,
   },
-  mistakeScroll: { flex: 1, marginBottom: spacing.md },
-  mistakeScrollContent: { paddingBottom: spacing.xs },
   // Holds the same space open when the list is closed, so up next does not
-  // move when the disclosure is toggled.
   filler: { flex: 1 },
-  disclosureRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'space-between',
-  },
-  disclosureChevron: {
-    fontSize: 14,
-    color: colors.textMuted,
-    paddingHorizontal: spacing.xs,
-  },
   successSection: { alignItems: 'center', marginBottom: spacing.lg },
   checkCircle: {
     width: 72, height: 72, borderRadius: 36,
@@ -829,63 +595,7 @@ const styles = StyleSheet.create({
     letterSpacing: 1.2, textTransform: 'uppercase', marginBottom: spacing.sm,
   },
 
-  mistakeCard: {
-    backgroundColor: colors.card,
-    borderRadius: 14,
-    padding: spacing.md,
-    marginBottom: spacing.sm,
-    borderWidth: 1,
-    borderColor: colors.border,
-  },
-  mistakeCardHeader: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    alignItems: 'center',
-  },
-  // Only an open card needs the gap; a closed one is the header and nothing else.
-  mistakeCardHeaderOpen: { marginBottom: spacing.sm },
-  mistakeCardHeaderEnd: { flexDirection: 'row', alignItems: 'center', gap: spacing.sm },
   cardChevron: { fontSize: 14, color: colors.textMuted },
-  mistakeAyahLabel: { fontFamily: fonts.semiBold, fontSize: 15, color: colors.text },
-  tapHint: {
-    fontFamily: fonts.regular,
-    fontSize: 12,
-    color: colors.textMuted,
-    textAlign: 'center',
-    marginTop: spacing.sm,
-  },
-  notMistakeBtn: {
-    alignSelf: 'flex-start',
-    borderWidth: 1,
-    borderColor: colors.border,
-    borderRadius: 10,
-    paddingVertical: 5,
-    paddingHorizontal: 12,
-    marginTop: 4,
-  },
-  notMistakeBtnText: { fontFamily: fonts.regular, fontSize: 12, color: colors.textMid },
-
-  compRow: { flexDirection: 'row', marginBottom: spacing.sm, gap: spacing.sm },
-  compCol: { flex: 1 },
-  compDivider: { width: 1, backgroundColor: colors.border, alignSelf: 'stretch' },
-  compLabel: {
-    fontFamily: fonts.regular, fontSize: 11, color: colors.textMuted,
-    marginBottom: 4, textTransform: 'uppercase', letterSpacing: 0.6,
-  },
-  compWord: { fontFamily: 'UthmanicHafs', fontSize: 18, writingDirection: 'rtl', lineHeight: 30 },
-  // Both columns read as plain text, and colour is spent only on the one word
-  // the comparison is about: red for what was said, green for what it should
-  // have been. Colouring a whole column made the difference impossible to spot.
-  compNeutral: { color: colors.text },
-  compSlip: { color: colors.error },
-  compCorrection: { color: colors.success },
-
-  badge: { borderRadius: 8, paddingVertical: 4, paddingHorizontal: 10 },
-  badgeSlip: { backgroundColor: colors.accentLight },
-  badgeConfirmed: { backgroundColor: colors.errorLight },
-  badgeText: { fontFamily: fonts.semiBold, fontSize: 12 },
-  badgeTextSlip: { color: colors.accent },
-  badgeTextConfirmed: { color: colors.error },
 
   cleanCard: {
     flexDirection: 'row', alignItems: 'center', gap: 12,

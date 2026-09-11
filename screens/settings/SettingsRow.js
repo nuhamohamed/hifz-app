@@ -8,8 +8,11 @@ import { colors, fonts, spacing } from '../../lib/theme';
  * `destructive` colours the label red for an action that cannot be undone. It
  * still pushes to a screen rather than acting on the tap, so nothing
  * irreversible is ever one press away.
+ *
+ * `external` swaps the chevron for an outward arrow, so a row that leaves the
+ * app for a web page does not read as one more screen to come back from.
  */
-export default function SettingsRow({ label, value, onPress, destructive, last }) {
+export default function SettingsRow({ label, value, onPress, destructive, external, last }) {
   return (
     <TouchableOpacity
       style={[styles.row, last && styles.rowLast]}
@@ -19,7 +22,14 @@ export default function SettingsRow({ label, value, onPress, destructive, last }
       <Text style={[styles.label, destructive && styles.labelDestructive]}>{label}</Text>
       <View style={styles.right}>
         {value ? <Text style={styles.value}>{value}</Text> : null}
-        <Text style={[styles.chevron, destructive && styles.labelDestructive]}>›</Text>
+        <Text
+          style={[
+            external ? styles.external : styles.chevron,
+            destructive && styles.labelDestructive,
+          ]}
+        >
+          {external ? '↗' : '›'}
+        </Text>
       </View>
     </TouchableOpacity>
   );
@@ -42,4 +52,5 @@ const styles = StyleSheet.create({
   right: { flexDirection: 'row', alignItems: 'center', gap: 8 },
   value: { fontFamily: fonts.regular, fontSize: 16, color: colors.textMuted },
   chevron: { fontSize: 20, color: colors.textMuted, marginTop: -2 },
+  external: { fontSize: 15, color: colors.textMuted },
 });

@@ -1,6 +1,7 @@
 import { useCallback, useState } from 'react';
 import { ActivityIndicator, Alert, ScrollView, StyleSheet, Text, View } from 'react-native';
 import { useFocusEffect, useNavigation } from '@react-navigation/native';
+import * as WebBrowser from 'expo-web-browser';
 import TabBar from '../components/TabBar';
 import SettingsGroup from './settings/SettingsGroup';
 import SettingsRow from './settings/SettingsRow';
@@ -8,6 +9,23 @@ import SettingsStaticRow from './settings/SettingsStaticRow';
 import { getCurrentUserId, isAnonymous } from '../lib/auth';
 import { supabase } from '../lib/supabase';
 import { colors, fonts, spacing } from '../lib/theme';
+
+// App Review guideline 5.1.1 wants the privacy policy reachable from inside the
+// app, not only from the App Store listing. The page lives on the marketing
+// site, so the row opens it in a browser sheet rather than duplicating the text
+// here, where it would drift out of date the moment the site changed.
+const PRIVACY_URL = 'https://dawrah.ai/privacy';
+
+async function openLegalPage(url) {
+  try {
+    await WebBrowser.openBrowserAsync(url, {
+      controlsColor: colors.primary,
+      toolbarColor: colors.background,
+    });
+  } catch {
+    Alert.alert('Could not open the page', `You can read it at ${url}`);
+  }
+}
 
 function displayTime(dbTime) {
   if (!dbTime) return 'Off';
@@ -120,6 +138,15 @@ export default function SettingsScreen() {
           {anonymous === false ? (
             <SettingsRow label="Sign out" onPress={handleSignOut} last />
           ) : null}
+        </SettingsGroup>
+
+        <SettingsGroup title="About">
+          <SettingsRow
+            label="Privacy Policy"
+            onPress={() => openLegalPage(PRIVACY_URL)}
+            external
+            last
+          />
         </SettingsGroup>
 
         <SettingsGroup

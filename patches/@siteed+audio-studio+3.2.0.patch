@@ -1,0 +1,159 @@
+diff --git a/node_modules/@siteed/audio-studio/ios/AudioStreamManager.swift b/node_modules/@siteed/audio-studio/ios/AudioStreamManager.swift
+index 4d69b16..bb16cef 100644
+--- a/node_modules/@siteed/audio-studio/ios/AudioStreamManager.swift
++++ b/node_modules/@siteed/audio-studio/ios/AudioStreamManager.swift
+@@ -155,6 +155,11 @@ class AudioStreamManager: NSObject, AudioDeviceManagerDelegate {
+     private var autoResumeAfterInterruption: Bool = false
+     private var pausedBySystemInterruption: Bool = false
+ 
++    /// Set by installTapWithHardwareFormat when the microphone input was
++    /// unavailable and no tap could be installed. Callers must check it: the
++    /// engine will start happily with no tap and deliver silence forever.
++    private var tapInstallFailed: Bool = false
++    
+     // Add these properties
+     private var emissionInterval: TimeInterval = 1.0  // Default 1 second
+     private var emissionIntervalAnalysis: TimeInterval = 0.5  // Default 0.5 seconds
+@@ -500,6 +505,15 @@ class AudioStreamManager: NSObject, AudioDeviceManagerDelegate {
+             do {
+                 // Reinstall tap with hardware format to ensure we have good input
+                 _ = installTapWithHardwareFormat()
++                if tapInstallFailed {
++                    // Handled by the catch below: stay paused rather than run
++                    // an engine with no tap on it.
++                    throw NSError(
++                        domain: "AudioStreamManager",
++                        code: -10851,
++                        userInfo: [NSLocalizedDescriptionKey: "Microphone input is unavailable."]
++                    )
++                }
+                 // Restart the engine
+                 try audioEngine.start()
+                 Logger.debug("AudioStreamManager", "Successfully restarted audio engine after returning from background")
+@@ -801,6 +815,20 @@ class AudioStreamManager: NSObject, AudioDeviceManagerDelegate {
+                audioSession.currentRoute.outputs.contains { $0.portType == .builtInReceiver }
+     }
+ 
++    /// The format installTap validates against is the bus's own output format,
++    /// which on a route change can disagree with the hardware input format, so
++    /// prefer it and fall back to the hardware format only when the output
++    /// format is the one reporting nothing. Returns nil when neither is usable,
++    /// which means the input is unavailable and no tap can be installed.
++    private static func usableTapFormat(
++        _ preferred: AVAudioFormat,
++        _ fallback: AVAudioFormat
++    ) -> AVAudioFormat? {
++        if preferred.channelCount > 0 && preferred.sampleRate > 0 { return preferred }
++        if fallback.channelCount > 0 && fallback.sampleRate > 0 { return fallback }
++        return nil
++    }
++
+     /// Installs the audio tap with the hardware-compatible format
+     /// - Parameters:
+     ///   - customTapBlock: Optional custom tap block for specialized processing (like in fallback)
+@@ -853,26 +881,46 @@ class AudioStreamManager: NSObject, AudioDeviceManagerDelegate {
+             bufferSize = 1024 // Default
+         }
+         
+-        // Validate hardware format before installing tap (#223)
+-        if inputHardwareFormat.channelCount == 0 || inputHardwareFormat.sampleRate == 0 {
+-            Logger.debug("AudioStreamManager", "Invalid hardware format: channels=\(inputHardwareFormat.channelCount), sampleRate=\(inputHardwareFormat.sampleRate). Using fallback.")
+-            let fallbackSampleRate = Double(recordingSettings?.sampleRate ?? 16000)
+-            let fallbackChannels = AVAudioChannelCount(recordingSettings?.numberOfChannels ?? 1)
+-            guard let fallbackFormat = AVAudioFormat(standardFormatWithSampleRate: fallbackSampleRate, channels: fallbackChannels) else {
+-                Logger.debug("AudioStreamManager", "Failed to create fallback format")
+-                return inputHardwareFormat
+-            }
+-            inputNode.installTap(onBus: 0, bufferSize: bufferSize, format: fallbackFormat, block: tapBlock)
+-            Logger.debug("AudioStreamManager", "Tap installed with fallback format")
+-            if prepareEngine {
+-                audioEngine.prepare()
+-            }
+-            return fallbackFormat
++        // Resolve a format the engine will actually accept (#223, and the crash
++        // that answer to it caused).
++        //
++        // installTap validates the format it is given against the bus's own
++        // format and raises an ObjC exception when the two disagree. That
++        // exception cannot be caught from Swift or from JS, so it takes the
++        // whole app down. A channel count or sample rate of 0 means the input
++        // is unavailable at this instant: the session not active yet, another
++        // app holding the microphone, a route change still in flight. Answering
++        // that by installing a tap with a fabricated 16 kHz format
++        // is the one response guaranteed to disagree with the bus, and so
++        // guaranteed to raise.
++        //
++        // So never fabricate. An unavailable input is nearly always transient,
++        // so re-read it a few times; if it is still unavailable, install
++        // nothing and let the caller fail the start. A rejected promise is
++        // something the app above can recover from. An exception is not.
++        tapInstallFailed = false
++
++        var resolved = Self.usableTapFormat(nodeOutputFormat, inputHardwareFormat)
++        var attempt = 0
++        while resolved == nil && attempt < 3 {
++            attempt += 1
++            Thread.sleep(forTimeInterval: 0.05)
++            resolved = Self.usableTapFormat(
++                inputNode.outputFormat(forBus: 0),
++                inputNode.inputFormat(forBus: 0)
++            )
++            Logger.debug("AudioStreamManager", "Input unavailable, re-read format (attempt \(attempt)): \(resolved.map(describeAudioFormat) ?? "still unavailable")")
+         }
+ 
+-        // Install the tap with hardware format
+-        inputNode.installTap(onBus: 0, bufferSize: bufferSize, format: inputHardwareFormat, block: tapBlock)
+-        Logger.debug("AudioStreamManager", "Tap installed with hardware-compatible format")
++        guard let tapFormat = resolved else {
++            tapInstallFailed = true
++            Logger.debug("AudioStreamManager", "Microphone input unavailable (channels=\(inputHardwareFormat.channelCount), sampleRate=\(inputHardwareFormat.sampleRate)). No tap installed.")
++            return inputHardwareFormat
++        }
++
++        // Install the tap with a format the bus agrees with
++        inputNode.installTap(onBus: 0, bufferSize: bufferSize, format: tapFormat, block: tapBlock)
++        Logger.debug("AudioStreamManager", "Tap installed with format: \(describeAudioFormat(tapFormat))")
+         
+         // Prepare the engine if requested
+         if prepareEngine {
+@@ -1007,6 +1055,15 @@ class AudioStreamManager: NSObject, AudioDeviceManagerDelegate {
+ 
+             // Use our shared tap installation method
+             let tapFormat = installTapWithHardwareFormat()
++            if tapInstallFailed {
++                // No tap means no audio. Fail here rather than starting an
++                // engine that would deliver silence for the whole session.
++                throw NSError(
++                    domain: "AudioStreamManager",
++                    code: -10851,
++                    userInfo: [NSLocalizedDescriptionKey: "Microphone input is unavailable."]
++                )
++            }
+ 
+             // Log tap configuration
+             Logger.debug("AudioStreamManager", "Final Tap Configuration (Using Hardware Format):")
+@@ -1133,6 +1190,12 @@ class AudioStreamManager: NSObject, AudioDeviceManagerDelegate {
+             
+             // Install tap with hardware format
+             _ = installTapWithHardwareFormat()
++            if tapInstallFailed {
++                Logger.debug("Microphone input unavailable; refusing to start recording")
++                delegate?.audioStreamManager(self, didFailWithError: "Microphone input is unavailable.")
++                cleanupPreparation()
++                return nil
++            }
+             Logger.debug("Tap was reinstalled during recording start")
+         } else {
+             // If not prepared, prepare now
+@@ -1338,6 +1401,11 @@ class AudioStreamManager: NSObject, AudioDeviceManagerDelegate {
+         do {
+             // Check and reinstall tap with hardware format
+             _ = installTapWithHardwareFormat()
++            if tapInstallFailed {
++                Logger.debug("Cannot resume: microphone input unavailable. Staying paused.")
++                delegate?.audioStreamManager(self, didFailWithError: "Microphone input is unavailable.")
++                return
++            }
+             Logger.debug("Tap reinstalled for resume")
+             
+             // Try to restart the engine

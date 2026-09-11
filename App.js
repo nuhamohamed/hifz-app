@@ -13,6 +13,7 @@ import PostSessionQuizScreen from './screens/PostSessionQuizScreen';
 import PreSessionQuizScreen from './screens/PreSessionQuizScreen';
 import RecitationScreen from './screens/RecitationScreen';
 import SessionSummaryScreen from './screens/SessionSummaryScreen';
+import SessionMistakesScreen from './screens/SessionMistakesScreen';
 import SettingsScreen from './screens/SettingsScreen';
 import SessionLengthScreen from './screens/settings/SessionLengthScreen';
 import ReminderScreen from './screens/settings/ReminderScreen';
@@ -123,6 +124,7 @@ function MainNavigator() {
       <MainStack.Screen name="Recitation" component={RecitationScreen} />
       <MainStack.Screen name="PostSessionQuiz" component={PostSessionQuizScreen} />
       <MainStack.Screen name="SessionSummary" component={SessionSummaryScreen} />
+      <MainStack.Screen name="SessionMistakes" component={SessionMistakesScreen} />
     </MainStack.Navigator>
   );
 }

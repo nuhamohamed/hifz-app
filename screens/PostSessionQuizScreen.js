@@ -14,7 +14,7 @@ import * as Haptics from 'expo-haptics';
 import { normalizeArabic, wordDiff } from '../lib/arabicUtils';
 import { getCurrentUserId } from '../lib/auth';
 import { getSurahName } from '../lib/juzSurahMap';
-import { createLiveJudge, findAyahRestart } from '../lib/liveWordJudge';
+import { createLiveJudge, findAyahRestart, hasSelfCorrectedSlip } from '../lib/liveWordJudge';
 import {
   fetchPostSessionItems,
   flagContextAyahIfNeeded,
@@ -100,16 +100,12 @@ export default function PostSessionQuizScreen(props) {
   const [currentBlockIndex, setCurrentBlockIndex] = useState(0);
   const currentBlockIndexRef = useRef(0);
   const currentItemIndexRef = useRef(0);
-  const mistakeStateRef = useRef('none');
   const wrongIndicesRef = useRef([]);
-  const firstFailedTextRef = useRef('');
   const [mistakeMessage, setMistakeMessage] = useState('');
+  // Clears the mistake text after 3 s, cancelled when the ayah changes.
+  const mistakeMessageTimeoutRef = useRef(null);
   // True once the recogniser has stalled long enough to offer a way past.
   const [canSkip, setCanSkip] = useState(false);
-  const [correctFeedback, setCorrectFeedback] = useState(false);
-  const [tier2AyahDisplay, setTier2AyahDisplay] = useState('');
-  const [tier2TranscribedText, setTier2TranscribedText] = useState('');
-  const [tier2HighlightIndices, setTier2HighlightIndices] = useState([]);
   const startedRef = useRef(false);
   const onAyahCompleteRef = useRef(null);
   const pulseAnim = useRef(new Animated.Value(1)).current;
@@ -130,6 +126,16 @@ export default function PostSessionQuizScreen(props) {
   // reciter back to the top, plus anything Reveal or skip detection put there.
   // Everything else standing at that moment came from aligning an abandoned
   // half-attempt against the whole ayah, and was never really recited wrong.
+  // Marks are held as what each source currently believes, not as a running
+  // tally. The old set was add-only, so the first moment a word was doubted was
+  // final: going back a few words to correct yourself makes the judge briefly
+  // read the repeat as a later word said wrongly, and that guess could never be
+  // taken back even though the very next update knew better.
+  const commitFaultsRef = useRef(new Map());
+  const partialFaultsRef = useRef(new Map());
+  // Words asked for outright. The one kind of mark no re-solve may overturn,
+  // because it was never a judgement about the recitation.
+  const revealedWrongRef = useRef(new Set());
   const stickyWrongIndicesRef = useRef(new Set());
   const stickyLetterDiffRef = useRef({});
   // True from a restart until the next commit lands, so the words re-covered
@@ -177,23 +183,48 @@ export default function PostSessionQuizScreen(props) {
     } catch (e) { console.log('Sound error:', e); }
   }, []);
 
+  /**
+   * Rebuilds what is shown from what each source currently believes, plus the
+   * marks that are not up for revision.
+   */
+  const applyMarks = useCallback(() => {
+    const next = new Set(stickyWrongIndicesRef.current);
+    const diff = { ...stickyLetterDiffRef.current };
+    for (const [index, spoken] of commitFaultsRef.current) {
+      next.add(index);
+      diff[index] = spoken;
+    }
+    for (const [index, spoken] of partialFaultsRef.current) {
+      next.add(index);
+      diff[index] = spoken;
+    }
+    // Refs first, synchronously, so onAyahComplete reads the final marks
+    // without waiting on React to flush the state below.
+    accumulatedWrongIndicesRef.current = next;
+    letterDiffRef.current = diff;
+    setLiveWrongIndices([...next]);
+    setLiveLetterDiff(diff);
+    return next;
+  }, []);
+
   const revealNextWord = useCallback(() => {
     const wordIndex = revealedWordCountRef.current;
     const words = ayahDataRef.current?.words;
     if (!words || wordIndex >= words.length) return;
-    accumulatedWrongIndicesRef.current.add(wordIndex);
-    letterDiffRef.current[wordIndex] = null;
-    // Asked for outright, so a restart does not take it back.
+    // Asked for outright, so neither a restart nor a later re-solve takes it back.
+    revealedWrongRef.current.add(wordIndex);
     stickyWrongIndicesRef.current.add(wordIndex);
     stickyLetterDiffRef.current[wordIndex] = null;
-    setLiveWrongIndices([...accumulatedWrongIndicesRef.current]);
-    setLiveLetterDiff((prev) => ({ ...prev, [wordIndex]: null }));
+    applyMarks();
     revealedWordCountRef.current = wordIndex + 1;
     setRevealedWordCount(wordIndex + 1);
-  }, []);
+  }, [applyMarks]);
 
   const resetLiveState = useCallback(() => {
     accumulatedWrongIndicesRef.current = new Set();
+    commitFaultsRef.current = new Map();
+    partialFaultsRef.current = new Map();
+    revealedWrongRef.current = new Set();
     prevMatchPosRef.current = 0;
     revealedWordCountRef.current = 0;
     letterDiffRef.current = {};
@@ -228,10 +259,9 @@ export default function PostSessionQuizScreen(props) {
     // actually holds, which is the whole abandoned attempt either way.
     rewindUtterance(restartAt);
 
-    accumulatedWrongIndicesRef.current = new Set(stickyWrongIndicesRef.current);
-    letterDiffRef.current = { ...stickyLetterDiffRef.current };
-    setLiveWrongIndices([...accumulatedWrongIndicesRef.current]);
-    setLiveLetterDiff({ ...letterDiffRef.current });
+    commitFaultsRef.current = new Map();
+    partialFaultsRef.current = new Map();
+    applyMarks();
 
     // The matcher is back at the top of the ayah, so the next commit is a
     // fresh start rather than another commit that failed to move.
@@ -242,6 +272,16 @@ export default function PostSessionQuizScreen(props) {
 
     // Words already shown stay shown. They have been read, and pulling them
     // back off the page mid-recitation helps nobody.
+  }, [applyMarks]);
+
+  /**
+   * Names the slip on screen for a moment, matching the portion. Clears itself
+   * so it cannot sit over the next ayah.
+   */
+  const showMistakeMessage = useCallback(() => {
+    if (mistakeMessageTimeoutRef.current) clearTimeout(mistakeMessageTimeoutRef.current);
+    setMistakeMessage('Mistake');
+    mistakeMessageTimeoutRef.current = setTimeout(() => setMistakeMessage(''), 3000);
   }, []);
 
   const recreateJudge = useCallback(() => {
@@ -257,19 +297,22 @@ export default function PostSessionQuizScreen(props) {
         // survives however many times the ayah is started over afterwards.
         stickyWrongIndicesRef.current = new Set(accumulatedWrongIndicesRef.current);
         stickyLetterDiffRef.current = { ...letterDiffRef.current };
-        if (!ayahDataRef.current?.isDisconnectedLetters) buzzAndTone();
+        if (ayahDataRef.current?.isDisconnectedLetters) return;
+        buzzAndTone();
+        // Said at the word, not at the end of the ayah. The retry prompt that
+        // used to carry this was the only text the quiz ever showed for a
+        // mistake, so dropping the retry would have left the buzz alone.
+        showMistakeMessage();
       },
       onMarksChange: (entries) => {
-        entries.forEach(({ index }) => accumulatedWrongIndicesRef.current.add(index));
-        const allWrong = [...accumulatedWrongIndicesRef.current];
-        setLiveWrongIndices(allWrong);
-        entries.forEach(({ index, spoken }) => { letterDiffRef.current[index] = spoken ?? null; });
-        setLiveLetterDiff((prev) => {
-          const next = { ...prev };
-          entries.forEach(({ index, spoken }) => { next[index] = spoken ?? null; });
-          return next;
-        });
-        if (allWrong.length > 0) {
+        // The judge re-solves the whole ayah on every partial, so its verdict
+        // replaces the last one instead of piling on top of it. A word it now
+        // considers correct has to be able to lose its mark.
+        partialFaultsRef.current = new Map(
+          entries.map(({ index, spoken }) => [index, spoken ?? null])
+        );
+        const allWrong = applyMarks();
+        if (allWrong.size > 0) {
           const maxWrong = Math.max(...allWrong);
           if (maxWrong >= revealedWordCountRef.current) {
             revealedWordCountRef.current = maxWrong + 1;
@@ -278,7 +321,7 @@ export default function PostSessionQuizScreen(props) {
         }
       },
     });
-  }, [buzzAndTone]);
+  }, [applyMarks, buzzAndTone, showMistakeMessage]);
 
   const loadBlockForItem = useCallback(async (item) => {
     resetUtterance({ discardMs: 2000 });
@@ -288,14 +331,10 @@ export default function PostSessionQuizScreen(props) {
     targetAyahResultRef.current = null;
     currentBlockIndexRef.current = 0;
     setCurrentBlockIndex(0);
-    mistakeStateRef.current = 'none';
     wrongIndicesRef.current = [];
+    if (mistakeMessageTimeoutRef.current) clearTimeout(mistakeMessageTimeoutRef.current);
     setMistakeMessage('');
-    setTier2AyahDisplay('');
-    setTier2TranscribedText('');
-    setTier2HighlightIndices([]);
     setConfirmedAyahs([]);
-    firstFailedTextRef.current = '';
     resetLiveState();
 
     const first = block[0];
@@ -343,11 +382,8 @@ export default function PostSessionQuizScreen(props) {
 
     currentBlockIndexRef.current = nextIndex;
     setCurrentBlockIndex(nextIndex);
-    mistakeStateRef.current = 'none';
+    if (mistakeMessageTimeoutRef.current) clearTimeout(mistakeMessageTimeoutRef.current);
     setMistakeMessage('');
-    setTier2AyahDisplay('');
-    setTier2TranscribedText('');
-    setTier2HighlightIndices([]);
     loadBlockAyah(nextIndex);
   }, [quizItems, loadBlockAyah, loadBlockForItem, finishAllQuizItems, sessionJuzNumber]);
 
@@ -365,75 +401,80 @@ export default function PostSessionQuizScreen(props) {
 
       const { textDisplay, textCompare } = ayahDataRef.current;
       const diff = wordDiff(normalizeArabic(textCompare), normalizeArabic(accumulatedText));
-      const wrongEntries = diff.filter((item) => item.status === 'wrong' || item.status === 'missing');
-      const allCorrect = wrongEntries.length === 0;
-      const wrongIndices = diff
+      let wrongIndices = diff
         .map((item, i) => (item.status === 'wrong' || item.status === 'missing' ? i : -1))
         .filter((i) => i >= 0);
 
-      if (mistakeStateRef.current === 'none') {
-        if (allCorrect) {
-          setMistakeMessage('');
-          setConfirmedAyahs((prev) => [...prev, { textDisplay, status: 'correct' }]);
-          if (isTargetAyah) recordTargetAyahResult('correct_first');
-          await advanceToNextBlockAyah();
-        } else {
-          wrongIndicesRef.current = wrongIndices;
-          firstFailedTextRef.current = accumulatedText;
-          mistakeStateRef.current = 'awaiting_retry';
-          await buzzAndTone();
-          setMistakeMessage('Possible mistake detected. Please try again.');
-        }
-        return;
+      // Everything on screen was decided while the ayah was still arriving,
+      // when a word said twice is indistinguishable from a word said wrongly.
+      // Going back a few words to correct yourself reliably painted something
+      // red further ahead, and it was frozen on sight. The pass above read the
+      // whole ayah with all of it in hand, so it gets the last word. What was
+      // asked for outright survives, having never been a judgement.
+      const expectedNorm = normalizeArabic(textCompare);
+      const spokenNorm = normalizeArabic(accumulatedText ?? '');
+      const frozenSlip = new Set(stickyWrongIndicesRef.current);
+      const frozenSlipDiff = { ...stickyLetterDiffRef.current };
+
+      // An ayah can finish correct and still have been got wrong on the way:
+      // said wrongly, or jumped, then heard and repaired. For hifz that is
+      // exactly the word worth revising, so a clean finish is checked against
+      // what was actually said before it is accepted as clean.
+      if (
+        wrongIndices.length === 0 &&
+        frozenSlip.size > 0 &&
+        hasSelfCorrectedSlip(
+          expectedNorm.split(/\s+/).filter(Boolean),
+          spokenNorm.split(/\s+/).filter(Boolean)
+        )
+      ) {
+        wrongIndices = [...frozenSlip].sort((a, b) => a - b);
       }
 
-      if (mistakeStateRef.current === 'awaiting_retry') {
-        if (allCorrect) {
-          setCorrectFeedback(true);
-          await new Promise((resolve) => setTimeout(resolve, 1500));
-          setCorrectFeedback(false);
-          mistakeStateRef.current = 'none';
-          setMistakeMessage('');
-          setConfirmedAyahs((prev) => [
-            ...prev,
-            { textDisplay, status: 'correct', wrongIndices: wrongIndicesRef.current },
-          ]);
-          if (isTargetAyah) {
-            recordTargetAyahResult('correct_second');
-          } else if (wrongIndicesRef.current.length > 0) {
-            const blockEntry = blockAyahsRef.current[currentBlockIndexRef.current];
-            const item = quizItems[currentItemIndexRef.current];
-            if (blockEntry && item) {
-              const userId = await getCurrentUserId();
-              await flagContextAyahIfNeeded(userId, item.surah_number, blockEntry.ayahNumber);
-            }
-          }
-          await advanceToNextBlockAyah();
-        } else {
-          wrongIndicesRef.current = wrongIndices;
-          mistakeStateRef.current = 'tier2_readback';
-          setMistakeMessage('');
-          setTier2TranscribedText(firstFailedTextRef.current);
-          setTier2AyahDisplay(textDisplay);
-          setTier2HighlightIndices(wrongIndices);
-        }
-        return;
-      }
+      commitFaultsRef.current = new Map();
+      partialFaultsRef.current = new Map(
+        wrongIndices.map((i) => [i, frozenSlipDiff[i] ?? letterDiffRef.current[i] ?? null])
+      );
+      stickyWrongIndicesRef.current = new Set(revealedWrongRef.current);
+      stickyLetterDiffRef.current = Object.fromEntries(
+        [...revealedWrongRef.current].map((index) => [index, null])
+      );
+      applyMarks();
+      wrongIndicesRef.current = wrongIndices;
 
-      if (mistakeStateRef.current === 'tier2_readback') {
-        mistakeStateRef.current = 'none';
-        setTier2AyahDisplay('');
-        setTier2TranscribedText('');
-        setTier2HighlightIndices([]);
-        setConfirmedAyahs((prev) => [
-          ...prev,
-          { textDisplay, status: 'mistake', wrongIndices: wrongIndicesRef.current },
-        ]);
-        if (isTargetAyah) recordTargetAyahResult('wrong');
+      if (wrongIndices.length === 0) {
+        if (mistakeMessageTimeoutRef.current) clearTimeout(mistakeMessageTimeoutRef.current);
+        setMistakeMessage('');
+        setConfirmedAyahs((prev) => [...prev, { textDisplay, status: 'correct' }]);
+        if (isTargetAyah) recordTargetAyahResult('correct_first');
         await advanceToNextBlockAyah();
+        return;
       }
+
+      // A mistake is recorded and passed, the way the portion does it. This used
+      // to ask for the ayah again, and on a second failure show what was said
+      // beside the correct text and ask for it to be read back. The recitation
+      // screen dropped both, and the quizzes kept them, so the same slip was
+      // handled two different ways in one session depending on which part you
+      // were in. Nothing buzzes here: the live judge already did, at the word.
+      setConfirmedAyahs((prev) => [...prev, { textDisplay, status: 'mistake', wrongIndices }]);
+
+      if (isTargetAyah) {
+        recordTargetAyahResult('wrong');
+      } else {
+        // A context ayah is not what is being tested, so it is not scored. It
+        // still earns its own place in the queue.
+        const blockEntry = blockAyahsRef.current[currentBlockIndexRef.current];
+        const item = quizItems[currentItemIndexRef.current];
+        if (blockEntry && item) {
+          const userId = await getCurrentUserId();
+          await flagContextAyahIfNeeded(userId, item.surah_number, blockEntry.ayahNumber);
+        }
+      }
+
+      await advanceToNextBlockAyah();
     },
-    [advanceToNextBlockAyah, buzzAndTone, quizItems, recordTargetAyahResult]
+    [advanceToNextBlockAyah, applyMarks, quizItems, recordTargetAyahResult]
   );
 
   /**
@@ -455,11 +496,9 @@ export default function PostSessionQuizScreen(props) {
     const wrongIndices = [];
     for (let i = from; i < words.length; i += 1) wrongIndices.push(i);
 
-    mistakeStateRef.current = 'none';
+    if (mistakeMessageTimeoutRef.current) clearTimeout(mistakeMessageTimeoutRef.current);
+
     setMistakeMessage('');
-    setTier2AyahDisplay('');
-    setTier2TranscribedText('');
-    setTier2HighlightIndices([]);
     setConfirmedAyahs((prev) => [
       ...prev,
       { textDisplay: ayahDataRef.current?.textDisplay ?? '', status: 'mistake', wrongIndices },
@@ -562,37 +601,41 @@ export default function PostSessionQuizScreen(props) {
           }
           liveJudgeRef.current?.update(dedupeConsecutiveWords(text));
         },
-        onCommit: (matchedCount) => {
+        onCommit: (matchedCount, statuses = []) => {
           const prev = prevMatchPosRef.current;
           prevMatchPosRef.current = matchedCount;
+
+          // The aligner says which words it was unhappy with and why. Mistakes
+          // used to be read off the size of the position jump, which could not
+          // tell a genuine skip from several correct words landing in one
+          // commit: a three-word commit opening an ayah moved the position
+          // 0 → 3 and painted the first two words red on a clean recitation.
+          //
+          // Replaced whole rather than added to, so a slot the aligner
+          // reconsiders gives its mark back as soon as it changes its mind.
+          const before = commitFaultsRef.current;
+          commitFaultsRef.current = new Map(
+            statuses
+              .filter((entry) => entry.status !== 'correct')
+              .map(({ index, spoken }) => [index, spoken ?? null])
+          );
+          applyMarks();
+
+          const isNewFault = [...commitFaultsRef.current.keys()].some(
+            (index) => !before.has(index)
+          );
+          if (isNewFault && !ayahDataRef.current?.isDisconnectedLetters) {
+            buzzAndTone();
+            showMistakeMessage();
+          }
+
           if (matchedCount > prev) {
-            // After a restart the first commit re-covers ground in one go,
-            // which is a jump in the numbers but not in the recitation.
-            const afterRestart = justRestartedRef.current;
             justRestartedRef.current = false;
 
-            if (!afterRestart && matchedCount > prev + 1) {
-              const skipStart = prev;
-              for (let i = skipStart; i < matchedCount - 1; i++) {
-                accumulatedWrongIndicesRef.current.add(i);
-                letterDiffRef.current[i] = null;
-                // Words genuinely passed over. A restart does not undo them.
-                stickyWrongIndicesRef.current.add(i);
-                stickyLetterDiffRef.current[i] = null;
-              }
-              setLiveWrongIndices([...accumulatedWrongIndicesRef.current]);
-              setLiveLetterDiff((existing) => {
-                const next = { ...existing };
-                for (let i = skipStart; i < matchedCount - 1; i++) next[i] = null;
-                return next;
-              });
-              if (!ayahDataRef.current?.isDisconnectedLetters) buzzAndTone();
-            }
             const newRevealed = Math.max(revealedWordCountRef.current, matchedCount);
             revealedWordCountRef.current = newRevealed;
             setRevealedWordCount(newRevealed);
 
-            // Progress, so nobody is stuck. Withdraw the offer if it was out.
             stalledCommitsRef.current = 0;
             setCanSkip(false);
           } else {
@@ -715,7 +758,7 @@ export default function PostSessionQuizScreen(props) {
     );
   }
 
-  const hasFeedback = mistakeMessage || correctFeedback || tier2AyahDisplay;
+  const hasFeedback = Boolean(mistakeMessage);
 
   const quizProgress = quizItems.length > 0
     ? `Q ${currentItemIndex + 1} of ${quizItems.length}`
@@ -776,29 +819,6 @@ export default function PostSessionQuizScreen(props) {
           ) : null}
           {mistakeMessage ? (
             <Text style={styles.mistakeMessage}>{mistakeMessage}</Text>
-          ) : null}
-          {correctFeedback ? (
-            <Text style={styles.correctFeedback}>Correct</Text>
-          ) : null}
-          {tier2AyahDisplay ? (
-            <ScrollView style={styles.tier2Scroll}>
-              <View style={styles.tier2Frame}>
-                <Text style={styles.tier2Label}>What you said:</Text>
-                <Text style={styles.tier2TranscribedText}>{tier2TranscribedText}</Text>
-                <Text style={styles.tier2Label}>Correct:</Text>
-                <Text style={styles.tier2AyahText}>
-                  {(() => {
-                    const wrongSet = new Set(tier2HighlightIndices);
-                    return tier2AyahDisplay.split(/\s+/).map((word, i) => (
-                      <Text key={i} style={wrongSet.has(i) ? styles.tier2WordWrong : styles.tier2WordCorrect}>
-                        {word}{' '}
-                      </Text>
-                    ));
-                  })()}
-                </Text>
-                <Text style={styles.tier2Instruction}>Read the correct version above again</Text>
-              </View>
-            </ScrollView>
           ) : null}
         </View>
       ) : null}
@@ -933,55 +953,6 @@ const styles = StyleSheet.create({
     textAlign: 'center',
     paddingVertical: 10,
     paddingHorizontal: 16,
-  },
-  correctFeedback: {
-    fontFamily: fonts.semiBold,
-    color: colors.success,
-    fontSize: 18,
-    textAlign: 'center',
-    paddingVertical: 10,
-  },
-  tier2Scroll: {
-    maxHeight: 240,
-  },
-  tier2Frame: {
-    borderWidth: 1,
-    borderColor: colors.error,
-    borderRadius: 8,
-    padding: 16,
-    margin: 12,
-    backgroundColor: colors.errorLight,
-  },
-  tier2Label: {
-    fontSize: 13,
-    fontWeight: '600',
-    color: colors.textMuted,
-    marginBottom: 4,
-  },
-  tier2TranscribedText: {
-    fontSize: 18,
-    lineHeight: 32,
-    textAlign: 'right',
-    writingDirection: 'rtl',
-    color: colors.textMuted,
-    marginBottom: 16,
-    fontFamily: 'UthmanicHafs',
-  },
-  tier2AyahText: {
-    fontSize: 22,
-    lineHeight: 40,
-    textAlign: 'right',
-    writingDirection: 'rtl',
-    fontFamily: 'UthmanicHafs',
-  },
-  tier2WordWrong: { color: colors.error },
-  tier2WordCorrect: { color: colors.text },
-  tier2Instruction: {
-    fontSize: 14,
-    color: colors.accent,
-    fontWeight: '600',
-    textAlign: 'center',
-    marginTop: 12,
   },
   stuckHint: {
     fontFamily: fonts.regular,

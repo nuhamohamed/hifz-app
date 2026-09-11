@@ -345,6 +345,8 @@ export default function TodayScreen() {
             .from('mistakes')
             .select('ayah_number', { count: 'exact', head: true })
             .eq('session_id', completedResult.data.id)
+            // Recitation only, matching the plan's own count.
+            .eq('source', 'recitation')
             .is('dismissed_at', null);
           if (mounted) setDoneMistakeCount(mistakeCount ?? 0);
         } else if (mounted) {
