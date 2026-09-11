@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import {
   ActivityIndicator,
+  Alert,
   ScrollView,
   StyleSheet,
   Text,
@@ -10,14 +11,8 @@ import {
 import { useNavigation } from '@react-navigation/native';
 import MistakeCard from '../components/MistakeList';
 import { getCurrentUserId } from '../lib/auth';
-import { getSurahName } from '../lib/juzSurahMap';
 import { getAyah } from '../lib/quranApi';
-import {
-  clearReviewMistake,
-  removeFromQuizQueue,
-  restoreRecitationMistake,
-  restoreReviewMistake,
-} from '../lib/quizEngine';
+import { clearReviewMistake, removeFromQuizQueue } from '../lib/quizEngine';
 import { reportHandledError } from '../lib/sentry';
 import { supabase } from '../lib/supabase';
 import { colors, fonts, spacing } from '../lib/theme';
@@ -33,7 +28,6 @@ import { colors, fonts, spacing } from '../lib/theme';
  */
 
 /** How long the way back stays on offer after a mistake is cleared. */
-const UNDO_WINDOW_MS = 7000;
 
 const SOURCE_COPY = {
   recitation: {
@@ -59,23 +53,54 @@ export default function SessionMistakesScreen({ route }) {
   // without this a failed correction looked exactly like a successful one and
   // only came back, unexplained, the next time the page was opened.
   const [actionError, setActionError] = useState('');
-  // The mistake just cleared, and where it sat, kept for as long as the undo is
-  // on offer. Clearing is one tap with nothing to confirm, and it does the exact
-  // opposite of what this page is for: a mis-tap tells the app someone knows an
-  // ayah they do not, and pulls it out of their revision. An undo costs the
-  // careful taps nothing, which a confirmation step would not.
-  const [pendingUndo, setPendingUndo] = useState(null);
-  const undoTimerRef = useRef(null);
+  // What was loaded, untouched, so a correction can be measured against it and
+  // taken back before it is committed.
+  //
+  // Nothing on this page writes to the database any more. Corrections are held
+  // here and go in together when Save is pressed, which is what lets the
+  // summary behind this page be right when someone returns to it: it reads its
+  // counts once, and a page that had already written four of them left it
+  // quoting a number that was no longer true. Holding them also means a
+  // mis-tap costs nothing, so the timed undo that used to cover that is gone.
+  const originalRef = useRef([]);
+  const [stagedClears, setStagedClears] = useState([]);
+  const [isSaving, setIsSaving] = useState(false);
+  // Set the moment a save succeeds, so leaving straight afterwards is not
+  // mistaken for walking away from unsaved work.
+  const savedRef = useRef(false);
 
-  useEffect(() => () => {
-    if (undoTimerRef.current) clearTimeout(undoTimerRef.current);
-  }, []);
+  const editedCount = mistakes.filter((m) => {
+    const before = originalRef.current.find(
+      (o) => o.surah_number === m.surah_number && o.ayah_number === m.ayah_number
+    );
+    return before && (before.wrong_words ?? []).length !== (m.wrong_words ?? []).length;
+  }).length;
+  const changeCount = stagedClears.length + editedCount;
 
-  const offerUndo = useCallback((mistake, index) => {
-    if (undoTimerRef.current) clearTimeout(undoTimerRef.current);
-    setPendingUndo({ mistake, index });
-    undoTimerRef.current = setTimeout(() => setPendingUndo(null), UNDO_WINDOW_MS);
-  }, []);
+  // Corrections live on this page until they are saved, so leaving with them
+  // unsaved throws them away. Someone who has just been down a list of eight
+  // ayahs deciding which the app misheard should be asked first.
+  useEffect(() => {
+    const unsubscribe = navigation.addListener('beforeRemove', (e) => {
+      if (changeCount === 0 || savedRef.current || isSaving) return;
+      e.preventDefault();
+      Alert.alert(
+        'Leave without saving?',
+        changeCount === 1
+          ? 'One correction has not been saved yet.'
+          : `${changeCount} corrections have not been saved yet.`,
+        [
+          { text: 'Keep editing', style: 'cancel' },
+          {
+            text: 'Discard',
+            style: 'destructive',
+            onPress: () => navigation.dispatch(e.data.action),
+          },
+        ]
+      );
+    });
+    return unsubscribe;
+  }, [changeCount, isSaving, navigation]);
 
   useEffect(() => {
     let mounted = true;
@@ -83,7 +108,10 @@ export default function SessionMistakesScreen({ route }) {
     (async () => {
       try {
         if (!sessionId) {
-          if (mounted) setMistakes([]);
+          if (mounted) {
+            originalRef.current = [];
+            setMistakes([]);
+          }
           return;
         }
 
@@ -106,7 +134,10 @@ export default function SessionMistakesScreen({ route }) {
           })
         );
 
-        if (mounted) setMistakes(enriched);
+        if (mounted) {
+          originalRef.current = enriched.map((m) => ({ ...m }));
+          setMistakes(enriched);
+        }
       } catch (err) {
         reportHandledError('sessionMistakes.load', err);
         if (mounted) setError(err.message ?? 'Could not load these mistakes.');
@@ -193,138 +224,115 @@ export default function SessionMistakesScreen({ route }) {
     [sessionId, source]
   );
 
-  const handleDismissMistake = useCallback(
-    async (index, mistake) => {
-      setActionError('');
-      setMistakes((prev) => prev.filter((_, i) => i !== index));
-
-      const ok = await removeMistakeEntirely(mistake);
-      if (ok) {
-        offerUndo(mistake, index);
-        return;
-      }
-      setMistakes((prev) => {
-        const next = [...prev];
-        next.splice(index, 0, mistake);
-        return next;
-      });
-      setActionError('That did not save. Check your connection and try again.');
-    },
-    [offerUndo, removeMistakeEntirely]
-  );
-
-  /**
-   * Puts a cleared mistake back, along with everything clearing it moved.
-   */
-  const handleUndo = useCallback(async () => {
-    if (!pendingUndo || !sessionId) return;
-    const { mistake, index } = pendingUndo;
-
-    if (undoTimerRef.current) clearTimeout(undoTimerRef.current);
-    setPendingUndo(null);
+  const handleDismissMistake = useCallback((index, mistake) => {
     setActionError('');
+    setMistakes((prev) => prev.filter((_, i) => i !== index));
+    setStagedClears((prev) => [...prev, mistake]);
+  }, []);
 
-    const { error: reviveError } = await supabase
-      .from('mistakes')
-      .update({ dismissed_at: null })
-      .eq('session_id', sessionId)
-      .eq('source', source)
-      .eq('surah_number', mistake.surah_number)
-      .eq('ayah_number', mistake.ayah_number);
-
-    if (reviveError) {
-      reportHandledError('sessionMistakes.undo', new Error(reviveError.message));
-      setActionError('Could not undo that. Check your connection and try again.');
-      return;
-    }
-
-    try {
-      const userId = await getCurrentUserId();
-      if (source === 'recitation') {
-        await restoreRecitationMistake(userId, mistake.surah_number, mistake.ayah_number);
-      } else {
-        await restoreReviewMistake(
-          userId,
-          mistake.surah_number,
-          mistake.ayah_number,
-          mistake.review_prev_box_level ?? null,
-          mistake.review_prev_next_date ?? null
-        );
-      }
-    } catch (err) {
-      // The mistake is back, which is the part the person asked for and can see.
-      // The schedule behind it is not, and saying so is better than a silent
-      // half-undo they have no way to notice.
-      reportHandledError('sessionMistakes.undoQueue', err);
-      setActionError('Mistake restored, but its review date may be off.');
-    }
-
-    setMistakes((prev) => {
-      const next = [...prev];
-      next.splice(Math.min(index, next.length), 0, mistake);
-      return next;
-    });
-  }, [pendingUndo, sessionId, source]);
+  /** Put every staged correction back, and the page as it was loaded. */
+  const handleUndoAll = useCallback(() => {
+    setActionError('');
+    setStagedClears([]);
+    setMistakes(originalRef.current.map((m) => ({ ...m })));
+  }, []);
 
   /**
    * Clears one misheard word. A mistake is still one ayah however many words
    * are wrong in it, so clearing some words leaves the ayah counted. Only when
    * every flagged word is gone does the ayah stop being a mistake.
    */
-  const handleClearWord = useCallback(
-    async (index, mistake, word) => {
-      const remaining = [...(mistake.wrong_words ?? [])];
-      const at = remaining.indexOf(word);
-      if (at < 0) return;
-      remaining.splice(at, 1);
+  const handleClearWord = useCallback((index, mistake, word) => {
+    const remaining = [...(mistake.wrong_words ?? [])];
+    const at = remaining.indexOf(word);
+    if (at < 0) return;
+    remaining.splice(at, 1);
 
-      setActionError('');
-      setMistakes((prev) =>
-        remaining.length === 0
-          ? prev.filter((_, i) => i !== index)
-          : prev.map((m, i) => (i === index ? { ...m, wrong_words: remaining } : m))
+    setActionError('');
+    setMistakes((prev) =>
+      remaining.length === 0
+        ? prev.filter((_, i) => i !== index)
+        : prev.map((m, i) => (i === index ? { ...m, wrong_words: remaining } : m))
+    );
+
+    // The last flagged word going means the ayah is no longer a mistake at all,
+    // so it is staged for clearing like any other.
+    if (remaining.length === 0) {
+      setStagedClears((prev) => [...prev, mistake]);
+    }
+  }, []);
+
+  /**
+   * Commit every correction made on this page, then go back.
+   *
+   * Clearing an ayah is two writes, the row and the review schedule behind it,
+   * and removeMistakeEntirely already keeps those two together or does
+   * neither. What is added here is that a failure part-way through a list does
+   * not lie about the rest: the ayahs that did save are dropped from the page
+   * and from the staged list, so pressing Save again retries only what is
+   * genuinely still outstanding.
+   */
+  const handleSave = useCallback(async () => {
+    if (!sessionId || isSaving) return;
+    setIsSaving(true);
+    setActionError('');
+
+    const failed = [];
+    for (const mistake of stagedClears) {
+      const ok = await removeMistakeEntirely(mistake);
+      if (!ok) failed.push(mistake);
+    }
+
+    const edited = mistakes.filter((m) => {
+      const before = originalRef.current.find(
+        (o) => o.surah_number === m.surah_number && o.ayah_number === m.ayah_number
       );
+      return before && (before.wrong_words ?? []).length !== (m.wrong_words ?? []).length;
+    });
 
-      // The last flagged word going means the ayah is no longer a mistake at
-      // all, so it takes the same path as clearing the whole thing, rollback
-      // included.
-      if (remaining.length === 0) {
-        const ok = await removeMistakeEntirely(mistake);
-        if (ok) {
-          offerUndo(mistake, index);
-          return;
-        }
-        setMistakes((prev) => {
-          const next = [...prev];
-          next.splice(index, 0, mistake);
-          return next;
-        });
-        setActionError('That did not save. Check your connection and try again.');
-        return;
-      }
-
-      if (!sessionId) return;
+    for (const m of edited) {
       const { error: wordError } = await supabase
         .from('mistakes')
-        .update({ wrong_words: remaining })
+        .update({ wrong_words: m.wrong_words })
         .eq('session_id', sessionId)
         .eq('source', source)
-        .eq('surah_number', mistake.surah_number)
-        .eq('ayah_number', mistake.ayah_number)
+        .eq('surah_number', m.surah_number)
+        .eq('ayah_number', m.ayah_number)
         .is('dismissed_at', null);
-
       if (wordError) {
         reportHandledError('sessionMistakes.clearWord', new Error(wordError.message));
-        // Put the word back rather than leave the page showing a correction the
-        // database never took.
-        setMistakes((prev) =>
-          prev.map((m, i) => (i === index ? { ...m, wrong_words: mistake.wrong_words } : m))
-        );
-        setActionError('That did not save. Check your connection and try again.');
+        failed.push(m);
       }
-    },
-    [offerUndo, removeMistakeEntirely, sessionId, source]
-  );
+    }
+
+    setIsSaving(false);
+
+    if (failed.length > 0) {
+      const stillStaged = stagedClears.filter((m) =>
+        failed.some(
+          (f) => f.surah_number === m.surah_number && f.ayah_number === m.ayah_number
+        )
+      );
+      setStagedClears(stillStaged);
+      setActionError(
+        failed.length === 1
+          ? 'One correction did not save. Check your connection and try again.'
+          : `${failed.length} corrections did not save. Check your connection and try again.`
+      );
+      return;
+    }
+
+    savedRef.current = true;
+    navigation.goBack();
+  }, [
+    isSaving,
+    mistakes,
+    navigation,
+    removeMistakeEntirely,
+    sessionId,
+    source,
+    stagedClears,
+  ]);
 
   return (
     <View style={styles.screen}>
@@ -360,22 +368,19 @@ export default function SessionMistakesScreen({ route }) {
         </View>
       ) : (
         <ScrollView contentContainerStyle={styles.list}>
-          {pendingUndo ? (
-            <View style={styles.undoBar}>
-              <Text style={styles.undoText}>
-                Cleared {getSurahName(pendingUndo.mistake.surah_number)}{' '}
-                {pendingUndo.mistake.ayah_number}
+          {changeCount > 0 ? (
+            <View style={styles.stagedBar}>
+              <Text style={styles.stagedText}>
+                {changeCount === 1 ? '1 correction' : `${changeCount} corrections`} ready to save
               </Text>
               <TouchableOpacity
-                onPress={handleUndo}
+                onPress={handleUndoAll}
                 activeOpacity={0.7}
                 accessibilityRole="button"
-                accessibilityLabel={`Undo clearing ${getSurahName(
-                  pendingUndo.mistake.surah_number
-                )} ${pendingUndo.mistake.ayah_number}`}
+                accessibilityLabel="Undo every correction on this page"
                 hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}
               >
-                <Text style={styles.undoAction}>Undo</Text>
+                <Text style={styles.stagedAction}>Undo all</Text>
               </TouchableOpacity>
             </View>
           ) : null}
@@ -401,6 +406,34 @@ export default function SessionMistakesScreen({ route }) {
           ))}
         </ScrollView>
       )}
+
+      {!isLoading && !error && changeCount > 0 ? (
+        <View style={styles.saveBar}>
+          <TouchableOpacity
+            style={[styles.saveBtn, isSaving && styles.saveBtnDisabled]}
+            onPress={handleSave}
+            disabled={isSaving}
+            activeOpacity={0.85}
+            accessibilityRole="button"
+            accessibilityLabel={
+              changeCount === 1
+                ? 'Save one correction and go back to the summary'
+                : `Save ${changeCount} corrections and go back to the summary`
+            }
+          >
+            {isSaving ? (
+              <ActivityIndicator size="small" color="#FFFFFF" />
+            ) : (
+              <Text style={styles.saveBtnText}>Save changes</Text>
+            )}
+          </TouchableOpacity>
+          {/* Said plainly, because nothing on this page has taken effect yet
+              and the next portion is decided from what is saved here. */}
+          <Text style={styles.saveHint}>
+            Your next portion is worked out from the mistakes left after saving.
+          </Text>
+        </View>
+      ) : null}
     </View>
   );
 }
@@ -428,7 +461,32 @@ const styles = StyleSheet.create({
     marginBottom: spacing.md,
   },
   actionErrorText: { fontFamily: fonts.medium, fontSize: 14, color: colors.error },
-  undoBar: {
+  saveBar: {
+    paddingHorizontal: spacing.lg,
+    paddingTop: spacing.md,
+    paddingBottom: spacing.xl,
+    borderTopWidth: 1,
+    borderTopColor: colors.border,
+    backgroundColor: colors.background,
+  },
+  saveBtn: {
+    backgroundColor: colors.primary,
+    borderRadius: 14,
+    paddingVertical: spacing.md,
+    alignItems: 'center',
+    justifyContent: 'center',
+    minHeight: 50,
+  },
+  saveBtnDisabled: { opacity: 0.6 },
+  saveBtnText: { fontFamily: fonts.semiBold, fontSize: 16, color: '#FFFFFF' },
+  saveHint: {
+    fontFamily: fonts.regular,
+    fontSize: 13,
+    color: colors.textMuted,
+    textAlign: 'center',
+    marginTop: spacing.sm,
+  },
+  stagedBar: {
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'space-between',
@@ -438,8 +496,8 @@ const styles = StyleSheet.create({
     paddingHorizontal: spacing.md,
     marginBottom: spacing.md,
   },
-  undoText: { fontFamily: fonts.regular, fontSize: 14, color: '#FFFFFF', flex: 1 },
-  undoAction: {
+  stagedText: { fontFamily: fonts.regular, fontSize: 14, color: '#FFFFFF', flex: 1 },
+  stagedAction: {
     fontFamily: fonts.semiBold,
     fontSize: 14,
     color: '#FFFFFF',

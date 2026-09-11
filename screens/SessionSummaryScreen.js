@@ -92,6 +92,32 @@ export default function SessionSummaryScreen({ route }) {
   const sessionId = route?.params?.sessionId;
   const totalAyahsInJuzParam = route?.params?.totalAyahsInJuz;
 
+  // Bumped when this screen comes back into view, so the counts and the date
+  // it quotes are re-read.
+  //
+  // They were read once on mount and never again. Correcting mistakes happens
+  // on a page opened from here, so coming back showed the numbers from before
+  // the corrections: five mistakes when four had just been cleared, and, on a
+  // finished juz, a return date worked out from all five. The schedule itself
+  // was always computed later and correctly. This screen was simply quoting
+  // something that had stopped being true while it sat there.
+  const [reloadKey, setReloadKey] = useState(0);
+  // The first focus is this screen arriving, which the load below is already
+  // doing. Only a return to it is news.
+  const seenFirstFocusRef = useRef(false);
+
+  useEffect(
+    () =>
+      navigation.addListener('focus', () => {
+        if (!seenFirstFocusRef.current) {
+          seenFirstFocusRef.current = true;
+          return;
+        }
+        setReloadKey((n) => n + 1);
+      }),
+    [navigation]
+  );
+
   const [isLoading, setIsLoading] = useState(true);
   const [error, setError] = useState('');
   const [session, setSession] = useState(null);
@@ -314,7 +340,7 @@ export default function SessionSummaryScreen({ route }) {
     return () => {
       mounted = false;
     };
-  }, [resolvedSessionId, totalAyahsInJuzParam]);
+  }, [resolvedSessionId, totalAyahsInJuzParam, reloadKey]);
 
   // Tiers are dropped, so there is one count, not two.
 
