@@ -25,7 +25,7 @@ import {
   resumeListening,
   rewindUtterance,
 } from '../lib/realtimeTranscription';
-import { createLiveJudge, findAyahRestart, hasSelfCorrectedSlip } from '../lib/liveWordJudge';
+import { createLiveJudge, findAyahRestart, describeExtraWords } from '../lib/liveWordJudge';
 import { useSQLiteContext } from 'expo-sqlite';
 import MushafPage from '../components/MushafPage';
 import { getPageForAyah } from '../lib/mushafDb';
@@ -450,6 +450,23 @@ export default function RecitationScreen(props) {
       [...accumulatedWrongIndicesRef.current].forEach((i) => {
         if (i >= pos) accumulatedWrongIndicesRef.current.delete(i);
       });
+      // Withdrawn for good, not merely until the next re-solve.
+      //
+      // These marks sit in sticky as well, and sticky is a record rather than
+      // an opinion: the end of the ayah restores from it, and every call to
+      // applyMarks puts it back. Clearing only the working set left them to
+      // reappear on the next update, and now that a mark is kept unless it can
+      // be proved an artefact, they would reappear on the finished ayah too.
+      // A word marked because the reciter was somewhere else entirely is the
+      // one case where the mark is provably not theirs.
+      //
+      // Words asked for outright are left alone. Those were never a judgement.
+      [...stickyWrongIndicesRef.current].forEach((i) => {
+        if (i >= pos && !revealedWrongRef.current.has(i)) {
+          stickyWrongIndicesRef.current.delete(i);
+          delete stickyLetterDiffRef.current[i];
+        }
+      });
       setLiveWrongIndices([...accumulatedWrongIndicesRef.current]);
     }
     return true;
@@ -708,26 +725,34 @@ export default function RecitationScreen(props) {
         // The ayah can finish correct and still have been got wrong on the way:
         // the reciter said the wrong word, or jumped one, heard it, and went
         // back to fix it. Reading only the final state would call that a clean
-        // recitation, which for hifz it is not — a word that had to be caught
+        // recitation, which for hifz it is not. A word that had to be caught
         // and repaired is exactly the word worth revising.
         //
-        // So a clean finish is checked against what was actually said. If the
-        // words the alignment discarded are nothing more than the ayah being
-        // re-trodden, there was no mistake to keep. If they contain anything
-        // else, the marks that stood at the moment of the slip go back up.
+        // A mark made live is kept unless the discarded words prove it was an
+        // artefact of re-treading. It used to be the other way round: marks
+        // were dropped unless a self-correction could be proved, and that
+        // silently threw away the commonest case of all. The recogniser knows
+        // the Qur'an, so a word heard wrong in the live guess is often tidied
+        // to the expected one by the time it is confirmed. The final text then
+        // reads as a flawless recitation, nothing was discarded, no
+        // self-correction could be proved, and the mistake vanished from the
+        // screen and from the mistakes table with it. Nothing recorded it, so
+        // the quiz never asked about it.
+        //
+        // Both that case and an innocent re-tread answer "no" to "did they
+        // slip?", which is why that question alone could not separate them.
+        // The one that tells them apart is whether anything was discarded at
+        // all: a straight-through recitation has nothing to blame a stray mark
+        // on, while a re-tread has the repeat sitting right there.
         if (frozenSlip.size > 0) {
           const expectedNorm = normalizeArabic(ayahDataRef.current.textCompare ?? '');
           const spokenNorm = normalizeArabic(accumulatedText ?? '');
-          const finishedClean = [...accumulatedWrongIndicesRef.current].every((index) =>
-            revealedWrongRef.current.has(index)
+          const { discarded, slipped } = describeExtraWords(
+            expectedNorm.split(/\s+/).filter(Boolean),
+            spokenNorm.split(/\s+/).filter(Boolean)
           );
-          if (
-            finishedClean &&
-            hasSelfCorrectedSlip(
-              expectedNorm.split(/\s+/).filter(Boolean),
-              spokenNorm.split(/\s+/).filter(Boolean)
-            )
-          ) {
+          const wasPlainRetread = discarded && !slipped;
+          if (!wasPlainRetread) {
             frozenSlip.forEach((index) => {
               stickyWrongIndicesRef.current.add(index);
               stickyLetterDiffRef.current[index] = frozenSlipDiff[index] ?? null;
@@ -948,6 +973,13 @@ export default function RecitationScreen(props) {
     (async () => {
       try {
       await startListening({
+        // Part-way through an ayah, so this is someone carrying on rather than
+        // beginning. Read from what is on the page rather than from a record of
+        // when the microphone was last opened, because that record would still
+        // name the ayah it was opened on however many have been finished since.
+        // On a fresh session nothing is revealed yet, which is the same
+        // question asked of a different moment, and it answers correctly.
+        preserveProgress: revealedWordCountRef.current > 0,
         getExpectedWords,
         onAyahComplete,
         onListening: () => {
