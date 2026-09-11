@@ -302,7 +302,17 @@ export default function SessionMistakesScreen({ route }) {
       if (wordError) {
         reportHandledError('sessionMistakes.clearWord', new Error(wordError.message));
         failed.push(m);
+        continue;
       }
+      // Folded into the baseline, so a word edit that did land stops counting
+      // as an unsaved correction. Without this a partial failure left the bar
+      // offering to save work that was already in the database, and pressing
+      // Save again rewrote it.
+      originalRef.current = originalRef.current.map((o) =>
+        o.surah_number === m.surah_number && o.ayah_number === m.ayah_number
+          ? { ...o, wrong_words: m.wrong_words }
+          : o
+      );
     }
 
     setIsSaving(false);
