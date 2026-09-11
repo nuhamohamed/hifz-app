@@ -11,7 +11,7 @@ import {
 import { useNavigation } from '@react-navigation/native';
 import { Audio } from 'expo-av';
 import * as Haptics from 'expo-haptics';
-import { normalizeArabic, wordDiff } from '../lib/arabicUtils';
+import { expectedWordsFrom, normalizeArabic, wordDiff } from '../lib/arabicUtils';
 import { getCurrentUserId } from '../lib/auth';
 import { getSurahName } from '../lib/juzSurahMap';
 import { createLiveJudge, findAyahRestart, hasSelfCorrectedSlip } from '../lib/liveWordJudge';
@@ -292,9 +292,7 @@ export default function PostSessionQuizScreen(props) {
     liveJudgeRef.current = createLiveJudge({
       getExpectedWords: () => {
         if (ayahDataRef.current?.isDisconnectedLetters) return [];
-        return (ayahDataRef.current?.words ?? [])
-          .map((w) => normalizeArabic(w.textCompare))
-          .filter(Boolean);
+        return expectedWordsFrom(ayahDataRef.current?.words);
       },
       onMistake: () => {
         // Freeze the board as it stands: this is the slip itself, and it
@@ -403,8 +401,12 @@ export default function PostSessionQuizScreen(props) {
         return;
       }
 
-      const { textDisplay, textCompare } = ayahDataRef.current;
-      const diff = wordDiff(normalizeArabic(textCompare), normalizeArabic(accumulatedText));
+      const { textDisplay, words } = ayahDataRef.current;
+      // Per mushaf word, not per whitespace-separated token: `wrongIndices`
+      // below indexes straight into `words`, and an imlaei word spelled as two
+      // would shift every index after it by one.
+      const expectedWords = expectedWordsFrom(words);
+      const diff = wordDiff(expectedWords, normalizeArabic(accumulatedText));
       let wrongIndices = diff
         .map((item, i) => (item.status === 'wrong' || item.status === 'missing' ? i : -1))
         .filter((i) => i >= 0);
@@ -415,7 +417,6 @@ export default function PostSessionQuizScreen(props) {
       // red further ahead, and it was frozen on sight. The pass above read the
       // whole ayah with all of it in hand, so it gets the last word. What was
       // asked for outright survives, having never been a judgement.
-      const expectedNorm = normalizeArabic(textCompare);
       const spokenNorm = normalizeArabic(accumulatedText ?? '');
       const frozenSlip = new Set(stickyWrongIndicesRef.current);
       const frozenSlipDiff = { ...stickyLetterDiffRef.current };
@@ -427,10 +428,7 @@ export default function PostSessionQuizScreen(props) {
       if (
         wrongIndices.length === 0 &&
         frozenSlip.size > 0 &&
-        hasSelfCorrectedSlip(
-          expectedNorm.split(/\s+/).filter(Boolean),
-          spokenNorm.split(/\s+/).filter(Boolean)
-        )
+        hasSelfCorrectedSlip(expectedWords, spokenNorm.split(/\s+/).filter(Boolean))
       ) {
         wrongIndices = [...frozenSlip].sort((a, b) => a - b);
       }
@@ -576,9 +574,7 @@ export default function PostSessionQuizScreen(props) {
       await startListening({
         getExpectedWords: () => {
           if (ayahDataRef.current?.isDisconnectedLetters) return [];
-          return (ayahDataRef.current?.words ?? [])
-            .map((w) => normalizeArabic(w.textCompare))
-            .filter(Boolean);
+          return expectedWordsFrom(ayahDataRef.current?.words);
         },
         onAyahComplete: (text) => onAyahCompleteRef.current(text),
         onPartial: (text) => {
@@ -588,9 +584,7 @@ export default function PostSessionQuizScreen(props) {
           if (accumulatedWrongIndicesRef.current.size > 0) {
             const expected = ayahDataRef.current?.isDisconnectedLetters
               ? []
-              : (ayahDataRef.current?.words ?? [])
-                  .map((w) => normalizeArabic(w.textCompare))
-                  .filter(Boolean);
+              : expectedWordsFrom(ayahDataRef.current?.words);
             const spoken = normalizeArabic(text).split(/\s+/).filter(Boolean);
             const restartAt = findAyahRestart(spoken, expected);
             if (restartAt > 0) {

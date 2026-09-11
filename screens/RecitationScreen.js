@@ -14,7 +14,7 @@ import { Audio } from 'expo-av';
 import * as Haptics from 'expo-haptics';
 import { getCurrentUserId } from '../lib/auth';
 import { getAyahLocation } from '../lib/juzSurahMap';
-import { normalizeArabic } from '../lib/arabicUtils';
+import { expectedWordsFrom, normalizeArabic } from '../lib/arabicUtils';
 import { getAyah } from '../lib/quranApi';
 import { supabase } from '../lib/supabase';
 import {
@@ -350,8 +350,7 @@ export default function RecitationScreen(props) {
 
   const getExpectedWords = useCallback(() => {
     if (ayahDataRef.current?.isDisconnectedLetters) return [];
-    const words = ayahDataRef.current?.words ?? [];
-    return words.map((w) => normalizeArabic(w.textCompare)).filter(Boolean);
+    return expectedWordsFrom(ayahDataRef.current?.words);
   }, []);
 
   const loadAyah = useCallback(async (ayahIndex) => {
@@ -426,7 +425,11 @@ export default function RecitationScreen(props) {
    */
   const matchesCurrentAyah = useCallback((text) => {
     const spoken = normalizeArabic(text ?? '').split(/\s+/).filter(Boolean);
-    return runsThrough(spoken, getExpectedWords());
+    // Flattened, because this counts spoken words against spoken words. The
+    // expected list is one entry per written word and some of those are said
+    // as two, which no single spoken word could ever equal.
+    const expected = getExpectedWords().flatMap((w) => w.split(' '));
+    return runsThrough(spoken, expected);
   }, [getExpectedWords]);
 
   const checkGoingBack = useCallback((text) => {
@@ -481,10 +484,11 @@ export default function RecitationScreen(props) {
 
   const recreateJudge = useCallback(() => {
     liveJudgeRef.current = createLiveJudge({
-      getExpectedWords: () => {
-        const norm = normalizeArabic(ayahDataRef.current.textCompare ?? '');
-        return norm ? norm.split(/\s+/).filter(Boolean) : [];
-      },
+      // The one list, not the ayah's text split on spaces. Everything the judge
+      // returns is an index the screen looks up in `words` to paint a mushaf
+      // word red, so a list of a different length puts every mark after the
+      // first multi-word spelling on the wrong word.
+      getExpectedWords,
       onMistake: () => {
         // Freeze the board as it stands: this is the slip itself, and it
         // survives however many times the ayah is started over afterwards.
@@ -514,7 +518,7 @@ export default function RecitationScreen(props) {
         }
       },
     });
-  }, [applyMarks, buzzAndTone, showMistakeMessage]);
+  }, [applyMarks, buzzAndTone, getExpectedWords, showMistakeMessage]);
 
   /**
    * The reciter has gone back to the first word of the ayah they are on.
@@ -745,10 +749,9 @@ export default function RecitationScreen(props) {
         // all: a straight-through recitation has nothing to blame a stray mark
         // on, while a re-tread has the repeat sitting right there.
         if (frozenSlip.size > 0) {
-          const expectedNorm = normalizeArabic(ayahDataRef.current.textCompare ?? '');
           const spokenNorm = normalizeArabic(accumulatedText ?? '');
           const { discarded, slipped } = describeExtraWords(
-            expectedNorm.split(/\s+/).filter(Boolean),
+            getExpectedWords(),
             spokenNorm.split(/\s+/).filter(Boolean)
           );
           const wasPlainRetread = discarded && !slipped;
@@ -794,7 +797,7 @@ export default function RecitationScreen(props) {
         setError(err?.message ?? 'Failed to process ayah completion.');
       }
     },
-    [applyMarks, loadAyah, recreateJudge, locationAt, startOffset, sessionId, totalAyahs]
+    [applyMarks, getExpectedWords, loadAyah, recreateJudge, locationAt, startOffset, sessionId, totalAyahs]
   );
 
   /**
