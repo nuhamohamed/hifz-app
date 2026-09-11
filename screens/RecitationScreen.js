@@ -982,9 +982,6 @@ export default function RecitationScreen(props) {
         preserveProgress: revealedWordCountRef.current > 0,
         getExpectedWords,
         onAyahComplete,
-        onListening: () => {
-          if (mounted) setMicReady(true);
-        },
         // Committed words are dropped rather than judged while the reciter is
         // back on an earlier ayah. Without this the position held but the
         // marks did not: words from the old ayah were still aligned against
@@ -1106,6 +1103,14 @@ export default function RecitationScreen(props) {
           }
         },
       });
+      // startListening resolves only once the microphone is open, the token is
+      // in hand, the socket is up and the audio held during setup has been
+      // sent. Said another way: this is the first moment the app is not merely
+      // hearing the reciter but transcribing them. That is what the button is
+      // claiming when it turns orange, so it is claimed here and nowhere
+      // earlier. Anything said before it is buffered and arrives, so waiting
+      // for the colour costs a reciter nothing.
+      if (mounted) setMicReady(true);
       } catch (err) {
         // The screen turned the microphone off, or started again, before this
         // attempt finished. Nothing failed and nobody is waiting on it, so it
@@ -1406,11 +1411,11 @@ export default function RecitationScreen(props) {
                 <Animated.View
                   style={[
                     styles.micRing,
-                    hasStarted && styles.micRingLive,
+                    isListening && styles.micRingLive,
                     { opacity: isListening ? pulseAnim : 0.15, transform: [{ scale: isListening ? pulseAnim : 1 }] },
                   ]}
                 />
-                <View style={[styles.micCircle, hasStarted && styles.micCircleLive]}>
+                <View style={[styles.micCircle, isListening && styles.micCircleLive]}>
                   <Text style={styles.micEmoji}>🎙</Text>
                 </View>
               </View>
@@ -1614,9 +1619,15 @@ const styles = StyleSheet.create({
   },
   micRingLive: { backgroundColor: colors.accentLight },
   // Blue is the resting control, the same blue as every other thing on the
-  // screen that is waiting to be pressed. Orange means the microphone is open,
-  // which is the one state worth spending the accent colour on: pressing it
-  // again closes it and the blue comes back.
+  // screen that is waiting to be pressed. Orange means the app is listening and
+  // transcribing, which is the one state worth spending the accent colour on:
+  // pressing it again closes it and the blue comes back.
+  //
+  // It used to turn orange on the tap, which is a second or two before any of
+  // that is true and, when the microphone could not be opened at all, never
+  // became true. The button sat orange over an error message saying the
+  // microphone could not be reached. Orange is now the live session itself, so
+  // a start that fails leaves the button blue, where it belongs.
   micCircle: {
     width: 34, height: 34, borderRadius: 17,
     backgroundColor: colors.primary, alignItems: 'center', justifyContent: 'center',

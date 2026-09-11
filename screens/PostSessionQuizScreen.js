@@ -89,6 +89,10 @@ export default function PostSessionQuizScreen(props) {
   // Nothing listens until the mic is tapped. It used to open itself on
   // arrival, so the screen asked people to recite while already recording.
   const [hasStarted, setHasStarted] = useState(false);
+  // Orange on the microphone means the app is transcribing, not that the
+  // button was pressed. Set only once startListening has resolved, which is
+  // after the socket is up, so a start that fails leaves the button blue.
+  const [micReady, setMicReady] = useState(false);
   const [error, setError] = useState('');
   const [showTransition, setShowTransition] = useState(false);
   const [showNextItemTransition, setShowNextItemTransition] = useState(false);
@@ -652,6 +656,10 @@ export default function PostSessionQuizScreen(props) {
           if (mounted) setError(message);
         },
       });
+      // Resolves only once the microphone is open, the socket is up and the
+      // audio held during setup has been sent, so this is the first moment the
+      // app is transcribing rather than merely hearing.
+      if (mounted) setMicReady(true);
       } catch (err) {
         // The screen turned the microphone off, or started again, before this
         // attempt finished. Nothing failed and nobody is waiting on it, so it
@@ -669,6 +677,7 @@ export default function PostSessionQuizScreen(props) {
 
     return () => {
       mounted = false;
+      setMicReady(false);
       stopListening();
     };
   }, [hasStarted, isLoading, error, buzzAndTone, handleAyahRestart]);
@@ -737,7 +746,7 @@ export default function PostSessionQuizScreen(props) {
     return map;
   }, [confirmedAyahs, currentItem, currentBlockIndex, revealedWordCount, liveWrongIndices, liveLetterDiff]);
 
-  const isListening = hasStarted && !isLoading && !error && !showTransition && !showNextItemTransition;
+  const isListening = hasStarted && micReady && !isLoading && !error && !showTransition && !showNextItemTransition;
 
   const handlePauseSession = async () => {
     if (sessionId) {
@@ -853,11 +862,11 @@ export default function PostSessionQuizScreen(props) {
                 <Animated.View
                   style={[
                     styles.micRing,
-                    hasStarted && styles.micRingLive,
+                    isListening && styles.micRingLive,
                     { opacity: isListening ? pulseAnim : 0.15, transform: [{ scale: isListening ? pulseAnim : 1 }] },
                   ]}
                 />
-                <View style={[styles.micCircle, hasStarted && styles.micCircleLive]}>
+                <View style={[styles.micCircle, isListening && styles.micCircleLive]}>
                   <Text style={styles.micEmoji}>🎙</Text>
                 </View>
               </View>
