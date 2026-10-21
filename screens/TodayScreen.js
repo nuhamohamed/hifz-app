@@ -25,7 +25,6 @@ import {
   portionPagesFor,
 } from '../lib/planEngine';
 import {
-  postSessionQuizMinutes,
   roundedEstimateMinutes,
 } from '../lib/portionMath';
 import {
@@ -97,7 +96,9 @@ function getResumeHint(pausedSession) {
       return 'Resuming revision';
     }
   }
-  if (phase === 'post_quiz') return 'Resuming recap quiz';
+  // The recap quiz is gone. A session left at that step from an older build
+  // finished reciting, and resuming it just completes it.
+  if (phase === 'post_quiz') return 'Finishing your session';
   return null;
 }
 
@@ -210,9 +211,6 @@ export default function TodayScreen() {
   // What was recited today, once the day is finished. The agenda crosses this
   // out rather than the next session's portion, which nobody has done yet.
   const [donePortion, setDonePortion] = useState(null);
-  // Mistakes made during today's finished session. Decides whether the recap
-  // quiz actually ran, and so whether it belongs on the agenda at all.
-  const [doneMistakeCount, setDoneMistakeCount] = useState(0);
   const [portionLoading, setPortionLoading] = useState(true);
   const [pausedSession, setPausedSession] = useState(null);
   // Pages in the paused session's OWN range, which the portion list cannot
@@ -335,24 +333,6 @@ export default function TodayScreen() {
             : null
         );
 
-        // Whether the recap actually ran. fetchPostSessionItems pulls mistakes
-        // for that session alone and returns nothing when there are none, so a
-        // clean recitation skips straight to the summary. Counting them here
-        // lets the agenda agree with what happened instead of listing a step
-        // that was never shown.
-        if (isDone && completedResult.data) {
-          const { count: mistakeCount } = await supabase
-            .from('mistakes')
-            .select('ayah_number', { count: 'exact', head: true })
-            .eq('session_id', completedResult.data.id)
-            // Recitation only, matching the plan's own count.
-            .eq('source', 'recitation')
-            .is('dismissed_at', null);
-          if (mounted) setDoneMistakeCount(mistakeCount ?? 0);
-        } else if (mounted) {
-          setDoneMistakeCount(0);
-        }
-
         if (!notificationsScheduledRef.current) {
           notificationsScheduledRef.current = true;
           try {
@@ -433,6 +413,21 @@ export default function TodayScreen() {
     }, [])
   );
 
+  // Marks a fully recited session complete and shows its summary. Scoring and
+  // queueing its mistakes for review happen on the way back here, after any
+  // corrections, in applyPendingSessionPlans().
+  const finishRecitedSession = async (sessionId, params) => {
+    const { error: completeError } = await supabase
+      .from('sessions')
+      .update({ phase: 'complete', status: 'complete', completed_at: new Date().toISOString() })
+      .eq('id', sessionId);
+    if (completeError) throw new Error(completeError.message);
+    navigation.navigate('SessionSummary', {
+      sessionId,
+      totalAyahsInJuz: params.totalAyahsInJuz,
+    });
+  };
+
   const navigateForPausedSession = (session) => {
     const resumeFromOffset = (session.last_confirmed_ayah ?? 0) + 1;
     const params = buildSessionParams(
@@ -452,7 +447,8 @@ export default function TodayScreen() {
     } else if (phase === 'revision') {
       navigation.navigate('Recitation', params);
     } else if (phase === 'post_quiz') {
-      navigation.navigate('PostSessionQuiz', params);
+      // Left at the recap quiz, which no longer exists. Recitation is done.
+      return finishRecitedSession(session.id, params);
     } else {
       navigation.navigate('Recitation', params);
     }
@@ -498,10 +494,9 @@ export default function TodayScreen() {
         // to Recitation with those same params, and Recitation reads
         // resumeFromOffset for its starting index. The quiz is a detour, not a
         // restart.
-        // Every ayah recited, but the session never reached the recap quiz:
-        // someone left from the "Done, continue to quiz" button. Resuming into
-        // Recitation would start one past the end of the portion, so go on to
-        // the quiz they were about to take.
+        // Every ayah recited, but the session was never finished: someone left
+        // from the "Done" button. Resuming into Recitation would start one past
+        // the end of the portion, so finish it instead.
         const recitationDone =
           (paused.type ?? 'revision') === 'revision' &&
           (paused.phase ?? 'pre_quiz') === 'revision' &&
@@ -509,11 +504,7 @@ export default function TodayScreen() {
           paused.last_confirmed_ayah >= paused.portion_end_ayah;
 
         if (recitationDone) {
-          await supabase
-            .from('sessions')
-            .update({ phase: 'post_quiz' })
-            .eq('id', paused.id);
-          navigateForPausedSession({ ...paused, date: today, phase: 'post_quiz' });
+          await navigateForPausedSession({ ...paused, date: today, phase: 'post_quiz' });
           return;
         }
 
@@ -525,11 +516,11 @@ export default function TodayScreen() {
             .from('sessions')
             .update({ phase: 'pre_quiz' })
             .eq('id', paused.id);
-          navigateForPausedSession({ ...paused, date: today, phase: 'pre_quiz' });
+          await navigateForPausedSession({ ...paused, date: today, phase: 'pre_quiz' });
           return;
         }
 
-        navigateForPausedSession(paused);
+        await navigateForPausedSession(paused);
         return;
       }
 
@@ -712,7 +703,7 @@ export default function TodayScreen() {
   // What is left of the day, for a session already under way.
   //
   // The day's estimate less the share already recited. Approximate on purpose,
-  // and it has to be: the estimate covers the review, the portion and the recap
+  // and it has to be: the estimate covers the review and the portion
   // together, and only the portion's progress is known mid-session. It is the
   // same number the banner shows before starting, reduced by the part now
   // behind them, which is the honest reading of "left".
@@ -786,19 +777,9 @@ export default function TodayScreen() {
           ? `about ${minutesLeft} min left`
           : null;
     } else {
-      // The recap. Its items come from this session's mistakes rather than from
-      // a due date, so answering one does not remove it from the list and there
-      // is nothing here that can honestly be called a count "left".
-      //
-      // A time still can be. minutesLeft is no use here: the portion is fully
-      // recited by this phase, so it scales the day's estimate by zero and
-      // clamps to a flat "1 min" that is not a measurement of anything. The
-      // recap's own allowance is, and it is the one part of the day still
-      // ahead of them.
-      const recapMinutes = roundedEstimateMinutes(
-        postSessionQuizMinutes(summary?.pages ?? 0)
-      );
-      bannerSub = recapMinutes ? `about ${recapMinutes} min left` : null;
+      // Left at the old recap quiz step. Recitation is done; resuming just
+      // finishes the session, so there is nothing left to put a time on.
+      bannerSub = null;
     }
   } else if (showingNext) {
     bannerEyebrow = 'NOTHING DUE TODAY';
@@ -857,7 +838,6 @@ export default function TodayScreen() {
       : null;
   const quizStepDone = sessionDoneToday || phase === 'revision' || phase === 'post_quiz';
   const reciteStepDone = sessionDoneToday || phase === 'post_quiz';
-  const recapStepDone = sessionDoneToday;
 
   // ── Which agenda steps exist at all ───────────────────────────────────────
   // Mistake review is a step only when something is genuinely due. It used to
@@ -867,18 +847,11 @@ export default function TodayScreen() {
   // complete without anyone having done anything.
   const hasReviewStep = quizCount > 0;
 
-  // The recap quizzes the mistakes made while reciting, so it only runs when
-  // the portion was recited and produced some. A finished day with none never
-  // saw it, so listing it would be inventing a step after the fact. A session
-  // paused part way keeps it: the portion is unfinished, and whether it earns a
-  // recap cannot be known until it is.
   // Whether the agenda *on screen* involves reciting. When the next session is
   // being previewed this is not today's answer: `quizOnly` is true precisely
   // because today has no portion, which is the reason the preview is showing at
-  // all. Reading it directly listed a recitation step with no recap under it.
+  // all. Reading it directly listed a recitation step for a quiz-only day.
   const agendaIsQuizOnly = showingNext ? false : quizOnly;
-
-  const hasRecapStep = !agendaIsQuizOnly && (sessionDoneToday ? doneMistakeCount > 0 : true);
 
   // Numbering follows what is actually shown rather than fixed positions.
   const firstPortionStep = hasReviewStep ? 2 : 1;
@@ -889,15 +862,14 @@ export default function TodayScreen() {
   // review still visibly moves it: proportionally it would be worth about 3%
   // against a ninety-ayah portion, which reads as no progress for real work.
   // Only the parts that exist are counted, and the weights are normalised
-  // against those, so a day without a recap can still fill the ring.
-  const RING_WEIGHT = { review: 25, recite: 65, recap: 10 };
+  // against those, so a day without a review can still fill the ring.
+  const RING_WEIGHT = { review: 25, recite: 75 };
 
   const reciteFraction = sessionDoneToday ? 1 : portionDoneFraction;
 
   const ringParts = [];
   if (hasReviewStep) ringParts.push([RING_WEIGHT.review, quizStepDone ? 1 : 0]);
   if (!agendaIsQuizOnly) ringParts.push([RING_WEIGHT.recite, reciteFraction]);
-  if (hasRecapStep) ringParts.push([RING_WEIGHT.recap, recapStepDone ? 1 : 0]);
 
   const ringWeightTotal = ringParts.reduce((sum, [w]) => sum + w, 0);
   // A quiz-only day that is finished has no weighted parts at all, so it is
@@ -992,9 +964,9 @@ export default function TodayScreen() {
                       done={quizStepDone}
                     />
                   ) : null}
-                  {/* A quiz-only day has no portion, so it has no recitation and
-                      no recap of one. Listing three steps and then ending after
-                      the first was the screen contradicting itself.
+                  {/* A quiz-only day has no portion, so it has no recitation.
+                      Listing a step and then ending before it was the screen
+                      contradicting itself.
 
                       When two juz fall on the same day both are listed here, in
                       mushaf order, each as its own step. They are done one after
@@ -1025,14 +997,6 @@ export default function TodayScreen() {
                       />
                     );
                   })}
-                  {hasRecapStep ? (
-                    <StepCard
-                      step={agendaPortions.length + firstPortionStep} icon="◆" title="Recap quiz"
-                      desc="Goes over any mistakes"
-                      iconBg={colors.parchment} iconColor={colors.accent}
-                      done={recapStepDone}
-                    />
-                  ) : null}
                 </View>
               </>
             )}

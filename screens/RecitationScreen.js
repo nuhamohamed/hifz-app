@@ -285,22 +285,28 @@ export default function RecitationScreen(props) {
     // tap would run all of this twice.
     if (isFinishingRef.current) return;
     isFinishingRef.current = true;
-    // Nothing here may stand between someone who has finished reciting and the
-    // quiz. Every step used to be awaited bare, so one that stalled left them
-    // on a button that did nothing, and the session was never moved on.
+    // Nothing here may stand between someone who has finished reciting and
+    // their summary. Every step used to be awaited bare, so one that stalled
+    // left them on a button that did nothing, and the session was never moved
+    // on.
+    //
+    // There is no recap quiz any more: reciting the portion finishes the
+    // session. Its mistakes are queued for later review when it is scored,
+    // after the summary's corrections; see applyPendingSessionPlans().
     try {
       await stopListening();
       await bankRecitationSeconds();
       if (sessionId) {
-        const { error: phaseError } = await supabase
+        const { error: completeError } = await supabase
           .from('sessions')
-          .update({ phase: 'post_quiz' })
+          .update({ phase: 'complete', status: 'complete', completed_at: new Date().toISOString() })
           .eq('id', sessionId);
-        if (phaseError) throw new Error(phaseError.message);
+        if (completeError) throw new Error(completeError.message);
       }
     } catch (err) {
-      // The quiz can run without these: it reads mistakes, not the phase.
-      // Resuming falls back on last_confirmed_ayah, which is already saved.
+      // The summary can show without these. If the session was not marked
+      // complete, the Today screen finishes it on the next start, because
+      // last_confirmed_ayah already reaches the end of the portion.
       reportHandledError('recitation.finish', err);
     }
     setShowTransition(true);
@@ -310,13 +316,7 @@ export default function RecitationScreen(props) {
       useNativeDriver: true,
     }).start();
     await new Promise((resolve) => setTimeout(resolve, 4000));
-    navigation.replace('PostSessionQuiz', {
-      sessionId,
-      startOffset,
-      endOffset,
-      juzNumber,
-      totalAyahsInJuz,
-    });
+    navigation.replace('SessionSummary', { sessionId, totalAyahsInJuz });
   }, [
     navigation,
     sessionId,
@@ -699,12 +699,11 @@ export default function RecitationScreen(props) {
               // So the review window never opened and the app went on testing
               // someone on words it had misheard, with no way to say so.
               //
-              // fetchPostSessionItems() writes these rows instead, from the same
-              // mistakes table, keyed by session. It runs when the recap quiz
-              // starts, which is to say once the portion is actually finished,
-              // and it picks up every mistake in the session including the ones
-              // made before a pause. The correction window on the summary screen
-              // comes immediately after.
+              // queueSessionMistakes() writes these rows instead, from the same
+              // mistakes table, keyed by session. It runs when the finished
+              // session is scored, after the summary screen's corrections, and
+              // it picks up every mistake in the session including the ones
+              // made before a pause.
               //
               // The trade: a session abandoned for good never schedules its
               // mistakes. That is the intended reading of an abandoned session,
@@ -1401,7 +1400,7 @@ export default function RecitationScreen(props) {
             onPress={() => finishRevisionRef.current?.()}
             activeOpacity={0.85}
           >
-            <Text style={styles.doneBtnText}>Done, continue to quiz</Text>
+            <Text style={styles.doneBtnText}>Done, see summary</Text>
           </TouchableOpacity>
         </View>
       ) : canSkip ? (

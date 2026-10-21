@@ -9,7 +9,6 @@ import { ActivityIndicator, Text, View } from 'react-native';
 import { NavigationContainer } from '@react-navigation/native';
 import { createNativeStackNavigator } from '@react-navigation/native-stack';
 import ErrorBoundary from './components/ErrorBoundary';
-import PostSessionQuizScreen from './screens/PostSessionQuizScreen';
 import PreSessionQuizScreen from './screens/PreSessionQuizScreen';
 import RecitationScreen from './screens/RecitationScreen';
 import SessionSummaryScreen from './screens/SessionSummaryScreen';
@@ -122,7 +121,6 @@ function MainNavigator() {
       <MainStack.Screen name="SettingsEraseData" component={EraseDataScreen} />
       <MainStack.Screen name="PreSessionQuiz" component={PreSessionQuizScreen} />
       <MainStack.Screen name="Recitation" component={RecitationScreen} />
-      <MainStack.Screen name="PostSessionQuiz" component={PostSessionQuizScreen} />
       <MainStack.Screen name="SessionSummary" component={SessionSummaryScreen} />
       <MainStack.Screen name="SessionMistakes" component={SessionMistakesScreen} />
     </MainStack.Navigator>
