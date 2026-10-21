@@ -274,14 +274,30 @@ export default function RecitationScreen(props) {
       .eq('id', sessionId);
   }, [sessionId]);
 
+  const isFinishingRef = useRef(false);
+
   const finishRevisionAndNavigate = useCallback(async () => {
-    await stopListening();
-    await bankRecitationSeconds();
-    if (sessionId) {
-      await supabase
-        .from('sessions')
-        .update({ phase: 'post_quiz' })
-        .eq('id', sessionId);
+    // The button stays on screen until the transition covers it, so a second
+    // tap would run all of this twice.
+    if (isFinishingRef.current) return;
+    isFinishingRef.current = true;
+    // Nothing here may stand between someone who has finished reciting and the
+    // quiz. Every step used to be awaited bare, so one that stalled left them
+    // on a button that did nothing, and the session was never moved on.
+    try {
+      await stopListening();
+      await bankRecitationSeconds();
+      if (sessionId) {
+        const { error: phaseError } = await supabase
+          .from('sessions')
+          .update({ phase: 'post_quiz' })
+          .eq('id', sessionId);
+        if (phaseError) throw new Error(phaseError.message);
+      }
+    } catch (err) {
+      // The quiz can run without these: it reads mistakes, not the phase.
+      // Resuming falls back on last_confirmed_ayah, which is already saved.
+      reportHandledError('recitation.finish', err);
     }
     setShowTransition(true);
     Animated.timing(fadeAnim, {
@@ -613,9 +629,15 @@ export default function RecitationScreen(props) {
           setCurrentAyahDisplay('');
           setConfirmedAyahs((prev) => [...prev, confirmedEntry]);
 
+          // The last ayah is saved like every other one. It used to return
+          // before the writes below, so the final ayah's mistakes were never
+          // logged and last_confirmed_ayah always stopped one short.
           if (nextIndex >= totalAyahs) {
             setIsRevisionComplete(true);
             await stopListening();
+            // A save that fails must not stop the recitation; the reciter has
+            // already moved on. Reported, not shown.
+            await saveCompletedAyah().catch((err) => reportHandledError('recitation.saveAyah', err));
             return;
           }
 
@@ -636,55 +658,62 @@ export default function RecitationScreen(props) {
           await loadAyah(nextIndex);
           recreateJudge();
           resumeListening();
+          // A save that fails must not stop the recitation; the reciter has
+          // already moved on. Reported, not shown.
+          await saveCompletedAyah().catch((err) => reportHandledError('recitation.saveAyah', err));
 
-          if (mistakeInsert && sessionId) {
-            const { userId, surahNumber, ayahNumber, tier, wrong_words, transcribed_text } =
-              mistakeInsert;
-            // mistakes.tier is NOT NULL with no default, so omitting it makes
-            // every insert fail. The error used to be discarded here, which
-            // silently starved the post-session quiz, the tier-2 count and the
-            // juz gate for months. Surface it instead.
-            const { error: mistakeError } = await supabase.from('mistakes').insert({
-              user_id: userId,
-              session_id: sessionId,
-              surah_number: surahNumber,
-              ayah_number: ayahNumber,
-              tier,
-              wrong_words,
-              transcribed_text,
-            });
-            if (mistakeError) {
-              console.error('[Recitation] failed to log mistake:', mistakeError.message);
+          // Declared as a function so the last-ayah branch above can call it
+          // before this point in the text.
+          async function saveCompletedAyah() {
+            if (mistakeInsert && sessionId) {
+              const { userId, surahNumber, ayahNumber, tier, wrong_words, transcribed_text } =
+                mistakeInsert;
+              // mistakes.tier is NOT NULL with no default, so omitting it makes
+              // every insert fail. The error used to be discarded here, which
+              // silently starved the post-session quiz, the tier-2 count and the
+              // juz gate for months. Surface it instead.
+              const { error: mistakeError } = await supabase.from('mistakes').insert({
+                user_id: userId,
+                session_id: sessionId,
+                surah_number: surahNumber,
+                ayah_number: ayahNumber,
+                tier,
+                wrong_words,
+                transcribed_text,
+              });
+              if (mistakeError) {
+                console.error('[Recitation] failed to log mistake:', mistakeError.message);
+              }
+              // Deliberately no quiz_queue row here. The mistakes row above is
+              // the record; the queue row is what puts an ayah into Mistake
+              // Review, and it is not this screen's to write.
+              //
+              // Writing it here scheduled mistakes out of a session that might
+              // never finish. Pause halfway and the queue row still fell due the
+              // next morning, but the session summary, which is the only place a
+              // misflag can be cleared, only ever resolves a completed session.
+              // So the review window never opened and the app went on testing
+              // someone on words it had misheard, with no way to say so.
+              //
+              // fetchPostSessionItems() writes these rows instead, from the same
+              // mistakes table, keyed by session. It runs when the recap quiz
+              // starts, which is to say once the portion is actually finished,
+              // and it picks up every mistake in the session including the ones
+              // made before a pause. The correction window on the summary screen
+              // comes immediately after.
+              //
+              // The trade: a session abandoned for good never schedules its
+              // mistakes. That is the intended reading of an abandoned session,
+              // and the mistakes rows still exist either way.
             }
-            // Deliberately no quiz_queue row here. The mistakes row above is
-            // the record; the queue row is what puts an ayah into Mistake
-            // Review, and it is not this screen's to write.
-            //
-            // Writing it here scheduled mistakes out of a session that might
-            // never finish. Pause halfway and the queue row still fell due the
-            // next morning, but the session summary, which is the only place a
-            // misflag can be cleared, only ever resolves a completed session.
-            // So the review window never opened and the app went on testing
-            // someone on words it had misheard, with no way to say so.
-            //
-            // fetchPostSessionItems() writes these rows instead, from the same
-            // mistakes table, keyed by session. It runs when the recap quiz
-            // starts, which is to say once the portion is actually finished,
-            // and it picks up every mistake in the session including the ones
-            // made before a pause. The correction window on the summary screen
-            // comes immediately after.
-            //
-            // The trade: a session abandoned for good never schedules its
-            // mistakes. That is the intended reading of an abandoned session,
-            // and the mistakes rows still exist either way.
+            await supabase
+              .from('sessions')
+              // A juz offset, matching sessions.portion_start_ayah. It used to be
+              // a surah-relative ayah number, so resuming a portion that crossed a
+              // surah restarted it in the wrong place.
+              .update({ last_confirmed_ayah: startOffset + completedIndex })
+              .eq('id', sessionId);
           }
-          await supabase
-            .from('sessions')
-            // A juz offset, matching sessions.portion_start_ayah. It used to be
-            // a surah-relative ayah number, so resuming a portion that crossed a
-            // surah restarted it in the wrong place.
-            .update({ last_confirmed_ayah: startOffset + completedIndex })
-            .eq('id', sessionId);
         };
         // ─────────────────────────────────────────────────────────────────
 

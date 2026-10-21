@@ -498,6 +498,25 @@ export default function TodayScreen() {
         // to Recitation with those same params, and Recitation reads
         // resumeFromOffset for its starting index. The quiz is a detour, not a
         // restart.
+        // Every ayah recited, but the session never reached the recap quiz:
+        // someone left from the "Done, continue to quiz" button. Resuming into
+        // Recitation would start one past the end of the portion, so go on to
+        // the quiz they were about to take.
+        const recitationDone =
+          (paused.type ?? 'revision') === 'revision' &&
+          (paused.phase ?? 'pre_quiz') === 'revision' &&
+          paused.last_confirmed_ayah != null &&
+          paused.last_confirmed_ayah >= paused.portion_end_ayah;
+
+        if (recitationDone) {
+          await supabase
+            .from('sessions')
+            .update({ phase: 'post_quiz' })
+            .eq('id', paused.id);
+          navigateForPausedSession({ ...paused, date: today, phase: 'post_quiz' });
+          return;
+        }
+
         const needsTodaysReview =
           resumedOnNewDay && quizCount > 0 && (paused.phase ?? 'pre_quiz') === 'revision';
 
