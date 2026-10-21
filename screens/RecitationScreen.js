@@ -99,6 +99,10 @@ function runsThrough(spoken, expected) {
  */
 const STALLED_COMMITS_BEFORE_SKIP = 3;
 
+// Ayahs fetched at once when restoring a resumed session. Enough to make a
+// long portion quick, few enough not to hammer quran.com.
+const RESUME_FETCH_BATCH = 10;
+
 export default function RecitationScreen(props) {
   const params = props.route?.params ?? props;
   const {
@@ -889,10 +893,28 @@ export default function RecitationScreen(props) {
             mistakesByAyah[`${m.surah_number}:${m.ayah_number}`] = m;
           }
 
-          const priorConfirmed = [];
+          // Fetched in parallel batches. One at a time, resuming near the end
+          // of a long portion meant well over a hundred round trips in a row
+          // behind a spinner, which testers reported as loading forever.
+          const priorOffsets = [];
           for (let offset = startOffset; offset < resumeFromOffset; offset++) {
-            const loc = getAyahLocation(juzNumber, offset);
-            const data = await getAyah(loc.surahNumber, loc.ayahNumber);
+            priorOffsets.push(offset);
+          }
+          const priorAyahs = [];
+          for (let i = 0; i < priorOffsets.length; i += RESUME_FETCH_BATCH) {
+            const batch = priorOffsets.slice(i, i + RESUME_FETCH_BATCH);
+            const fetched = await Promise.all(
+              batch.map((offset) => {
+                const loc = getAyahLocation(juzNumber, offset);
+                return getAyah(loc.surahNumber, loc.ayahNumber).then((data) => ({ loc, data }));
+              })
+            );
+            if (!mounted) return;
+            priorAyahs.push(...fetched);
+          }
+
+          const priorConfirmed = [];
+          for (const { loc, data } of priorAyahs) {
             const mistake = mistakesByAyah[`${loc.surahNumber}:${loc.ayahNumber}`];
             let wrongIndices = [];
             if (mistake?.wrong_words?.length) {
