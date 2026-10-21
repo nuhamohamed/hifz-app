@@ -194,6 +194,8 @@ export default Sentry.wrap(function App() {
       // A fetch started before onboarding finished would otherwise resolve
       // afterwards and send the user back to the last onboarding screen.
       if (mounted && !onboardingDone.current) setResumePoint(point);
+    }).catch((error) => {
+      if (mounted) setAuthError(error.message);
     });
     return () => {
       mounted = false;
