@@ -1029,7 +1029,21 @@ export default function TodayScreen() {
 
             {isStarting || portionLoading ? (
               <ActivityIndicator size="large" color={colors.primary} style={{ marginBottom: spacing.md }} />
-            ) : sessionDoneToday ? null : showingNext ? (
+            ) : sessionDoneToday ? (
+              // Developer builds only. A finished day offers nothing to start,
+              // which is right for testers and a dead end when testing the app
+              // itself, so this reuses the start-early path for the next session.
+              __DEV__ && nextSession ? (
+                <TouchableOpacity
+                  style={styles.startBtn}
+                  onPress={handleStartEarly}
+                  activeOpacity={0.88}
+                >
+                  <Text style={styles.startBtnIcon}>▶</Text>
+                  <Text style={styles.startBtnText}>Start next session now (dev)</Text>
+                </TouchableOpacity>
+              ) : null
+            ) : showingNext ? (
               <>
                 {/* Working ahead moves the whole rotation earlier rather than
                     banking a free day, so it is offered plainly and named for
