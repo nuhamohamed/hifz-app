@@ -16,6 +16,7 @@ import { getCurrentUserId } from '../lib/auth';
 import { getSurahName } from '../lib/juzSurahMap';
 import { createLiveJudge, findAyahRestart, hasSelfCorrectedSlip } from '../lib/liveWordJudge';
 import {
+  countAnsweredToday,
   fetchDueQuizItems,
   flagContextAyahIfNeeded,
   updateQuizResult,
@@ -131,6 +132,10 @@ export default function PreSessionQuizScreen(props) {
 
   const [quizItems, setQuizItems] = useState([]);
   const [currentItemIndex, setCurrentItemIndex] = useState(0);
+  // Questions already answered earlier today, before a pause. Answering one
+  // moves it off today's due list, so coming back refetched only what was left
+  // and the count started again at Q 1. Added to the numbering so it carries on.
+  const [answeredBefore, setAnsweredBefore] = useState(0);
   const [confirmedAyahs, setConfirmedAyahs] = useState([]);
   const [isLoading, setIsLoading] = useState(true);
   // Nothing listens until the mic is tapped. It used to open itself on
@@ -691,7 +696,10 @@ export default function PreSessionQuizScreen(props) {
       try {
         setIsLoading(true);
         const userId = await getCurrentUserId();
-        const items = await fetchDueQuizItems(userId);
+        const [items, answered] = await Promise.all([
+          fetchDueQuizItems(userId),
+          countAnsweredToday(userId),
+        ]);
         console.log('Quiz items fetched:', JSON.stringify(items));
 
         if (!mounted) return;
@@ -704,6 +712,7 @@ export default function PreSessionQuizScreen(props) {
         const { items: ordered, runs } = await buildRuns(items);
         if (!mounted) return;
         runsRef.current = runs;
+        setAnsweredBefore(answered);
         setQuizItems(ordered);
         await loadRun(0, ordered);
 
@@ -947,8 +956,10 @@ export default function PreSessionQuizScreen(props) {
   // thing on the page. Every later ayah used to bring it back.
   const awaitingFirstWord = currentBlockIndex === 0 && revealedWordCount === 0;
 
+  const quizTotal = answeredBefore + quizItems.length;
+  const quizNumber = answeredBefore + currentItemIndex + 1;
   const quizProgress = quizItems.length > 0
-    ? `Q ${currentItemIndex + 1} of ${quizItems.length}`
+    ? `Q ${quizNumber} of ${quizTotal}`
     : '';
 
   return (
@@ -983,7 +994,7 @@ export default function PreSessionQuizScreen(props) {
             styles.progressFill,
             {
               width: quizItems.length > 0
-                ? `${((currentItemIndex + 1) / quizItems.length) * 100}%`
+                ? `${(quizNumber / quizTotal) * 100}%`
                 : '0%',
             },
           ]}
