@@ -399,7 +399,17 @@ export default function RecitationScreen(props) {
   }, []);
 
   const revealNextWord = useCallback(() => {
-    const wordIndex = revealedWordCountRef.current;
+    // The next word not yet shown. When the reciter is stuck, the wrong words
+    // at the front are hidden under an underline, and the word they need is
+    // the first of those, not the word after them all.
+    let wordIndex = revealedWordCountRef.current;
+    while (
+      wordIndex > 0 &&
+      accumulatedWrongIndicesRef.current.has(wordIndex - 1) &&
+      !revealedWrongRef.current.has(wordIndex - 1)
+    ) {
+      wordIndex -= 1;
+    }
     const words = ayahDataRef.current?.words;
     if (!words || wordIndex >= words.length) return;
     // Asked for outright, so neither a restart nor a later re-solve takes it back.
@@ -407,8 +417,9 @@ export default function RecitationScreen(props) {
     stickyWrongIndicesRef.current.add(wordIndex);
     stickyLetterDiffRef.current[wordIndex] = null;
     applyMarks();
-    revealedWordCountRef.current = wordIndex + 1;
-    setRevealedWordCount(wordIndex + 1);
+    const next = Math.max(revealedWordCountRef.current, wordIndex + 1);
+    revealedWordCountRef.current = next;
+    setRevealedWordCount(next);
   }, [applyMarks]);
 
   const getExpectedWords = useCallback(() => {
@@ -1378,7 +1389,16 @@ export default function RecitationScreen(props) {
         // commit, so the first is never seen in red before it disappears.
         const wrong = new Set(liveWrongIndices);
         let runStart = revealedWordCount;
-        while (runStart > 0 && wrong.has(runStart - 1)) runStart -= 1;
+        // A word asked for with Reveal is always shown, in red. It counts as a
+        // mistake, so without this it was taken for a slip at the front and
+        // hidden under the underline it was meant to answer.
+        while (
+          runStart > 0 &&
+          wrong.has(runStart - 1) &&
+          !revealedWrongRef.current.has(runStart - 1)
+        ) {
+          runStart -= 1;
+        }
         // Any wrong word at the front, even one. Shown red the moment it
         // arrived, a slip then flashed and disappeared as the next wrong word
         // came in, which on a phone, where words commit one at a time, was
@@ -1431,7 +1451,13 @@ export default function RecitationScreen(props) {
   useEffect(() => {
     const wrong = new Set(liveWrongIndices);
     let runStart = revealedWordCount;
-    while (runStart > 0 && wrong.has(runStart - 1)) runStart -= 1;
+    while (
+      runStart > 0 &&
+      wrong.has(runStart - 1) &&
+      !revealedWrongRef.current.has(runStart - 1)
+    ) {
+      runStart -= 1;
+    }
     if (revealedWordCount - runStart < 2) return;
     let changed = false;
     if (!lostAtRef.current.has(runStart)) {
