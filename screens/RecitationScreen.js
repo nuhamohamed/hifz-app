@@ -361,6 +361,30 @@ export default function RecitationScreen(props) {
     return next;
   }, []);
 
+  /**
+   * Show the ayah up to where the reciter currently is, by the latest reading.
+   *
+   * This only ever moved forward. A run of wrong words is first read as wrong
+   * words in place of the ayah's next ones, which revealed the ayah that far;
+   * when a later word let the aligner see they were nothing to do with those
+   * words, it moved back, the marks came off, and the words stayed on screen
+   * in green although nobody had said them. Tested on a phone: "يا يكون للناس
+   * عليكم حجة" in place of "وان الذين اوتوا الكتاب" left انه green.
+   *
+   * Now it follows the reading both ways. Only what the reciter asked to be
+   * shown, and a word they got stuck on, hold it open.
+   */
+  const syncRevealed = useCallback(() => {
+    let next = prevMatchPosRef.current;
+    for (const index of accumulatedWrongIndicesRef.current) next = Math.max(next, index + 1);
+    for (const index of revealedWrongRef.current) next = Math.max(next, index + 1);
+    for (const index of lostAtRef.current) next = Math.max(next, index + 1);
+    if (next !== revealedWordCountRef.current) {
+      revealedWordCountRef.current = next;
+      setRevealedWordCount(next);
+    }
+  }, []);
+
   const revealNextWord = useCallback(() => {
     const wordIndex = revealedWordCountRef.current;
     const words = ayahDataRef.current?.words;
@@ -533,18 +557,13 @@ export default function RecitationScreen(props) {
         partialFaultsRef.current = new Map(
           entries.map(({ index, spoken }) => [index, spoken ?? null])
         );
-        const allWrong = applyMarks();
-        // Reveal any wrong word not yet reached by matchPos so it shows red now.
-        if (allWrong.size > 0) {
-          const maxWrong = Math.max(...allWrong);
-          if (maxWrong >= revealedWordCountRef.current) {
-            revealedWordCountRef.current = maxWrong + 1;
-            setRevealedWordCount(maxWrong + 1);
-          }
-        }
+        applyMarks();
+        // A wrong word not yet reached by matchPos is shown now, and one the
+        // judge withdraws is hidden again.
+        syncRevealed();
       },
     });
-  }, [applyMarks, buzzAndTone, getExpectedWords, showMistakeMessage]);
+  }, [applyMarks, buzzAndTone, getExpectedWords, showMistakeMessage, syncRevealed]);
 
   /**
    * The reciter has gone back to the first word of the ayah they are on.
@@ -1133,13 +1152,11 @@ export default function RecitationScreen(props) {
             showMistakeMessage();
           }
 
+          syncRevealed();
+
           if (matchedCount > prev) {
             // matchPos advanced — user is on current ayah.
             isGoingBackRef.current = false;
-
-            const newRevealed = Math.max(revealedWordCountRef.current, matchedCount);
-            revealedWordCountRef.current = newRevealed;
-            setRevealedWordCount(newRevealed);
 
             // Progress, so nobody is stuck. Withdraw the offer if it was out.
             stalledCommitsRef.current = 0;
@@ -1203,6 +1220,7 @@ export default function RecitationScreen(props) {
     handleAyahRestart,
     buzzAndTone,
     showMistakeMessage,
+    syncRevealed,
   ]);
 
   useEffect(() => {
@@ -1308,7 +1326,11 @@ export default function RecitationScreen(props) {
         const wrong = new Set(liveWrongIndices);
         let runStart = revealedWordCount;
         while (runStart > 0 && wrong.has(runStart - 1)) runStart -= 1;
-        const lost = revealedWordCount - runStart >= 2;
+        // Any wrong word at the front, even one. Shown red the moment it
+        // arrived, a slip then flashed and disappeared as the next wrong word
+        // came in, which on a phone, where words commit one at a time, was
+        // every time. It turns red once a correct word follows it.
+        const lost = revealedWordCount - runStart >= 1;
         map[currentKey] = {
           revealedCount: lost ? runStart : revealedWordCount,
           stuckAtIndex: lost ? runStart : null,
