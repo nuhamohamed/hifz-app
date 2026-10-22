@@ -779,19 +779,24 @@ export default function PreSessionQuizScreen(props) {
       };
     });
 
-    // Current block ayah: live reveal (or grey cue before recitation starts).
+    // Current block ayah: live reveal. Only the question's opening ayah is
+    // greyed in as the cue. The ayahs after it used to grey in too, one by one,
+    // which handed over the very text being tested; they now stay hidden until
+    // recited, as they do in the portion.
     const currentEntry = blockAyahsRef.current[currentBlockIndex];
     if (currentEntry) {
       const key = `${currentItem.surah_number}:${currentEntry.ayahNumber}`;
       if (!map[key]) {
-        map[key] = revealedWordCount === 0
-          ? { wrongIndices: [], cue: true }
-          : {
-              revealedCount: revealedWordCount,
-              liveWrongIndices,
-              skippedWordIndices: [],
-              letterDiffByIndex: liveLetterDiff,
-            };
+        if (revealedWordCount > 0) {
+          map[key] = {
+            revealedCount: revealedWordCount,
+            liveWrongIndices,
+            skippedWordIndices: [],
+            letterDiffByIndex: liveLetterDiff,
+          };
+        } else if (currentBlockIndex === 0) {
+          map[key] = { wrongIndices: [], cue: true };
+        }
       }
     }
 
@@ -825,6 +830,9 @@ export default function PreSessionQuizScreen(props) {
   }
 
   const hasFeedback = Boolean(mistakeMessage);
+  // The prompt belongs to the start of a question, when the cue is the only
+  // thing on the page. Every later ayah used to bring it back.
+  const awaitingFirstWord = currentBlockIndex === 0 && revealedWordCount === 0;
 
   const quizProgress = quizItems.length > 0
     ? `Q ${currentItemIndex + 1} of ${quizItems.length}`
@@ -876,11 +884,15 @@ export default function PreSessionQuizScreen(props) {
             <Text style={styles.skipBtnText}>Skip this ayah</Text>
           </TouchableOpacity>
         </View>
-      ) : (!hasStarted || revealedWordCount === 0 || hasFeedback) ? (
+      ) : (!hasStarted || awaitingFirstWord || hasFeedback) ? (
         <View style={styles.feedbackPanel}>
-          {!hasStarted && !hasFeedback ? (
+          {hasFeedback ? null : !hasStarted ? (
             <Text style={styles.reciteHint}>Tap the mic to start reciting</Text>
-          ) : revealedWordCount === 0 && !hasFeedback ? (
+          ) : !micReady ? (
+            // Same as the portion: nothing is transcribing yet, so asking for
+            // recitation here would be asking too early.
+            <Text style={styles.reciteHint}>Opening the microphone, one moment</Text>
+          ) : awaitingFirstWord ? (
             <Text style={styles.reciteHint}>Recite from the gray portion</Text>
           ) : null}
           {mistakeMessage ? (
@@ -925,8 +937,11 @@ export default function PreSessionQuizScreen(props) {
             </TouchableOpacity>
           )}
           {/* Under the microphone it is labelling, and the slot is held open
-              either way so the bar does not change height as it toggles. */}
-          <Text style={[styles.micLabel, !isListening && styles.micLabelOff]}>Listening</Text>
+              either way so the bar does not change height as it toggles. It
+              says Connecting until the microphone is actually open. */}
+          <Text style={[styles.micLabel, (!hasStarted || error) && styles.micLabelOff]}>
+            {micReady ? 'Listening' : 'Connecting'}
+          </Text>
         </View>
 
         <TouchableOpacity
