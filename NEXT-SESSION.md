@@ -1,79 +1,114 @@
 # Where things stand, and what to do next
 
-Rewritten 28 August 2026, at the end of a long session. Supersedes the version
-from 27 August, and `../HANDOFF.md` (18 June) is now badly out of date: it still
-calls the app HifzApp and predates the whole scheduling rewrite.
+Rewritten 21 October 2026. Supersedes the 28 August version. `../HANDOFF.md`
+(18 June) is badly out of date and should not be trusted.
 
 ---
 
 ## State
 
-Branch `fix/beta-p0-scheduling-and-mistakes`, **31 commits ahead of `main`**, all
-pushed, working tree clean. `main` is untouched at `a5213e4`.
+Branch `fix/beta-p0-scheduling-and-mistakes`, 103 commits ahead of `main`, all
+pushed, working tree clean. `main` is still untouched at `a5213e4`.
 
-Eleven schema migrations, all applied and verified against the live Supabase
-project `pcjmmogbjohtvnmrupya`. `supabase/schema.sql` is in step.
+The beta is live on TestFlight. Version 1.0.0; builds 3 to 7 and 9 shipped.
+`app.json` and `ios/Dawrah/Info.plist` were bumped to **10** on 11 September;
+whether 10 was ever uploaded is unconfirmed, so check App Store Connect. Either
+way, run `npm run bump-build` before the next archive (see the
+`ios-archive-checklist` memory).
 
-- `009` adds `scheduled_portions.status` and `users.age`
-- `010` adds `sessions.type` (`revision` | `quiz_only`)
-- `011` records `quiz_queue`'s unique index on (user, surah, ayah)
-
-**`011` was already true of the live project and false of this repo.** The
-index existed on the database and was written down nowhere, so "schema.sql is
-in step" was wrong on that one point until now. Nothing was applied to the
-live project; the migration is `IF NOT EXISTS` under the name already in use.
-
-The task list lives in an artifact the author has, **Dawrah TestFlight
-Checklist**. It was updated on 28 August and now reads nineteen decisions, all
-settled, with nothing left in the build column. Ask her for the link.
-
-**Both test accounts were cleared.** The next launch is a genuine first launch.
+**Nothing from 21 October has reached testers.** Everything below needs a new
+TestFlight build.
 
 ---
 
-## There is nothing left for me to build except one thing
+## What happened on 21 October
 
-Every item from the author's interface notes is done except:
+### The Supabase project had paused itself
 
-- **The mistakes list on the Summary screen should scroll in its own region**,
-  with the up-next block staying static. The collapse behaviour is built; the
-  scroll region is not.
+The live project `pcjmmogbjohtvnmrupya` showed status INACTIVE. The free plan
+pauses after seven quiet days, and the last session in the database was 26
+September. The app hung on its launch spinner, and every database call timed
+out. The author restored it from the dashboard; all data survived.
 
-Everything else on that list shipped. See the commit messages, which are
-detailed and honest about what was and was not verified.
+**It will happen again whenever testers go quiet for a week.** Either move to
+the paid plan or accept it. If the app "won't load", check the project status
+before reading any code.
+
+### Five fixes, all pushed
+
+1. **`8bd16bc` An unreachable server shows an error, not a spinner.** Every
+   Supabase request now gives up after 20 seconds. A failed onboarding read no
+   longer counts as an empty account, which would have sent finished users
+   back to Welcome.
+2. **`eba11d8` Finishing a portion can no longer freeze.** Two testers recited
+   a whole portion in September and never got past the last screen. The finish
+   awaited the microphone stop and two saves with no limit on any of them. The
+   native stop is now bounded at 3 seconds and reports
+   `transcription.stopRecording` to Sentry if it times out. **If that report
+   ever arrives, it confirms the cause**; until then it is the best fit, not a
+   proven one.
+   The same commit fixes a quiet data bug: **the last ayah of every portion was
+   never saved**, so its mistakes were dropped and `last_confirmed_ayah` always
+   stopped one short.
+3. **`331f5af` Resuming a long portion takes seconds.** Resuming fetched every
+   already-recited ayah from quran.com one after another, with no timeout:
+   about 147 requests in a row for someone near the end of juz 1. Now fetched
+   ten at a time, each giving up after 15 seconds. This is the more likely
+   cause of the "infinitely loading" reports, since both testers had resumed
+   on a later day.
+4. **`0de8877` The post-session quiz is gone.** The author decided testers did
+   not need it and it cost too much time. "Done, see summary" now completes the
+   session and goes straight to the summary. Details below.
+5. **`02b58ee`** Comments only.
+
+### What removing the post-session quiz changed
+
+- **Mistakes still come back for review.** The recap was what put a session's
+  mistakes into `quiz_queue`. `queueSessionMistakes()` in `lib/quizEngine.js`
+  now does it, called from `applyPendingSessionPlans()` when the session is
+  scored. That runs after the summary's corrections, so a mistake cleared as a
+  misflag is no longer queued. Before, the recap queued it first.
+- **The recap's time goes to the portion.** The allowance in `portionMath.js`
+  is removed, so a 30-minute session now holds a slightly longer portion. If
+  the author would rather keep portions the same size and shorten sessions,
+  that is a small change to `recitationBudgetMinutes()`.
+- **The Today agenda has no Recap step.** The progress ring is review 25,
+  recitation 75.
+- **Old sessions are handled.** One left at `phase = 'post_quiz'` by an older
+  build, or fully recited but never completed, is completed and shown its
+  summary on the next start.
+- The pre-session Mistake Review is unchanged, and so are quiz-only days.
+- `RECITATION_SHARE` (0.75) in `portionMath.js` is a rough planning figure for
+  onboarding, covering both quizzes. It was left alone and could now be raised.
 
 ---
 
-## The real remaining risk is testing, not code
+## Not yet run on a device
 
-A great deal of new surface landed today: new onboarding, a rebuilt Home banner,
-three new Settings screens, portion-by-portion scheduling. **Every genuine bug
-found today came from running the app, not from reading it.** That pattern held
-without exception:
+None of the 21 October work has been run on a phone or simulator. The bundle
+builds cleanly with `npx expo export`. No simulator had the app installed, and
+the finish and resume paths need real recitation to reach. On the next device
+build, check:
 
-- the Summary tab rendering a blank grey screen
-- a finished day crossing out tomorrow's portion instead of today's
-- the resume button clipped behind the tab bar
-- a 9am reminder scheduled for people who had turned reminders off
-- "Juz 1 Complete!" for a session that was only paused
+1. Recite a short portion to the end, with a mistake or two. "Done, see
+   summary" goes to the summary.
+2. Those ayahs appear in the next day's Mistake Review.
+3. Pause a long portion near the end, then resume. The page appears within a
+   few seconds.
+4. A mistake on the **last** ayah of the portion appears on the summary.
 
-Three paths are reasoned about but **have never been watched working**, because
-they need real recitation into a microphone:
-
-1. The repeat after a bad session
-2. A halved portion actually being served
-3. A quiz-only day running to its last item
-
-And one more, because the simulator would not accept synthetic taps on a native
-control: **the daily reminder switch's on/off gesture**. The off state was
-verified through a reload instead.
+Still never watched working, carried over from August: the repeat after a bad
+session, a halved portion being served, a quiz-only day running to its end,
+and the daily reminder switch's on/off gesture.
 
 ---
 
-## Deferred work has a home now
+## Sentry
 
-Things deliberately left until after the beta live in [POST-BETA.md](POST-BETA.md),
-with the reason for waiting on each. Bugs do not go there; they go in the branch.
+The DSN is in `lib/sentry.js`. Both saved auth tokens (`.env.local` and
+`.env.sentry-build-plugin`) can upload but **cannot read issues**, so crash
+reports cannot be checked from here. A token with issue read access would fix
+that.
 
 ---
 
@@ -82,90 +117,83 @@ with the reason for waiting on each. Bugs do not go there; they go in the branch
 Reported 28 August, deliberately not fixed. **Say the letter fa where the ayah
 has waw, clearly, and no mistake is flagged.**
 
-Ruled out already: the app cannot be the cause. A spoken word either equals the
-expected word exactly, after a normalisation that touches neither letter, or it
-is marked wrong. No fuzzy match, no similarity threshold, no edit-distance
-tolerance anywhere in the decision path. `letterDiff.js` uses Levenshtein only
-to colour letters inside a word already judged wrong.
+The app cannot be the cause: a spoken word either equals the expected word
+exactly, after a normalisation that touches neither letter, or it is marked
+wrong. There is no fuzzy match anywhere in the decision path. `letterDiff.js`
+uses Levenshtein only to colour letters inside a word already judged wrong.
 
-The suspect is the recogniser. There is a note in `realtimeTranscription.js`
-saying Speechmatics "over-predicts Quran text in partials", which is why
-partials are not used for word reveal. The same pull would explain this: the
-model has Quranic text in its training data and completes toward it, so a rare
-fa prefix is smoothed into the far commoner waw.
+The suspect is the recogniser. A note in `realtimeTranscription.js` says
+Speechmatics "over-predicts Quran text in partials". The same pull would smooth
+a rare fa prefix into the far commoner waw.
 
 **The next step is evidence, not code.** Commit `918f045` logs per-word
 confidence and competing candidates under `__DEV__`. Recite one ayah on a phone
-with Metro attached, say the fa deliberately, read the `[RT-DEBUG]` lines:
+with Metro attached, say the fa deliberately, and read the `[RT-DEBUG]` lines:
 
-- **Waw returned confidently, no alternative** → nothing app-side can catch it;
-  belongs with "grading mistakes by kind" as after the beta
-- **Fa present as a lower-ranked alternative** → real fix: judge against the
-  candidates, not only the top one
-- **Confidence drops on the substituted word** → the app can at least stop
-  claiming the word was correct
+- **Waw returned confidently, no alternative:** nothing app-side can catch it.
+- **Fa present as a lower-ranked alternative:** judge against the candidates,
+  not only the top one.
+- **Confidence drops on the substituted word:** the app can at least stop
+  claiming the word was correct.
 
 ---
 
-## Decisions the author made today
+## Decisions the author has made
 
-Recorded because they are not all in the checklist artifact:
+Recorded because they are not all written down elsewhere:
 
 1. **Age is asked, stored, and under-13s are declined.** First question, before
    anything personal is stored. Enforced again as a database constraint.
-2. **A quiz-only day is only a quiz.** No fabricated portion, no recitation, and
-   it never advances the recitation schedule. This was settled in conversation
-   long ago and never written down, which is how it survived a full audit.
-3. **Starting a session early re-anchors the schedule.** The whole rotation
-   moves earlier, the same rule lateness follows, run backwards. The author was
-   told this lets a keen person compress their round and chose it anyway.
-4. **Short on time appears only on heavy days**, not every day.
-5. **The destructive action is named honestly.** "Erase all my data", red, on
-   its own screen listing what goes. Not "Reset settings".
-6. **A whole juz in one sitting is allowed** if the person chose enough minutes
-   for it. Flagged as daunting for a first session; the author kept it.
+2. **A quiz-only day is only a quiz.** No fabricated portion, and it never
+   advances the recitation schedule.
+3. **Starting a session early re-anchors the schedule**, the same rule lateness
+   follows, run backwards.
+4. **Short on time appears only on heavy days.**
+5. **The destructive action is named honestly**: "Erase all my data", red, on
+   its own screen.
+6. **A whole juz in one sitting is allowed** if the person chose enough minutes.
+7. **No post-session quiz** (21 October). Reciting the portion ends the session.
+
+Deferred work lives in [POST-BETA.md](POST-BETA.md), with the reason for
+waiting on each.
 
 ---
 
-## Waiting on the author, not on code
+## Settled since August
 
-- **Apple Developer enrolment** — submitted, still pending. Blocks TestFlight.
-- **Spending cap at Speechmatics** — the last transcription item.
-- **Legal name and address** for the privacy policy, which has placeholders.
-- **`privacy@dawrah.ai` must receive mail.**
-- **App Privacy form** — age is a new declaration now that it is stored.
-- **`eas login` and `eas init`**, or archive from Xcode.
-- **Twelve tests on a real phone**, none run yet.
+- Apple Developer enrolment is approved; profiles last a year, not a week.
+- The privacy policy is live at https://dawrah.ai/privacy and linked from
+  Settings. There is no /terms page.
+- The contact address is team@dawrah.ai. There is no privacy@dawrah.ai.
+- Speechmatics runs on a $100 free credit with no card on file.
 
 ---
 
 ## Things that will waste an hour if you do not know them
 
 See the memory files, particularly `ios-build-toolchain`,
-`expo-config-plugin-overrides` and `ios-dev-build-renewal`. The short version:
+`ios-archive-checklist`, `expo-config-plugin-overrides` and
+`ios-dev-build-renewal`. The short version:
 
 - `ios/` is **generated**. Never hand-edit it. Change `app.json` and re-run
   prebuild. One plugin overrides `app.json` for the microphone string.
-- DerivedData must not live in `~/Documents` (iCloud attributes break codesign)
-  nor in `~/Library/Application Support` (node cannot read its own cwd there).
-  Use Xcode's default location.
+- **Before every archive:** `npm run bump-build`, then `npx expo export`.
+  Nothing else moves the build number.
+- DerivedData must not live in `~/Documents` (iCloud breaks codesign) nor in
+  `~/Library/Application Support`. Use Xcode's default location.
 - `pod` needs the portable Ruby's own interpreter and `GEM_HOME`.
-- **The Mac's LAN address moves.** It was 192.168.68.59, then .60 on 28 August.
-  Read it with `ipconfig getifaddr en0` rather than trusting a remembered one.
-  The phone reaches Metro at `http://<that>:8081` via "Enter URL manually".
-- **The dev build profile expires 2 September**, seven days from the last
-  renewal. Rebuild from Xcode, not the CLI.
+- **The Mac's LAN address moves.** Read it with `ipconfig getifaddr en0`. The
+  phone reaches Metro at `http://<that>:8081` via "Enter URL manually".
+- Build to the phone from Xcode, not the CLI.
 - The simulator's coordinate space is **402x874 points**, not the screenshot's
-  pixel dimensions. Taps at pixel coordinates land nowhere.
+  pixel dimensions.
 
 ---
 
 ## How this work has been going
 
-Every change was run on the simulator before being called done, and where
-something was **not** verified the commit says so explicitly. Keep that up. The
-commit messages are long on purpose: they carry the reasoning and the measured
-before-and-after numbers, so the next person does not have to re-derive them.
+Where something was **not** verified, the commit says so explicitly. Keep that
+up. The commit messages are long on purpose: they carry the reasoning, so the
+next person does not have to re-derive it.
 
-Where a decision was the author's to make, it was asked rather than assumed, and
-where a recommendation was overruled the decision was recorded and followed.
+Where a decision was the author's to make, it was asked rather than assumed.
