@@ -17,7 +17,7 @@ const BASMALLAH = 'بِسۡمِ ٱللَّهِ ٱلرَّحۡمَٰنِ ٱلرَ
  * Status shapes:
  *   { revealedCount: number, liveWrongIndices: number[], stuckAtIndex?: number }
  *     → current live ayah: words 0..revealedCount-1 are visible,
- *       green tint if correct, red tint if in liveWrongIndices.
+ *       in the ordinary text colour, red if in liveWrongIndices.
  *       stuckAtIndex, when set, is drawn as a blank with a red underline:
  *       the reciter has lost their place there.
  *   { wrongIndices: number[], letterDiffByIndex?: Record<number, string|null>, cue?: boolean }
@@ -124,7 +124,6 @@ function MushafLine({ line, ayahStatuses, lineHeight }) {
         const isRevealed = isWordReveal && wordIndex < ayahStatus.revealedCount && !isSkipped;
         const isLiveWrong = isWordReveal && (ayahStatus.liveWrongIndices ?? []).includes(wordIndex);
         const isVisiblyWrong = isRevealed && isLiveWrong;
-        const isLiveCorrect = isRevealed && !isLiveWrong;
         const isConfirmedWrong =
           !isWordReveal &&
           ayahStatus != null &&
@@ -164,7 +163,6 @@ function MushafLine({ line, ayahStatuses, lineHeight }) {
               isConfirmedWrong && styles.wordWrong,
               isHidden && styles.wordHidden,
               isStuckHere && styles.wordStuck,
-              isLiveCorrect && styles.wordLiveCorrect,
               isVisiblyWrong && styles.wordWrong,
             ]}
           >
@@ -228,9 +226,6 @@ const styles = StyleSheet.create({
   },
   wordWrong: {
     color: '#c62828',
-  },
-  wordLiveCorrect: {
-    color: '#2e7d32',
   },
   wordCue: {
     color: '#9e9e9e',
