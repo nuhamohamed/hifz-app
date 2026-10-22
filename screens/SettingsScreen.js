@@ -7,6 +7,11 @@ import SettingsGroup from './settings/SettingsGroup';
 import SettingsRow from './settings/SettingsRow';
 import SettingsStaticRow from './settings/SettingsStaticRow';
 import { getCurrentUserId, isAnonymous } from '../lib/auth';
+import {
+  TRANSCRIPTION_ENGINES,
+  getTranscriptionEngine,
+  setTranscriptionEngine,
+} from '../lib/realtimeTranscription';
 import { supabase } from '../lib/supabase';
 import { colors, fonts, spacing } from '../lib/theme';
 
@@ -43,6 +48,8 @@ function displayTime(dbTime) {
  * length, and the irreversible action sat at the bottom of the same page.
  */
 export default function SettingsScreen() {
+  // Developer builds only; see TRANSCRIPTION_ENGINES.
+  const [recogniser, setRecogniser] = useState(getTranscriptionEngine);
   const navigation = useNavigation();
   const [settings, setSettings] = useState(null);
   const [anonymous, setAnonymous] = useState(null);
@@ -148,6 +155,28 @@ export default function SettingsScreen() {
             last
           />
         </SettingsGroup>
+
+        {__DEV__ ? (
+          // Never shown in a release build. Compares recognisers on a real
+          // phone; Tarteel (Mac) needs tools/tarteel-server running.
+          <SettingsGroup
+            title="Developer: recogniser"
+            footer="Takes effect the next time the microphone opens. Tarteel (Mac) needs tools/tarteel-server running on the Mac that serves Metro."
+          >
+            {TRANSCRIPTION_ENGINES.map((option, i) => (
+              <SettingsRow
+                key={option.id}
+                label={option.label}
+                value={recogniser === option.id ? '✓' : ''}
+                onPress={() => {
+                  setRecogniser(option.id);
+                  setTranscriptionEngine(option.id);
+                }}
+                last={i === TRANSCRIPTION_ENGINES.length - 1}
+              />
+            ))}
+          </SettingsGroup>
+        ) : null}
 
         <SettingsGroup
           footer="Dawrah keeps your progress on this phone only. There is no sign-in yet, so anything erased cannot be recovered."
