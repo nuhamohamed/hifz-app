@@ -99,6 +99,20 @@ function runsThrough(spoken, expected) {
  */
 const STALLED_COMMITS_BEFORE_SKIP = 3;
 
+/**
+ * Where the run of wrong words at the front starts: walk back from `frontier`
+ * over words in `wrong`, stopping at a word asked for with Reveal, which is
+ * always shown. Equal to `frontier` when the word before it is not wrong.
+ *
+ * One place for the display rule (the red underline), the lost-place record
+ * and Reveal, which used to carry three copies of this loop.
+ */
+function frontRunStart(frontier, wrong, revealed) {
+  let start = frontier;
+  while (start > 0 && wrong.has(start - 1) && !revealed.has(start - 1)) start -= 1;
+  return start;
+}
+
 // Ayahs fetched at once when restoring a resumed session. Enough to make a
 // long portion quick, few enough not to hammer quran.com.
 const RESUME_FETCH_BATCH = 10;
@@ -402,14 +416,11 @@ export default function RecitationScreen(props) {
     // The next word not yet shown. When the reciter is stuck, the wrong words
     // at the front are hidden under an underline, and the word they need is
     // the first of those, not the word after them all.
-    let wordIndex = revealedWordCountRef.current;
-    while (
-      wordIndex > 0 &&
-      accumulatedWrongIndicesRef.current.has(wordIndex - 1) &&
-      !revealedWrongRef.current.has(wordIndex - 1)
-    ) {
-      wordIndex -= 1;
-    }
+    const wordIndex = frontRunStart(
+      revealedWordCountRef.current,
+      accumulatedWrongIndicesRef.current,
+      revealedWrongRef.current
+    );
     const words = ayahDataRef.current?.words;
     if (!words || wordIndex >= words.length) return;
     // Asked for outright, so neither a restart nor a later re-solve takes it back.
@@ -585,7 +596,11 @@ export default function RecitationScreen(props) {
   // whole alert; the "Mistake in ayah N" line under the page was removed.
   const alertMistake = useCallback(() => {
     if (ayahDataRef.current?.isDisconnectedLetters) return;
-    const faults = accumulatedWrongIndicesRef.current;
+    // Revealed words are left out: asking for one makes no sound, and counting
+    // it here made the next check beep for it as if it were new.
+    const faults = new Set(
+      [...accumulatedWrongIndicesRef.current].filter((i) => !revealedWrongRef.current.has(i))
+    );
     const alerted = alertedIndicesRef.current;
     let isNewMistake = false;
     for (const index of faults) {
@@ -1207,9 +1222,19 @@ export default function RecitationScreen(props) {
           // Replaced whole rather than added to, and re-synced on every commit
           // rather than only on the ones that advance, so a slot the aligner
           // reconsiders gives its mark back as soon as it changes its mind.
-          // Skips are remembered as soon as a commit names them; see skippedRef.
+          // Skips are remembered once the reciter has carried on at least two
+          // words past them; see skippedRef. Named on sight, a single word
+          // that also occurs further on in the ayah briefly read as a jump to
+          // it, and the words in between were locked in as skipped although
+          // the next words showed the reciter had not moved.
+          const correctAfter = (index) =>
+            statuses.filter((e) => e.index > index && e.status === 'correct').length;
           for (const entry of statuses) {
-            if (entry.status === 'missing' && !skippedRef.current.has(entry.index)) {
+            if (
+              entry.status === 'missing' &&
+              !skippedRef.current.has(entry.index) &&
+              correctAfter(entry.index) >= 2
+            ) {
               skippedRef.current.add(entry.index);
               stickyWrongIndicesRef.current.add(entry.index);
               stickyLetterDiffRef.current[entry.index] = null;
@@ -1410,18 +1435,14 @@ export default function RecitationScreen(props) {
         // longer at the front, and the run shows in red with the recovered
         // words in green after it. Usually both wrong words arrive in one
         // commit, so the first is never seen in red before it disappears.
-        const wrong = new Set(liveWrongIndices);
-        let runStart = revealedWordCount;
         // A word asked for with Reveal is always shown, in red. It counts as a
-        // mistake, so without this it was taken for a slip at the front and
-        // hidden under the underline it was meant to answer.
-        while (
-          runStart > 0 &&
-          wrong.has(runStart - 1) &&
-          !revealedWrongRef.current.has(runStart - 1)
-        ) {
-          runStart -= 1;
-        }
+        // mistake, so without that stop it was taken for a slip at the front
+        // and hidden under the underline it was meant to answer.
+        const runStart = frontRunStart(
+          revealedWordCount,
+          new Set(liveWrongIndices),
+          revealedWrongRef.current
+        );
         // Any wrong word at the front, even one. Shown red the moment it
         // arrived, a slip then flashed and disappeared as the next wrong word
         // came in, which on a phone, where words commit one at a time, was
@@ -1471,17 +1492,18 @@ export default function RecitationScreen(props) {
   // words after it too, and they would stay red after a clean recovery. They
   // are guesses at what was meant, not mistakes, so they are unfrozen and the
   // judge decides them afresh: green when recited, red when skipped over.
+  //
+  // Committed words only. The live partial is the recogniser's first guess and
+  // is often tidied a moment later; a two-word misreading there, recorded
+  // here, became a permanent red word and a saved mistake for a recitation
+  // the committed words show was correct. The underline itself still follows
+  // the live reading, so it appears as fast as before.
   useEffect(() => {
-    const wrong = new Set(liveWrongIndices);
-    let runStart = revealedWordCount;
-    while (
-      runStart > 0 &&
-      wrong.has(runStart - 1) &&
-      !revealedWrongRef.current.has(runStart - 1)
-    ) {
-      runStart -= 1;
-    }
-    if (revealedWordCount - runStart < 2) return;
+    const committedWrong = new Set(commitFaultsRef.current.keys());
+    let frontier = prevMatchPosRef.current;
+    for (const index of committedWrong) frontier = Math.max(frontier, index + 1);
+    const runStart = frontRunStart(frontier, committedWrong, revealedWrongRef.current);
+    if (frontier - runStart < 2) return;
     let changed = false;
     if (!lostAtRef.current.has(runStart)) {
       lostAtRef.current.add(runStart);
@@ -1489,7 +1511,7 @@ export default function RecitationScreen(props) {
       stickyLetterDiffRef.current[runStart] = null;
       changed = true;
     }
-    for (let i = runStart + 1; i < revealedWordCount; i += 1) {
+    for (let i = runStart + 1; i < frontier; i += 1) {
       if (
         stickyWrongIndicesRef.current.has(i) &&
         !revealedWrongRef.current.has(i) &&
