@@ -221,6 +221,12 @@ export default function RecitationScreen(props) {
   // having been stuck on it, so like a revealed word it survives restarts and
   // the end-of-ayah reconciliation.
   const lostAtRef = useRef(new Set());
+  // How much of the ayah was recited before the reciter started it over. A
+  // restart moves the matcher back to the top, and the page following it took
+  // everything already recited off the screen until they caught up again.
+  const keptRevealedRef = useRef(0);
+  // Wrong or skipped words that have already had their mistake sound.
+  const alertedIndicesRef = useRef(new Set());
   // Transcript of the attempts a restart threw away, kept only so the logged
   // mistake still shows everything that was actually said.
   const discardedAttemptsRef = useRef('');
@@ -369,11 +375,12 @@ export default function RecitationScreen(props) {
    * in green although nobody had said them. Tested on a phone: "يا يكون للناس
    * عليكم حجة" in place of "وان الذين اوتوا الكتاب" left انه green.
    *
-   * Now it follows the reading both ways. Only what the reciter asked to be
-   * shown, and a word they got stuck on, hold it open.
+   * Now it follows the reading both ways. What the reciter asked to be shown,
+   * a word they got stuck on, and what was on screen before they started the
+   * ayah over (keptRevealedRef) hold it open.
    */
   const syncRevealed = useCallback(() => {
-    let next = prevMatchPosRef.current;
+    let next = Math.max(prevMatchPosRef.current, keptRevealedRef.current);
     for (const index of accumulatedWrongIndicesRef.current) next = Math.max(next, index + 1);
     for (const index of revealedWrongRef.current) next = Math.max(next, index + 1);
     for (const index of lostAtRef.current) next = Math.max(next, index + 1);
@@ -523,18 +530,30 @@ export default function RecitationScreen(props) {
     return true;
   }, [matchesCurrentAyah]);
 
-  // Whether this stretch of wrong words has already had its sound. Asked for by
-  // the author: several wrong words in a row are one mistake to hear about,
-  // not one sound per word. Re-armed once a correct word follows.
-  //
-  // The sound is the whole alert. A "Mistake in ayah N" line used to appear
-  // under the page as well; the author asked for it to go, since the page
-  // already shows where the mistake is.
-  const mistakeAlertedRef = useRef(false);
+  // One sound per mistake, asked for by the author. A run of neighbouring
+  // wrong or skipped words is one mistake however it arrives: word by word,
+  // all at once, or reported twice (the live judge and the committed words
+  // both name the same slip, a moment apart, and each used to sound). A run
+  // sounds only if none of its words has sounded before. The sound is the
+  // whole alert; the "Mistake in ayah N" line under the page was removed.
   const alertMistake = useCallback(() => {
-    if (mistakeAlertedRef.current || ayahDataRef.current?.isDisconnectedLetters) return;
-    mistakeAlertedRef.current = true;
-    buzzAndTone();
+    if (ayahDataRef.current?.isDisconnectedLetters) return;
+    const faults = accumulatedWrongIndicesRef.current;
+    const alerted = alertedIndicesRef.current;
+    let isNewMistake = false;
+    for (const index of faults) {
+      if (alerted.has(index)) continue;
+      // Walk out to the ends of this word's run of faults.
+      let lo = index;
+      while (faults.has(lo - 1)) lo -= 1;
+      let hi = index;
+      while (faults.has(hi + 1)) hi += 1;
+      let runAlerted = false;
+      for (let k = lo; k <= hi && !runAlerted; k += 1) runAlerted = alerted.has(k);
+      if (!runAlerted) isNewMistake = true;
+    }
+    for (const index of faults) alerted.add(index);
+    if (isNewMistake) buzzAndTone();
   }, [buzzAndTone]);
 
   const recreateJudge = useCallback(() => {
@@ -596,6 +615,9 @@ export default function RecitationScreen(props) {
     partialFaultsRef.current = new Map();
     applyMarks();
 
+    // What was correctly recited stays on the page through the restart.
+    keptRevealedRef.current = Math.max(keptRevealedRef.current, prevMatchPosRef.current);
+
     // The matcher is back at the top of the ayah, so the next commit is a
     // fresh start rather than another commit that failed to move.
     prevMatchPosRef.current = 0;
@@ -636,7 +658,8 @@ export default function RecitationScreen(props) {
           partialFaultsRef.current = new Map();
           revealedWrongRef.current = new Set();
           lostAtRef.current = new Set();
-          mistakeAlertedRef.current = false;
+          keptRevealedRef.current = 0;
+          alertedIndicesRef.current = new Set();
           isGoingBackRef.current = false;
           prevMatchPosRef.current = 0;
           revealedWordCountRef.current = 0;
@@ -1374,8 +1397,6 @@ export default function RecitationScreen(props) {
     const wrong = new Set(liveWrongIndices);
     let runStart = revealedWordCount;
     while (runStart > 0 && wrong.has(runStart - 1)) runStart -= 1;
-    // Back on track: the next wrong word is a new mistake and gets its sound.
-    if (revealedWordCount === runStart) mistakeAlertedRef.current = false;
     if (revealedWordCount - runStart < 2) return;
     let changed = false;
     if (!lostAtRef.current.has(runStart)) {
