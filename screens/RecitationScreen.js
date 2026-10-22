@@ -1277,6 +1277,13 @@ export default function RecitationScreen(props) {
         letterDiffByIndex: ayah.letterDiffByIndex,
       };
     });
+    // Once the last ayah is recited the index sits one past the portion, and
+    // there is no current ayah to mark. Looking it up anyway named the next
+    // portion's first ayah, which was harmless, until a portion ended on the
+    // last ayah of its juz: then there is no next ayah, the lookup threw, and
+    // the screen crashed at the very moment the juz was finished. That was the
+    // "stuck at the end" both September testers hit, on juz 1's ayah 148.
+    if (currentAyahIndex >= totalAyahs) return map;
     const cur = locationAt(currentAyahIndex);
     const currentKey = `${cur.surahNumber}:${cur.ayahNumber}`;
     if (!map[currentKey]) {
@@ -1313,6 +1320,7 @@ export default function RecitationScreen(props) {
     liveLetterDiff,
     revealedWordCount,
     skippedWordIndices,
+    totalAyahs,
   ]);
 
   const displayAyahNumber = Math.min(currentAyahIndex + 1, totalAyahs);
