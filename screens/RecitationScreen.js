@@ -624,12 +624,22 @@ export default function RecitationScreen(props) {
       .filter(Boolean)
       .join(' ');
 
+    // What was correctly recited stays on the page through the restart: the
+    // words before the first mistake, not everything the matcher had reached.
+    // It reaches past a mistake by lining wrong words up against the ayah's
+    // next ones, and keeping that much showed words in green that had not
+    // been said (Al-Baqarah 145: a phrase of 144 said in place of بكل ءاية
+    // ما تبعوا قبلتك, then a restart, left ما تبعوا green). The mistakes
+    // themselves stay on the page through their own marks.
+    let firstMistake = prevMatchPosRef.current;
+    for (const index of accumulatedWrongIndicesRef.current) {
+      firstMistake = Math.min(firstMistake, index);
+    }
+    keptRevealedRef.current = Math.max(keptRevealedRef.current, firstMistake);
+
     commitFaultsRef.current = new Map();
     partialFaultsRef.current = new Map();
     applyMarks();
-
-    // What was correctly recited stays on the page through the restart.
-    keptRevealedRef.current = Math.max(keptRevealedRef.current, prevMatchPosRef.current);
 
     // The matcher is back at the top of the ayah, so the next commit is a
     // fresh start rather than another commit that failed to move.
