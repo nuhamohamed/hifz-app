@@ -673,18 +673,28 @@ export default function RecitationScreen(props) {
       .filter(Boolean)
       .join(' ');
 
-    // What was correctly recited stays on the page through the restart: the
-    // words before the first mistake, not everything the matcher had reached.
-    // It reaches past a mistake by lining wrong words up against the ayah's
-    // next ones, and keeping that much showed words in green that had not
-    // been said (Al-Baqarah 145: a phrase of 144 said in place of بكل ءاية
-    // ما تبعوا قبلتك, then a restart, left ما تبعوا green). The mistakes
-    // themselves stay on the page through their own marks.
-    let firstMistake = prevMatchPosRef.current;
+    // The page stays exactly as it was when the reciter went back: what was
+    // shown stays shown, and what was red stays red. Asked for by the author;
+    // the app follows them silently from the top until they catch up.
+    //
+    // "Shown" is what the reciter could see, which stops at the red underline
+    // when they were stuck: wrong words at the front are hidden under it, and
+    // keeping the matcher's reach instead showed them green once their marks
+    // were cleared for the restart (Al-Baqarah 145, a phrase of 144 said in
+    // place of بكل ءاية ما تبعوا قبلتك). Red words before that point are
+    // kept by freezing them, since the restart clears the working marks.
+    const shownUpTo = frontRunStart(
+      revealedWordCountRef.current,
+      accumulatedWrongIndicesRef.current,
+      revealedWrongRef.current
+    );
     for (const index of accumulatedWrongIndicesRef.current) {
-      firstMistake = Math.min(firstMistake, index);
+      if (index < shownUpTo && !stickyWrongIndicesRef.current.has(index)) {
+        stickyWrongIndicesRef.current.add(index);
+        stickyLetterDiffRef.current[index] = letterDiffRef.current[index] ?? null;
+      }
     }
-    keptRevealedRef.current = Math.max(keptRevealedRef.current, firstMistake);
+    keptRevealedRef.current = Math.max(keptRevealedRef.current, shownUpTo);
 
     commitFaultsRef.current = new Map();
     partialFaultsRef.current = new Map();
