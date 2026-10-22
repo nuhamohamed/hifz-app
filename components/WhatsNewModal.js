@@ -14,16 +14,15 @@ import { colors, fonts, radius, spacing } from '../lib/theme';
 const NOTES_BY_BUILD = {
   11: [
     {
-      title: 'Clearer mistakes.',
-      body: 'Only the letters you got wrong turn red, and a thin red line shows where you got stuck.',
+      title: 'Less Delay',
+      body: 'App should load faster, and transcription should also be a bit quicker',
     },
     {
       title: 'Going back is fine.',
-      body: 'Re-reciting earlier words of an ayah, or repeating a word, no longer counts as a mistake.',
+      body: 'Re-reciting earlier words of an ayah, or repeating a word, will not count as a mistake.',
     },
     {
-      title: 'Words appear faster',
-      body: 'as you recite.',
+      title: 'New error beep sound'
     },
     {
       title: 'No more quiz after your session.',
