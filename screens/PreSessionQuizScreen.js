@@ -42,7 +42,11 @@ function dedupeConsecutiveWords(text) {
   return words.filter((w, i) => i === 0 || w !== words[i - 1]).join(' ');
 }
 
-async function loadContextBlock(surahNumber, centerAyah) {
+/**
+ * The stretch a question is recited over: two ayahs before the one being
+ * tested and one after, cut short at the end of the surah.
+ */
+async function contextRange(surahNumber, centerAyah) {
   const start = Math.max(1, centerAyah - 2);
   let end = centerAyah + 1;
   try {
@@ -50,6 +54,52 @@ async function loadContextBlock(surahNumber, centerAyah) {
   } catch {
     end = centerAyah;
   }
+  return { start, end };
+}
+
+/**
+ * Groups questions whose stretches overlap or run straight on into one
+ * continuous recitation.
+ *
+ * Two neighbouring questions used to be recited separately: a "Next question"
+ * pause between ayah 6 and ayah 7, then 7 greyed in as a prompt although the
+ * reciter was about to say it anyway, or the shared ayahs recited twice in a
+ * row. Only questions already next to each other in the queue are joined. The
+ * queue keeps its order, weakest first; within a joined run the questions are
+ * put in mushaf order, because that is the order they are recited in.
+ *
+ * @returns {Promise<{ items: object[], runs: { surah: number, start: number, end: number, first: number, count: number }[] }>}
+ *   the items reordered within each run, and each run's range and slice of them
+ */
+async function buildRuns(items) {
+  const groups = [];
+  for (const item of items) {
+    const range = await contextRange(item.surah_number, item.ayah_number);
+    const last = groups[groups.length - 1];
+    if (
+      last &&
+      last.surah === item.surah_number &&
+      range.start <= last.end + 1 &&
+      range.end >= last.start - 1
+    ) {
+      last.start = Math.min(last.start, range.start);
+      last.end = Math.max(last.end, range.end);
+      last.items.push(item);
+    } else {
+      groups.push({ surah: item.surah_number, ...range, items: [item] });
+    }
+  }
+
+  const ordered = [];
+  const runs = groups.map((group) => {
+    const first = ordered.length;
+    ordered.push(...[...group.items].sort((a, b) => a.ayah_number - b.ayah_number));
+    return { surah: group.surah, start: group.start, end: group.end, first, count: group.items.length };
+  });
+  return { items: ordered, runs };
+}
+
+async function loadContextBlock(surahNumber, start, end) {
   const block = [];
   for (let n = start; n <= end; n++) {
     const data = await getAyah(surahNumber, n);
@@ -106,8 +156,14 @@ export default function PreSessionQuizScreen(props) {
   const [showNextItemTransition, setShowNextItemTransition] = useState(false);
 
   const blockAyahsRef = useRef([]);
-  const targetAyahIndexRef = useRef(0);
-  const targetAyahResultRef = useRef(null);
+  // The runs questions are recited in (see buildRuns), and which one is on.
+  const runsRef = useRef([]);
+  const currentRunIndexRef = useRef(0);
+  // Block index of each ayah being tested in the current run → its item index.
+  // A run of joined questions has several.
+  const targetsRef = useRef(new Map());
+  // Item index → { result, detail } for the targets recited so far this run.
+  const targetResultsRef = useRef(new Map());
   const ayahDataRef = useRef({ textDisplay: '', textCompare: '', words: [], isDisconnectedLetters: false });
   const [currentBlockIndex, setCurrentBlockIndex] = useState(0);
   const currentBlockIndexRef = useRef(0);
@@ -353,12 +409,20 @@ export default function PreSessionQuizScreen(props) {
     });
   }, [applyMarks, buzzAndTone, showMistakeMessage]);
 
-  const loadBlockForItem = useCallback(async (item) => {
+  const loadRun = useCallback(async (runIndex, items) => {
     resetUtterance({ discardMs: 2000 });
-    const block = await loadContextBlock(item.surah_number, item.ayah_number);
+    const run = runsRef.current[runIndex];
+    currentRunIndexRef.current = runIndex;
+    const block = await loadContextBlock(run.surah, run.start, run.end);
     blockAyahsRef.current = block;
-    targetAyahIndexRef.current = block.findIndex((b) => b.ayahNumber === item.ayah_number);
-    targetAyahResultRef.current = null;
+    const targets = new Map();
+    for (let i = run.first; i < run.first + run.count; i += 1) {
+      targets.set(block.findIndex((b) => b.ayahNumber === items[i].ayah_number), i);
+    }
+    targetsRef.current = targets;
+    targetResultsRef.current = new Map();
+    currentItemIndexRef.current = run.first;
+    setCurrentItemIndex(run.first);
     currentBlockIndexRef.current = 0;
     setCurrentBlockIndex(0);
     wrongIndicesRef.current = [];
@@ -376,6 +440,18 @@ export default function PreSessionQuizScreen(props) {
   const loadBlockAyah = useCallback((blockIndex) => {
     const entry = blockAyahsRef.current[blockIndex];
     if (!entry) return;
+    // The header names the next ayah being tested. In a joined run that moves
+    // on once its question's target has been recited.
+    let upcoming = null;
+    for (const [targetIndex, itemIndex] of targetsRef.current) {
+      if (targetIndex >= blockIndex && (upcoming === null || itemIndex < upcoming)) {
+        upcoming = itemIndex;
+      }
+    }
+    if (upcoming !== null && upcoming !== currentItemIndexRef.current) {
+      currentItemIndexRef.current = upcoming;
+      setCurrentItemIndex(upcoming);
+    }
     ayahDataRef.current = { textDisplay: entry.textDisplay, textCompare: entry.textCompare, words: entry.words, isDisconnectedLetters: entry.isDisconnectedLetters };
     resetLiveState();
     recreateJudge();
@@ -384,56 +460,58 @@ export default function PreSessionQuizScreen(props) {
   // What the target ayah was marked wrong on, kept so the mistake can be
   // written with the same detail a recitation mistake carries: without the
   // words and the transcript there is nothing on the summary to disagree with.
-  const targetAyahMistakeRef = useRef(null);
-
   const recordTargetAyahResult = useCallback((result, detail = null) => {
-    if (currentBlockIndexRef.current === targetAyahIndexRef.current) {
-      targetAyahResultRef.current = result;
-      targetAyahMistakeRef.current = result === 'wrong' ? detail : null;
-    }
+    const itemIndex = targetsRef.current.get(currentBlockIndexRef.current);
+    if (itemIndex === undefined) return;
+    targetResultsRef.current.set(itemIndex, {
+      result,
+      detail: result === 'wrong' ? detail : null,
+    });
   }, []);
 
   const advanceToNextBlockAyah = useCallback(async () => {
     const nextIndex = currentBlockIndexRef.current + 1;
     if (nextIndex >= blockAyahsRef.current.length) {
-      const item = quizItems[currentItemIndexRef.current];
-      const result = targetAyahResultRef.current ?? 'wrong';
-      const previous = await updateQuizResult(item.id, result);
+      const run = runsRef.current[currentRunIndexRef.current];
+      for (let i = run.first; i < run.first + run.count; i += 1) {
+        const item = quizItems[i];
+        const recorded = targetResultsRef.current.get(i);
+        const result = recorded?.result ?? 'wrong';
+        const previous = await updateQuizResult(item.id, result);
 
-      // A review mistake goes on the record the same way a recitation mistake
-      // does. It used to leave nothing behind but a demoted box level, so a
-      // word the recogniser misheard here could not be disputed on the summary
-      // the way the identical mishearing could be during the portion, and it
-      // went on shaping the schedule unchallenged.
-      if (result === 'wrong' && sessionId) {
-        try {
-          const detail = targetAyahMistakeRef.current;
-          const userId = await getCurrentUserId();
-          const { error: mistakeError } = await supabase.from('mistakes').insert({
-            user_id: userId,
-            session_id: sessionId,
-            surah_number: item.surah_number,
-            ayah_number: item.ayah_number,
-            source: 'review',
-            wrong_words: detail?.wrongWords ?? [],
-            transcribed_text: detail?.transcribedText ?? '',
-            // Where the item stood before this answer moved it, so clearing
-            // the mistake can put the schedule back exactly.
-            review_prev_box_level: previous?.previousBoxLevel ?? null,
-            review_prev_next_date: previous?.previousNextReviewDate ?? null,
-          });
-          if (mistakeError) throw new Error(mistakeError.message);
-        } catch (err) {
-          // The quiz result is already saved and is the part that matters for
-          // scheduling. Losing the summary entry is not worth failing the quiz.
-          reportHandledError('preQuiz.recordReviewMistake', err);
+        // A review mistake goes on the record the same way a recitation mistake
+        // does. It used to leave nothing behind but a demoted box level, so a
+        // word the recogniser misheard here could not be disputed on the summary
+        // the way the identical mishearing could be during the portion, and it
+        // went on shaping the schedule unchallenged.
+        if (result === 'wrong' && sessionId) {
+          try {
+            const detail = recorded?.detail;
+            const userId = await getCurrentUserId();
+            const { error: mistakeError } = await supabase.from('mistakes').insert({
+              user_id: userId,
+              session_id: sessionId,
+              surah_number: item.surah_number,
+              ayah_number: item.ayah_number,
+              source: 'review',
+              wrong_words: detail?.wrongWords ?? [],
+              transcribed_text: detail?.transcribedText ?? '',
+              // Where the item stood before this answer moved it, so clearing
+              // the mistake can put the schedule back exactly.
+              review_prev_box_level: previous?.previousBoxLevel ?? null,
+              review_prev_next_date: previous?.previousNextReviewDate ?? null,
+            });
+            if (mistakeError) throw new Error(mistakeError.message);
+          } catch (err) {
+            // The quiz result is already saved and is the part that matters for
+            // scheduling. Losing the summary entry is not worth failing the quiz.
+            reportHandledError('preQuiz.recordReviewMistake', err);
+          }
         }
       }
 
-      targetAyahMistakeRef.current = null;
-
-      const nextItemIndex = currentItemIndexRef.current + 1;
-      if (nextItemIndex >= quizItems.length) {
+      const nextRunIndex = currentRunIndexRef.current + 1;
+      if (nextRunIndex >= runsRef.current.length) {
         await finishAllQuizItems();
         return;
       }
@@ -442,9 +520,7 @@ export default function PreSessionQuizScreen(props) {
       await new Promise((resolve) => setTimeout(resolve, 4000));
       setShowNextItemTransition(false);
 
-      currentItemIndexRef.current = nextItemIndex;
-      setCurrentItemIndex(nextItemIndex);
-      await loadBlockForItem(quizItems[nextItemIndex]);
+      await loadRun(nextRunIndex, quizItems);
       return;
     }
 
@@ -453,16 +529,21 @@ export default function PreSessionQuizScreen(props) {
     if (mistakeMessageTimeoutRef.current) clearTimeout(mistakeMessageTimeoutRef.current);
     setMistakeMessage('');
     loadBlockAyah(nextIndex);
-  }, [quizItems, loadBlockAyah, loadBlockForItem, finishAllQuizItems, sessionId, sessionJuzNumber]);
+  }, [quizItems, loadBlockAyah, loadRun, finishAllQuizItems, sessionId, sessionJuzNumber]);
 
   const onAyahComplete = useCallback(
     async (accumulatedText) => {
-      const isTargetAyah = currentBlockIndexRef.current === targetAyahIndexRef.current;
+      const isTargetAyah = targetsRef.current.has(currentBlockIndexRef.current);
 
       if (ayahDataRef.current.isDisconnectedLetters) {
         const capturedDisplay = ayahDataRef.current.textCompare;
         setConfirmedAyahs((prev) => [...prev, { textDisplay: capturedDisplay, status: 'correct' }]);
-        if (isTargetAyah && targetAyahResultRef.current === null) recordTargetAyahResult('correct_first');
+        if (
+          isTargetAyah &&
+          !targetResultsRef.current.has(targetsRef.current.get(currentBlockIndexRef.current))
+        ) {
+          recordTargetAyahResult('correct_first');
+        }
         await advanceToNextBlockAyah();
         return;
       }
@@ -562,7 +643,7 @@ export default function PreSessionQuizScreen(props) {
     isSkippingRef.current = true;
 
     const words = ayahDataRef.current?.words ?? [];
-    const isTargetAyah = currentBlockIndexRef.current === targetAyahIndexRef.current;
+    const isTargetAyah = targetsRef.current.has(currentBlockIndexRef.current);
     const from = Math.max(0, Math.min(prevMatchPosRef.current, words.length));
     const wrongIndices = [];
     for (let i = from; i < words.length; i += 1) wrongIndices.push(i);
@@ -604,9 +685,11 @@ export default function PreSessionQuizScreen(props) {
           return;
         }
 
-        setQuizItems(items);
-        currentItemIndexRef.current = 0;
-        await loadBlockForItem(items[0]);
+        const { items: ordered, runs } = await buildRuns(items);
+        if (!mounted) return;
+        runsRef.current = runs;
+        setQuizItems(ordered);
+        await loadRun(0, ordered);
 
         if (!mounted) return;
 
@@ -623,7 +706,7 @@ export default function PreSessionQuizScreen(props) {
       mounted = false;
       startedRef.current = false;
     };
-  }, [loadBlockForItem, navigateToRecitation, buzzAndTone]);
+  }, [loadRun, navigateToRecitation, buzzAndTone]);
 
   /**
    * Open the microphone, once someone has asked for it.
