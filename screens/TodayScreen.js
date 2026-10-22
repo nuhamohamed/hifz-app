@@ -202,6 +202,10 @@ export default function TodayScreen() {
   const [portions, setPortions] = useState([]);
   const [quizCount, setQuizCount] = useState(0);
   const [estimateMinutes, setEstimateMinutes] = useState(null);
+  // The two halves of the estimate, kept apart so a paused session can be
+  // costed from its own range rather than from the portion re-sized for today.
+  const [dueQuizMinutes, setDueQuizMinutes] = useState(0);
+  const [minutesPerPage, setMinutesPerPage] = useState(null);
   const [portionsWaiting, setPortionsWaiting] = useState(0);
   // Only set on a day that holds nothing: the portion waiting in the future,
   // carrying the date it is booked for.
@@ -309,6 +313,8 @@ export default function TodayScreen() {
         // dedupe and the leech cap, rather than the raw row count.
         setQuizCount(plan.quizItemCount);
         setEstimateMinutes(roundedEstimateMinutes(plan.estimateMinutes));
+        setDueQuizMinutes(plan.dueQuizMinutes ?? 0);
+        setMinutesPerPage(plan.minutesPerPage ?? null);
         setPortionsWaiting(plan.portionsWaiting);
         setNextSession(plan.nextSession ?? null);
 
@@ -704,17 +710,27 @@ export default function TodayScreen() {
   const portionDoneFraction =
     portionLength > 0 ? Math.min(1, recitedSoFar / portionLength) : 0;
 
-  // What is left of the day, for a session already under way.
+  // What is left of the session, for one already under way: the questions
+  // still due plus the pages of the paused range still to recite.
   //
-  // The day's estimate less the share already recited. Approximate on purpose,
-  // and it has to be: the estimate covers the review and the portion
-  // together, and only the portion's progress is known mid-session. It is the
-  // same number the banner shows before starting, reduced by the part now
-  // behind them, which is the honest reading of "left".
+  // This used to be today's estimate less the share recited, but that
+  // estimate is built on the portion re-sized for today, not the range the
+  // paused session is committed to, so the two could be pages apart. Costed
+  // here from the paused session's own range instead. In the portion, the
+  // review is behind them, so only the pages count.
+  const pausedPhaseForTime = pausedSession?.phase ?? 'pre_quiz';
+  const pausedMinutesLeft =
+    pausedSession && minutesPerPage
+      ? roundedEstimateMinutes(
+          (pausedPhaseForTime === 'pre_quiz' ? dueQuizMinutes : 0) +
+            (pausedPortionPages ?? 0) * (1 - portionDoneFraction) * minutesPerPage
+        )
+      : null;
   const minutesLeft =
-    estimateMinutes && portionLength > 0
+    pausedMinutesLeft ??
+    (estimateMinutes && portionLength > 0
       ? Math.max(1, Math.round(estimateMinutes * (1 - portionDoneFraction)))
-      : estimateMinutes;
+      : estimateMinutes);
 
   // Pages still to recite. What is left is the useful half: someone resuming
   // wants to know the size of what is in front of them, not to be scored on
@@ -752,37 +768,26 @@ export default function TodayScreen() {
     // who is resuming at Al-Baqarah 20 and had already recited the first
     // nineteen. The range is the whole job, and the whole job is not the
     // status.
+    // The time left for the whole session, review and portion together, sits
+    // on the eyebrow; the line under the bold text says how much is left of
+    // the part they stopped in, in that part's own unit.
+    const timeLeft = minutesLeft ? ` · ABOUT ${minutesLeft} MIN LEFT` : '';
     bannerEyebrow = isCarriedOver
-      ? `UNFINISHED · ${formatSessionDate(pausedSession.date)}`
-      : 'IN PROGRESS';
+      ? `UNFINISHED · ${formatSessionDate(pausedSession.date)}${timeLeft}`
+      : `IN PROGRESS${timeLeft}`;
     bannerTitleOverride = resumeHint;
-    // What is left, in the unit that matches the phase they stopped in. Someone
-    // paused inside the review is not part-way through a portion, so pages
-    // would be answering a question they did not ask.
     const pausedPhase = pausedSession.phase ?? 'pre_quiz';
     if (pausedPhase === 'pre_quiz') {
       // Answering an item moves its due date off today, so the due count is
       // already the count still to do rather than the count it started with.
-      // The time is the whole day's, undiminished: nothing has been recited
-      // yet, so there is no share to take off it.
       bannerSub =
-        quizCount > 0 && minutesLeft
-          ? `${quizCount} question${quizCount === 1 ? '' : 's'} · about ${minutesLeft} min left`
-          : quizCount > 0
-          ? `${quizCount} question${quizCount === 1 ? '' : 's'} left`
-          : minutesLeft
-          ? `about ${minutesLeft} min left`
-          : null;
+        quizCount > 0 ? `${quizCount} question${quizCount === 1 ? '' : 's'} left` : null;
     } else if (pausedPhase === 'revision') {
       bannerSub =
-        pagesLeft > 0 && minutesLeft
-          ? `${pagesLeft} page${pagesLeft === 1 ? '' : 's'} · about ${minutesLeft} min left`
-          : minutesLeft
-          ? `about ${minutesLeft} min left`
-          : null;
+        pagesLeft > 0 ? `${pagesLeft} page${pagesLeft === 1 ? '' : 's'} left` : null;
     } else {
       // Left at the old recap quiz step. Recitation is done; resuming just
-      // finishes the session, so there is nothing left to put a time on.
+      // finishes the session, so there is nothing left to count.
       bannerSub = null;
     }
   } else if (showingNext) {

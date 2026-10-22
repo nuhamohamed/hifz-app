@@ -18,6 +18,7 @@ import { createLiveJudge, findAyahRestart, hasSelfCorrectedSlip } from '../lib/l
 import {
   countAnsweredToday,
   fetchDueQuizItems,
+  groupQuizRuns,
   flagContextAyahIfNeeded,
   updateQuizResult,
 } from '../lib/quizEngine';
@@ -44,59 +45,25 @@ function dedupeConsecutiveWords(text) {
 }
 
 /**
- * The stretch a question is recited over: two ayahs before the one being
- * tested and one after, cut short at the end of the surah.
- */
-async function contextRange(surahNumber, centerAyah) {
-  const start = Math.max(1, centerAyah - 2);
-  let end = centerAyah + 1;
-  try {
-    await getAyah(surahNumber, end);
-  } catch {
-    end = centerAyah;
-  }
-  return { start, end };
-}
-
-/**
- * Groups questions whose stretches overlap or run straight on into one
- * continuous recitation.
- *
- * Two neighbouring questions used to be recited separately: a "Next question"
- * pause between ayah 6 and ayah 7, then 7 greyed in as a prompt although the
- * reciter was about to say it anyway, or the shared ayahs recited twice in a
- * row. Only questions already next to each other in the queue are joined. The
- * queue keeps its order, weakest first; within a joined run the questions are
- * put in mushaf order, because that is the order they are recited in.
+ * The due questions as the runs they are recited in (see groupQuizRuns), with
+ * each run cut off at the real end of its surah.
  *
  * @returns {Promise<{ items: object[], runs: { surah: number, start: number, end: number, first: number, count: number }[] }>}
- *   the items reordered within each run, and each run's range and slice of them
+ *   the items in the order they will be asked, and each run's range and slice of them
  */
 async function buildRuns(items) {
-  const groups = [];
-  for (const item of items) {
-    const range = await contextRange(item.surah_number, item.ayah_number);
-    const last = groups[groups.length - 1];
-    if (
-      last &&
-      last.surah === item.surah_number &&
-      range.start <= last.end + 1 &&
-      range.end >= last.start - 1
-    ) {
-      last.start = Math.min(last.start, range.start);
-      last.end = Math.max(last.end, range.end);
-      last.items.push(item);
-    } else {
-      groups.push({ surah: item.surah_number, ...range, items: [item] });
-    }
-  }
-
   const ordered = [];
-  const runs = groups.map((group) => {
-    const first = ordered.length;
-    ordered.push(...[...group.items].sort((a, b) => a.ayah_number - b.ayah_number));
-    return { surah: group.surah, start: group.start, end: group.end, first, count: group.items.length };
-  });
+  const runs = [];
+  for (const group of groupQuizRuns(items)) {
+    let { end } = group;
+    try {
+      await getAyah(group.surah, end);
+    } catch {
+      end -= 1;
+    }
+    runs.push({ surah: group.surah, start: group.start, end, first: ordered.length, count: group.items.length });
+    ordered.push(...group.items);
+  }
   return { items: ordered, runs };
 }
 
