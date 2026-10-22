@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react';
 import { ActivityIndicator, StyleSheet, Text, View } from 'react-native';
 import { useSQLiteContext } from 'expo-sqlite';
 import { getPageLines } from '../lib/mushafDb';
+import { LetterDiffWord } from './LetterDiffWord';
 
 // Loaded at runtime in App.js via useFonts from assets/UthmanicHafs_V22.ttf.
 export const MUSHAF_FONT_FAMILY = 'UthmanicHafs';
@@ -20,8 +21,8 @@ const BASMALLAH = 'بِسۡمِ ٱللَّهِ ٱلرَّحۡمَٰنِ ٱلرَ
  *       stuckAtIndex, when set, is drawn as a blank with a red underline:
  *       the reciter has lost their place there.
  *   { wrongIndices: number[], letterDiffByIndex?: Record<number, string|null>, cue?: boolean }
- *     → confirmed ayah: all words visible; wrongIndices shown in red
- *       (letterDiffByIndex is accepted and no longer drawn: whole words only);
+ *     → confirmed ayah: all words visible; wrongIndices shown in red;
+ *       if letterDiffByIndex present, uses per-letter coloring for those words;
  *       cue:true renders in gray (reciter's starting prompt).
  *   absent from map → all words hidden (unread text never disclosed).
  *
@@ -133,10 +134,26 @@ function MushafLine({ line, ayahStatuses, lineHeight }) {
         const isStuckHere = isWordReveal && ayahStatus.stuckAtIndex === wordIndex;
 
 
-        // A wrong word is the whole word in red, live or confirmed. It used to
-        // sit on a pink box, and to colour only the letters that differed from
-        // what was heard, which painted half a word and read as a highlight
-        // rather than a mistake. The author asked for plain red words.
+        const letterDiffByIndex = ayahStatus?.letterDiffByIndex;
+
+        // A wrong word: only the letters that were wrong are red, and nothing
+        // behind it. It used to sit on a pink box, which the author asked to
+        // lose; the letter colouring stays. Where no single letter can be
+        // blamed, LetterDiffWord paints the whole word red.
+        if (
+          (isVisiblyWrong || isConfirmedWrong) &&
+          letterDiffByIndex != null &&
+          wordIndex in letterDiffByIndex
+        ) {
+          return (
+            <Text key={word.id} style={styles.word}>
+              <LetterDiffWord
+                displayWord={word.text}
+                spokenWord={letterDiffByIndex[wordIndex]}
+              />
+            </Text>
+          );
+        }
 
         return (
           <Text
