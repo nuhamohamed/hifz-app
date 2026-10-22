@@ -242,7 +242,7 @@ export default function PreSessionQuizScreen(props) {
   const buzzAndTone = useCallback(async () => {
     try { await Haptics.notificationAsync(Haptics.NotificationFeedbackType.Warning); } catch {}
     try {
-      const { sound } = await Audio.Sound.createAsync(require('../assets/beep.mp3'));
+      const { sound } = await Audio.Sound.createAsync(require('../assets/mistake.m4a'));
       await sound.playAsync();
       sound.setOnPlaybackStatusUpdate((s) => { if (s.didJustFinish) sound.unloadAsync(); });
     } catch (e) { console.log('Sound error:', e); }

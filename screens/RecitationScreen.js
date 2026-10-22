@@ -482,7 +482,7 @@ export default function RecitationScreen(props) {
     }
     try {
       const { sound } = await Audio.Sound.createAsync(
-        require('../assets/beep.mp3')
+        require('../assets/mistake.m4a')
       );
       await sound.playAsync();
       sound.setOnPlaybackStatusUpdate((status) => {
