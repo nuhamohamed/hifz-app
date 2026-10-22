@@ -1142,7 +1142,7 @@ export default function RecitationScreen(props) {
           liveTextRef.current = text;
           setLiveText(text);
         },
-        onCommit: (matchedCount, statuses = []) => {
+        onCommit: (matchedCount, statuses = [], commitText = '') => {
           const prev = prevMatchPosRef.current;
           prevMatchPosRef.current = matchedCount;
 
@@ -1183,7 +1183,16 @@ export default function RecitationScreen(props) {
           } else {
             // A commit that moved nothing. One is normal, a few in a row means
             // the recogniser is not going to produce this ayah on its own.
-            stalledCommitsRef.current += 1;
+            //
+            // Unless every word in it belongs to this ayah, or there are no
+            // words at all. Going back over the ayah moves nothing forward
+            // either, and pausing now sends only punctuation, which is no
+            // words. Both were counted, and going back then pausing put up
+            // "Not hearing you?" on a reciter who was being heard perfectly.
+            const heard = normalizeArabic(commitText ?? '').split(/\s+/).filter(Boolean);
+            const ayahWords = new Set(getExpectedWords().flatMap((word) => word.split(' ')));
+            const onlyThisAyah = heard.every((word) => ayahWords.has(word));
+            if (!onlyThisAyah) stalledCommitsRef.current += 1;
             if (stalledCommitsRef.current >= STALLED_COMMITS_BEFORE_SKIP) {
               setCanSkip(true);
             }
