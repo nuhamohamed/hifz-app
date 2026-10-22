@@ -50,10 +50,28 @@ SAMPLE_RATE = 16000
 AGREE = int(os.environ.get('AGREE', '2'))
 # New audio needed before another pass is worth running.
 MIN_NEW_AUDIO_S = float(os.environ.get('MIN_NEW_AUDIO_S', '0.3'))
-# A pause this long ends a stretch.
+# A pause this long ends a stretch. Once a stretch is long, a shorter one will
+# do: passes get slower as the window grows, so ending it sooner pays.
 PAUSE_S = float(os.environ.get('PAUSE_S', '0.45'))
-# Never let a stretch approach Whisper's 30 seconds.
-MAX_STRETCH_S = 24.0
+SHORT_PAUSE_S = 0.25
+LONG_STRETCH_S = 8.0
+# Past this, the stretch is cut at its quietest recent moment rather than
+# waiting for a pause. Measured on the phone: a reciter who runs ayahs together
+# never gave the old fixed-level detector a pause, the window grew to 25 s,
+# passes slowed from 0.5 s to 1.7 s, and the cut at 25 s fell mid-word.
+MAX_STRETCH_S = float(os.environ.get('MAX_STRETCH_S', '12'))
+# Speech must last this long before a window is worth transcribing at all.
+MIN_SPEECH_S = 0.35
+# Whisper guesses on very short audio, and two quick guesses can agree: on
+# under a second it turned the opening of an ayah into a stock phrase
+# ("والمؤمنين") and committed it. No pass before this much audio, and nothing
+# committed mid-stretch before the second figure.
+MIN_PASS_S = 1.0
+MIN_COMMIT_S = 1.5
+# Every session's audio is kept here, on this Mac only, so a real recitation
+# can be replayed while tuning. Set RECORD=0 to turn it off.
+RECORD = os.environ.get('RECORD', '1') != '0'
+RECORDINGS = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'recordings')
 
 FRAME = int(0.03 * SAMPLE_RATE)
 # Arabic diacritics and Quranic marks, stripped only to compare words between
@@ -114,7 +132,12 @@ class Stream:
         self.last_pass_len = 0
         self.committed = 0          # words of this stretch already sent as final
         self.history = []           # recent passes' words, newest last
-        self.speech_floor = 0.01    # rises with the loudest speech heard
+        # Frame levels of stretches already finished this session. Silence and
+        # speech are judged against this room and this voice, not fixed numbers:
+        # fixed levels tuned on studio recordings never saw a pause in a real
+        # room through a phone, and heard words in its background noise.
+        self.past_levels = np.zeros(0)
+        self.recording = []
         self.ended = False
         self.wake = asyncio.Event()
         self.lock = asyncio.Lock()
@@ -122,28 +145,51 @@ class Stream:
     def add_audio(self, pcm_bytes):
         chunk = np.frombuffer(pcm_bytes, dtype='<i2').astype(np.float32) / 32768.0
         self.audio = np.concatenate([self.audio, chunk])
+        if RECORD:
+            self.recording.append(chunk)
         self.wake.set()
 
-    def silence_threshold(self):
-        rms = frame_rms(self.audio)
-        if len(rms):
-            self.speech_floor = max(self.speech_floor * 0.999, float(np.percentile(rms, 90)) * 0.15, 0.006)
-        return self.speech_floor
+    def levels(self):
+        """(threshold, contrast_ok): the level between this room's quiet and
+        this voice, from the last 30 s of frames."""
+        rms = np.concatenate([self.past_levels, frame_rms(self.audio)])[-1000:]
+        if len(rms) < 10:
+            return 1.0, False
+        # Smoothed, and the room is the quietest 5%, not 20%: someone reciting
+        # without stopping leaves no quiet fifth, and a 20th percentile taken
+        # from speech called the speech noise and threw words away.
+        smooth = np.convolve(rms, np.ones(5) / 5, mode='valid') if len(rms) >= 5 else rms
+        noise = float(np.percentile(smooth, 5))
+        speech = float(np.percentile(smooth, 90))
+        # Speech has to stand clearly above the room before anything counts.
+        contrast_ok = speech > max(noise * 2.5, 0.004)
+        return noise + 0.35 * (speech - noise), contrast_ok
 
     def has_speech(self, audio):
-        rms = frame_rms(audio)
-        return bool(len(rms)) and float(rms.max()) > self.speech_floor * 2
+        thr, contrast_ok = self.levels()
+        if not contrast_ok:
+            return False
+        loud = int((frame_rms(audio) > thr).sum())
+        return loud * FRAME / SAMPLE_RATE >= MIN_SPEECH_S
 
     def trailing_pause(self):
-        """Seconds of silence at the end of the stretch."""
-        rms = frame_rms(self.audio)
-        thr = self.silence_threshold()
+        """Seconds of quiet at the end of the stretch."""
+        thr, _ = self.levels()
         quiet = 0
-        for v in rms[::-1]:
+        for v in frame_rms(self.audio)[::-1]:
             if v >= thr:
                 break
             quiet += 1
         return quiet * FRAME / SAMPLE_RATE
+
+    def quietest_cut(self):
+        """Sample index of the quietest 150 ms in the last 6 s, short of the
+        newest 300 ms, so a forced cut falls between words, not inside one."""
+        rms = frame_rms(self.audio)
+        lo = max(0, len(rms) - int(6 * SAMPLE_RATE / FRAME))
+        hi = max(lo + 1, len(rms) - int(0.3 * SAMPLE_RATE / FRAME))
+        smooth = np.convolve(rms, np.ones(5) / 5, mode='same')
+        return (lo + int(np.argmin(smooth[lo:hi]))) * FRAME
 
     async def send(self, message, **body):
         # The app closes its socket straight after EndOfStream, so a reply can
@@ -170,8 +216,8 @@ class Stream:
         else:
             await self.send('AddPartialTranscript', metadata={'transcript': text}, results=[])
 
-    async def run_pass(self, finishing):
-        audio = self.audio.copy()
+    async def run_pass(self, finishing, upto_sample=None):
+        audio = self.audio[:upto_sample].copy() if upto_sample else self.audio.copy()
         self.last_pass_len = len(audio)
         if not self.has_speech(audio):
             return
@@ -188,6 +234,8 @@ class Stream:
 
         if finishing:
             upto = len(words)
+        elif len(audio) / SAMPLE_RATE < MIN_COMMIT_S:
+            upto = 0
         else:
             # Longest run of words the recent passes agree on.
             upto = 0
@@ -208,13 +256,23 @@ class Stream:
             f'{" FINAL" if finishing else ""}  +{" ".join(new_final)}  ~{" ".join(tail)}'
         )
 
-    def end_stretch(self):
-        self.audio = np.zeros(0, dtype=np.float32)
+    def end_stretch(self, keep_from=None):
+        """Start a new stretch, carrying over audio after `keep_from`."""
+        done = self.audio[:keep_from] if keep_from else self.audio
+        self.past_levels = np.concatenate([self.past_levels, frame_rms(done)])[-1000:]
+        self.audio = self.audio[keep_from:].copy() if keep_from else np.zeros(0, dtype=np.float32)
         self.last_pass_len = 0
         self.committed = 0
         self.history = []
 
     async def loop(self):
+        try:
+            await self._loop()
+        except Exception:
+            import traceback
+            log('stream loop failed:\n' + traceback.format_exc())
+
+    async def _loop(self):
         while not self.ended:
             await self.wake.wait()
             self.wake.clear()
@@ -222,26 +280,38 @@ class Stream:
                 stretch_s = len(self.audio) / SAMPLE_RATE
                 new_s = (len(self.audio) - self.last_pass_len) / SAMPLE_RATE
                 pause = self.trailing_pause()
-                if stretch_s > PAUSE_S and pause >= PAUSE_S and self.has_speech(self.audio):
+                needed = SHORT_PAUSE_S if stretch_s > LONG_STRETCH_S else PAUSE_S
+                speech = self.has_speech(self.audio)
+                if stretch_s > needed and pause >= needed and speech:
                     if self.last_pass_len < len(self.audio):
                         await self.run_pass(finishing=True)
                     self.end_stretch()
-                elif stretch_s > 0 and not self.has_speech(self.audio) and stretch_s > 2:
+                elif not speech and stretch_s > 2:
                     # Nothing but room noise so far: drop it rather than let it grow.
                     self.end_stretch()
                 elif stretch_s >= MAX_STRETCH_S:
-                    await self.run_pass(finishing=True)
-                    self.end_stretch()
-                elif new_s >= MIN_NEW_AUDIO_S:
+                    cut = self.quietest_cut()
+                    await self.run_pass(finishing=True, upto_sample=cut)
+                    self.end_stretch(keep_from=cut)
+                elif new_s >= MIN_NEW_AUDIO_S and speech and stretch_s >= MIN_PASS_S:
                     await self.run_pass(finishing=False)
 
     async def finish(self):
         self.ended = True
         self.wake.set()
         async with self.lock:
-            if len(self.audio) > self.last_pass_len:
+            if len(self.audio) > self.last_pass_len and self.has_speech(self.audio):
                 await self.run_pass(finishing=True)
             self.end_stretch()
+
+    def save_recording(self):
+        if not RECORD or not self.recording:
+            return
+        import soundfile
+        os.makedirs(RECORDINGS, exist_ok=True)
+        path = os.path.join(RECORDINGS, time.strftime('%Y%m%d-%H%M%S') + '.wav')
+        soundfile.write(path, np.concatenate(self.recording), SAMPLE_RATE)
+        log('saved', path)
 
 
 async def handle(request):
@@ -276,6 +346,7 @@ async def handle(request):
         stream.wake.set()
         if worker:
             worker.cancel()
+        stream.save_recording()
         log('phone disconnected')
     return ws
 
