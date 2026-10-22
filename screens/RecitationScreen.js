@@ -1018,6 +1018,9 @@ export default function RecitationScreen(props) {
             .from('mistakes')
             .select('surah_number, ayah_number, wrong_words')
             .eq('session_id', sessionId)
+            // The portion's own. Review mistakes share the table, and one on an
+            // ayah inside the portion would otherwise come back marked red.
+            .eq('source', 'recitation')
             .is('dismissed_at', null)
             .order('ayah_number', { ascending: true });
 

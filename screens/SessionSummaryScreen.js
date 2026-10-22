@@ -313,7 +313,8 @@ export default function SessionSummaryScreen({ route }) {
 
         const counts = { recitation: 0, review: 0 };
         for (const m of mistakesData ?? []) {
-          const key = m.source === 'review' ? 'review' : 'recitation';
+          // Context-ayah slips are counted with the review they happened in.
+          const key = m.source === 'recitation' ? 'recitation' : 'review';
           counts[key] += 1;
         }
 

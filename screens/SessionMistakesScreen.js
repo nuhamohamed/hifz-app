@@ -12,7 +12,7 @@ import { useNavigation } from '@react-navigation/native';
 import MistakeCard from '../components/MistakeList';
 import { getCurrentUserId } from '../lib/auth';
 import { getAyah } from '../lib/quranApi';
-import { clearReviewMistake, removeFromQuizQueue } from '../lib/quizEngine';
+import { clearContextMistake, clearReviewMistake, removeFromQuizQueue } from '../lib/quizEngine';
 import { reportHandledError } from '../lib/sentry';
 import { supabase } from '../lib/supabase';
 import { colors, fonts, spacing } from '../lib/theme';
@@ -28,6 +28,16 @@ import { colors, fonts, spacing } from '../lib/theme';
  */
 
 /** How long the way back stays on offer after a mistake is cleared. */
+
+/**
+ * The rows each page shows. The review page carries the slips on the ayahs
+ * recited around its questions too: they happened in the review, and they
+ * changed the review queue, so that is where they are put right.
+ */
+const SOURCES_SHOWN = {
+  recitation: ['recitation'],
+  review: ['review', 'review_context'],
+};
 
 const SOURCE_COPY = {
   recitation: {
@@ -118,10 +128,10 @@ export default function SessionMistakesScreen({ route }) {
         const { data, error: fetchError } = await supabase
           .from('mistakes')
           .select(
-            'surah_number, ayah_number, wrong_words, transcribed_text, source, review_prev_box_level'
+            'surah_number, ayah_number, wrong_words, transcribed_text, source, review_prev_box_level, review_prev_next_date, context_prev_count'
           )
           .eq('session_id', sessionId)
-          .eq('source', source)
+          .in('source', SOURCES_SHOWN[source])
           .is('dismissed_at', null)
           .order('ayah_number', { ascending: true });
 
@@ -175,7 +185,7 @@ export default function SessionMistakesScreen({ route }) {
         .from('mistakes')
         .update({ dismissed_at: new Date().toISOString() })
         .eq('session_id', sessionId)
-        .eq('source', source)
+        .eq('source', mistake.source)
         .eq('surah_number', mistake.surah_number)
         .eq('ayah_number', mistake.ayah_number)
         .is('dismissed_at', null);
@@ -188,8 +198,14 @@ export default function SessionMistakesScreen({ route }) {
       try {
         const userId = await getCurrentUserId();
 
-        if (source === 'recitation') {
+        if (mistake.source === 'recitation') {
           await removeFromQuizQueue(userId, mistake.surah_number, mistake.ayah_number);
+        } else if (mistake.source === 'review_context') {
+          await clearContextMistake(userId, mistake.surah_number, mistake.ayah_number, {
+            previousBoxLevel: mistake.review_prev_box_level,
+            previousNextReviewDate: mistake.review_prev_next_date,
+            previousContextCount: mistake.context_prev_count,
+          });
         } else {
           await clearReviewMistake(
             userId,
@@ -212,7 +228,7 @@ export default function SessionMistakesScreen({ route }) {
           .from('mistakes')
           .update({ dismissed_at: null })
           .eq('session_id', sessionId)
-          .eq('source', source)
+          .eq('source', mistake.source)
           .eq('surah_number', mistake.surah_number)
           .eq('ayah_number', mistake.ayah_number);
         if (revertError) {
@@ -221,7 +237,7 @@ export default function SessionMistakesScreen({ route }) {
         return false;
       }
     },
-    [sessionId, source]
+    [sessionId]
   );
 
   const handleDismissMistake = useCallback((index, mistake) => {
@@ -295,7 +311,7 @@ export default function SessionMistakesScreen({ route }) {
         .from('mistakes')
         .update({ wrong_words: m.wrong_words })
         .eq('session_id', sessionId)
-        .eq('source', source)
+        .eq('source', m.source)
         .eq('surah_number', m.surah_number)
         .eq('ayah_number', m.ayah_number)
         .is('dismissed_at', null);
@@ -412,6 +428,11 @@ export default function SessionMistakesScreen({ route }) {
               defaultOpen={index === 0}
               onDismiss={() => handleDismissMistake(index, mistake)}
               onClearWord={(word) => handleClearWord(index, mistake, word)}
+              note={
+                mistake.source === 'review_context'
+                  ? 'Recited around a question, not tested'
+                  : null
+              }
             />
           ))}
         </ScrollView>

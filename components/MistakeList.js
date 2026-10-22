@@ -105,7 +105,7 @@ function TranscriptWithSlips({ text, words, onClearSlip }) {
 }
 
 
-function MistakeCard({ mistake, onDismiss, onClearWord, defaultOpen }) {
+function MistakeCard({ mistake, onDismiss, onClearWord, defaultOpen, note }) {
   const [open, setOpen] = useState(defaultOpen);
   const wrongCount = mistake.wrong_words?.length ?? 0;
 
@@ -121,9 +121,12 @@ function MistakeCard({ mistake, onDismiss, onClearWord, defaultOpen }) {
           wrongCount === 1 ? '1 word' : `${wrongCount} words`
         }`}
       >
-        <Text style={styles.mistakeAyahLabel}>
-          {getSurahName(mistake.surah_number)} {mistake.ayah_number}
-        </Text>
+        <View style={styles.mistakeLabelCol}>
+          <Text style={styles.mistakeAyahLabel}>
+            {getSurahName(mistake.surah_number)} {mistake.ayah_number}
+          </Text>
+          {note ? <Text style={styles.mistakeNote}>{note}</Text> : null}
+        </View>
         {/* Tiers are gone: every mistake counts the same. The count of flagged
             words is the useful detail now, since clearing them all is what
             removes the ayah. */}
@@ -185,6 +188,13 @@ export default MistakeCard;
 export { AyahTextWithHighlights, TranscriptWithSlips };
 
 const styles = StyleSheet.create({
+  mistakeLabelCol: { flexShrink: 1 },
+  mistakeNote: {
+    fontFamily: fonts.regular,
+    fontSize: 12,
+    color: colors.textMuted,
+    marginTop: 2,
+  },
   badge: { borderRadius: 8, paddingVertical: 4, paddingHorizontal: 10 },
   badgeConfirmed: { backgroundColor: colors.errorLight },
   badgeText: { fontFamily: fonts.semiBold, fontSize: 12 },

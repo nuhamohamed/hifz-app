@@ -608,13 +608,39 @@ export default function PreSessionQuizScreen(props) {
         const item = quizItems[currentItemIndexRef.current];
         if (blockEntry && item) {
           const userId = await getCurrentUserId();
-          await flagContextAyahIfNeeded(userId, item.surah_number, blockEntry.ayahNumber);
+          const previous = await flagContextAyahIfNeeded(
+            userId,
+            item.surah_number,
+            blockEntry.ayahNumber
+          );
+          // Written down so it shows on the summary, where it can be cleared
+          // like any other mistake. It used to change the queue and leave no
+          // trace, so a misheard context ayah could not even be seen.
+          if (sessionId) {
+            try {
+              const { error: contextError } = await supabase.from('mistakes').insert({
+                user_id: userId,
+                session_id: sessionId,
+                surah_number: item.surah_number,
+                ayah_number: blockEntry.ayahNumber,
+                source: 'review_context',
+                wrong_words: wrongIndices.map((i) => words[i]?.textDisplay ?? ''),
+                transcribed_text: accumulatedText ?? '',
+                review_prev_box_level: previous?.previousBoxLevel ?? null,
+                review_prev_next_date: previous?.previousNextReviewDate ?? null,
+                context_prev_count: previous?.previousContextCount ?? 0,
+              });
+              if (contextError) throw new Error(contextError.message);
+            } catch (err) {
+              reportHandledError('preQuiz.recordContextMistake', err);
+            }
+          }
         }
       }
 
       await advanceToNextBlockAyah();
     },
-    [advanceToNextBlockAyah, applyMarks, quizItems, recordTargetAyahResult]
+    [advanceToNextBlockAyah, applyMarks, quizItems, recordTargetAyahResult, sessionId]
   );
 
   /**
