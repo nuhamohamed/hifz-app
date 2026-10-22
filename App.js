@@ -8,6 +8,7 @@ import { Outfit_400Regular, Outfit_500Medium, Outfit_600SemiBold } from '@expo-g
 import { ActivityIndicator, Text, View } from 'react-native';
 import { NavigationContainer } from '@react-navigation/native';
 import { createNativeStackNavigator } from '@react-navigation/native-stack';
+import WhatsNewModal, { markWhatsNewSeen } from './components/WhatsNewModal';
 import ErrorBoundary from './components/ErrorBoundary';
 import PreSessionQuizScreen from './screens/PreSessionQuizScreen';
 import RecitationScreen from './screens/RecitationScreen';
@@ -157,7 +158,11 @@ function RootNavigator() {
   return resumePoint ? (
     <OnboardingNavigator initialRouteName={resumePoint} />
   ) : (
-    <MainNavigator />
+    <>
+      <MainNavigator />
+      {/* Once per build, for people past onboarding. See WhatsNewModal. */}
+      <WhatsNewModal />
+    </>
   );
 }
 
@@ -226,6 +231,9 @@ export default Sentry.wrap(function App() {
   // of waiting on a re-fetch.
   const completeOnboarding = useCallback(() => {
     onboardingDone.current = true;
+    // Someone new has nothing to compare against, so this build's notes are
+    // counted as seen rather than shown straight after setup.
+    markWhatsNewSeen();
     setResumePoint(null);
   }, []);
 
