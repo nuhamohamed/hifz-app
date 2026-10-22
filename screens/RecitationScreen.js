@@ -221,6 +221,14 @@ export default function RecitationScreen(props) {
   // having been stuck on it, so like a revealed word it survives restarts and
   // the end-of-ayah reconciliation.
   const lostAtRef = useRef(new Set());
+  // Words the reciter skipped over: marked 'missing' by a commit, which the
+  // aligner only does once a later word has been matched. Like a stuck word,
+  // a skipped one stays a mistake after the reciter goes back and says it.
+  // Without this, a skip that first looked like a run of wrong words at the
+  // front was treated as getting lost: only its first word stayed red and the
+  // rest went green once recited (Al-Baqarah 143, "القبلة التي ان يتبعوا
+  // الرسول", skipping كنت عليها الا لنعلم من, then going back for them).
+  const skippedRef = useRef(new Set());
   // How much of the ayah was recited before the reciter started it over. A
   // restart moves the matcher back to the top, and the page following it took
   // everything already recited off the screen until they caught up again.
@@ -520,7 +528,12 @@ export default function RecitationScreen(props) {
       //
       // Words asked for outright are left alone. Those were never a judgement.
       [...stickyWrongIndicesRef.current].forEach((i) => {
-        if (i >= pos && !revealedWrongRef.current.has(i) && !lostAtRef.current.has(i)) {
+        if (
+          i >= pos &&
+          !revealedWrongRef.current.has(i) &&
+          !lostAtRef.current.has(i) &&
+          !skippedRef.current.has(i)
+        ) {
           stickyWrongIndicesRef.current.delete(i);
           delete stickyLetterDiffRef.current[i];
         }
@@ -660,6 +673,7 @@ export default function RecitationScreen(props) {
           lostAtRef.current = new Set();
           keptRevealedRef.current = 0;
           alertedIndicesRef.current = new Set();
+          skippedRef.current = new Set();
           isGoingBackRef.current = false;
           prevMatchPosRef.current = 0;
           revealedWordCountRef.current = 0;
@@ -800,7 +814,11 @@ export default function RecitationScreen(props) {
         isGoingBackRef.current = false;
         commitFaultsRef.current = new Map();
         partialFaultsRef.current = new Map();
-        const unOverturnable = [...revealedWrongRef.current, ...lostAtRef.current];
+        const unOverturnable = [
+          ...revealedWrongRef.current,
+          ...lostAtRef.current,
+          ...skippedRef.current,
+        ];
         stickyWrongIndicesRef.current = new Set(unOverturnable);
         stickyLetterDiffRef.current = Object.fromEntries(
           unOverturnable.map((index) => [index, null])
@@ -1145,6 +1163,15 @@ export default function RecitationScreen(props) {
           // Replaced whole rather than added to, and re-synced on every commit
           // rather than only on the ones that advance, so a slot the aligner
           // reconsiders gives its mark back as soon as it changes its mind.
+          // Skips are remembered as soon as a commit names them; see skippedRef.
+          for (const entry of statuses) {
+            if (entry.status === 'missing' && !skippedRef.current.has(entry.index)) {
+              skippedRef.current.add(entry.index);
+              stickyWrongIndicesRef.current.add(entry.index);
+              stickyLetterDiffRef.current[entry.index] = null;
+            }
+          }
+
           const before = commitFaultsRef.current;
           commitFaultsRef.current = new Map(
             statuses
@@ -1407,7 +1434,8 @@ export default function RecitationScreen(props) {
       if (
         stickyWrongIndicesRef.current.has(i) &&
         !revealedWrongRef.current.has(i) &&
-        !lostAtRef.current.has(i)
+        !lostAtRef.current.has(i) &&
+        !skippedRef.current.has(i)
       ) {
         stickyWrongIndicesRef.current.delete(i);
         delete stickyLetterDiffRef.current[i];
