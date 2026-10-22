@@ -157,7 +157,8 @@ export default function PreSessionQuizScreen(props) {
   // review used to move on by itself after four seconds of "Next question",
   // with the microphone still open, so the next question started listening
   // before anyone had looked at it.
-  const [awaitingNextQuestion, setAwaitingNextQuestion] = useState(false);
+  // 'next' between questions, 'finish' after the last one, null while reciting.
+  const [awaitingNextQuestion, setAwaitingNextQuestion] = useState(null);
 
   const blockAyahsRef = useRef([]);
   // The runs questions are recited in (see buildRuns), and which one is on.
@@ -514,16 +515,12 @@ export default function PreSessionQuizScreen(props) {
         }
       }
 
-      const nextRunIndex = currentRunIndexRef.current + 1;
-      if (nextRunIndex >= runsRef.current.length) {
-        await finishAllQuizItems();
-        return;
-      }
-
-      // Close the microphone and wait to be asked. goToNextQuestion takes it
-      // from here.
+      // Close the microphone and wait to be asked, after the last question as
+      // much as between them, so the review never moves on by itself.
+      // goToNextQuestion takes it from here.
+      const isLastRun = currentRunIndexRef.current + 1 >= runsRef.current.length;
       setHasStarted(false);
-      setAwaitingNextQuestion(true);
+      setAwaitingNextQuestion(isLastRun ? 'finish' : 'next');
       return;
     }
 
@@ -540,10 +537,15 @@ export default function PreSessionQuizScreen(props) {
    */
   const goToNextQuestion = useCallback(async () => {
     if (!awaitingNextQuestion) return;
-    setAwaitingNextQuestion(false);
+    const wasLast = awaitingNextQuestion === 'finish';
+    setAwaitingNextQuestion(null);
+    if (wasLast) {
+      await finishAllQuizItems();
+      return;
+    }
     await loadRun(currentRunIndexRef.current + 1, quizItems);
     setHasStarted(true);
-  }, [awaitingNextQuestion, loadRun, quizItems]);
+  }, [awaitingNextQuestion, finishAllQuizItems, loadRun, quizItems]);
 
   const onAyahComplete = useCallback(
     async (accumulatedText) => {
@@ -996,14 +998,28 @@ export default function PreSessionQuizScreen(props) {
 
       {awaitingNextQuestion ? (
         <View style={styles.feedbackPanel}>
+          {/* Between questions the button is the quiet blue of the paused
+              banner, so it does not compete with the solid blue mic under it.
+              The last one is solid navy, the strongest colour in the palette,
+              for the step that leaves the review. */}
           <TouchableOpacity
-            style={styles.nextBtn}
+            style={[styles.nextBtn, awaitingNextQuestion === 'finish' && styles.finishBtn]}
             onPress={goToNextQuestion}
             activeOpacity={0.85}
             accessibilityRole="button"
-            accessibilityLabel="Go to the next question"
+            accessibilityLabel={
+              awaitingNextQuestion === 'finish'
+                ? (isQuizOnly ? 'Finish the review' : 'Go to the revision portion')
+                : 'Go to the next question'
+            }
           >
-            <Text style={styles.nextBtnText}>Next question  →</Text>
+            <Text
+              style={[styles.nextBtnText, awaitingNextQuestion === 'finish' && styles.finishBtnText]}
+            >
+              {awaitingNextQuestion === 'finish'
+                ? (isQuizOnly ? 'Finish review  →' : 'Go to revision portion  →')
+                : 'Next question  →'}
+            </Text>
           </TouchableOpacity>
         </View>
       ) : canSkip ? (
@@ -1210,7 +1226,9 @@ const styles = StyleSheet.create({
   },
   nextBtn: {
     alignSelf: 'center',
-    backgroundColor: colors.primary,
+    backgroundColor: colors.ice,
+    borderWidth: 1,
+    borderColor: colors.primary,
     borderRadius: 20,
     paddingVertical: 9,
     paddingHorizontal: 18,
@@ -1219,6 +1237,13 @@ const styles = StyleSheet.create({
   nextBtnText: {
     fontFamily: fonts.semiBold,
     fontSize: 14,
+    color: colors.primary,
+  },
+  finishBtn: {
+    backgroundColor: colors.navy,
+    borderColor: colors.navy,
+  },
+  finishBtnText: {
     color: colors.white,
   },
   skipBtn: {
@@ -1310,7 +1335,8 @@ const styles = StyleSheet.create({
   transitionText: {
     fontSize: 32,
     fontWeight: '700',
-    color: colors.success,
+    // Navy, following on from the navy button that leads here.
+    color: colors.navy,
     textAlign: 'center',
   },
 });
