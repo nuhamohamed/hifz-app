@@ -2,7 +2,6 @@ import { useEffect, useState } from 'react';
 import { ActivityIndicator, StyleSheet, Text, View } from 'react-native';
 import { useSQLiteContext } from 'expo-sqlite';
 import { getPageLines } from '../lib/mushafDb';
-import { LetterDiffWord } from './LetterDiffWord';
 
 // Loaded at runtime in App.js via useFonts from assets/UthmanicHafs_V22.ttf.
 export const MUSHAF_FONT_FAMILY = 'UthmanicHafs';
@@ -21,8 +20,8 @@ const BASMALLAH = 'بِسۡمِ ٱللَّهِ ٱلرَّحۡمَٰنِ ٱلرَ
  *       stuckAtIndex, when set, is drawn as a blank with a red underline:
  *       the reciter has lost their place there.
  *   { wrongIndices: number[], letterDiffByIndex?: Record<number, string|null>, cue?: boolean }
- *     → confirmed ayah: all words visible; wrongIndices shown in red;
- *       if letterDiffByIndex present, uses per-letter coloring for those words;
+ *     → confirmed ayah: all words visible; wrongIndices shown in red
+ *       (letterDiffByIndex is accepted and no longer drawn: whole words only);
  *       cue:true renders in gray (reciter's starting prompt).
  *   absent from map → all words hidden (unread text never disclosed).
  *
@@ -133,31 +132,11 @@ function MushafLine({ line, ayahStatuses, lineHeight }) {
         const isHidden = ayahStatus == null || (isWordReveal && !isRevealed);
         const isStuckHere = isWordReveal && ayahStatus.stuckAtIndex === wordIndex;
 
-        const letterDiffByIndex = ayahStatus?.letterDiffByIndex;
 
-        // Live wrong word during recitation — letter-level diff with pink background.
-        if (isVisiblyWrong && letterDiffByIndex != null && wordIndex in letterDiffByIndex) {
-          return (
-            <Text key={word.id} style={[styles.word, styles.wordLiveWrong]}>
-              <LetterDiffWord
-                displayWord={word.text}
-                spokenWord={letterDiffByIndex[wordIndex]}
-              />
-            </Text>
-          );
-        }
-
-        // Confirmed wrong word after ayah completion — letter-level diff, no background.
-        if (isConfirmedWrong && letterDiffByIndex != null && wordIndex in letterDiffByIndex) {
-          return (
-            <Text key={word.id} style={styles.word}>
-              <LetterDiffWord
-                displayWord={word.text}
-                spokenWord={letterDiffByIndex[wordIndex]}
-              />
-            </Text>
-          );
-        }
+        // A wrong word is the whole word in red, live or confirmed. It used to
+        // sit on a pink box, and to colour only the letters that differed from
+        // what was heard, which painted half a word and read as a highlight
+        // rather than a mistake. The author asked for plain red words.
 
         return (
           <Text
@@ -170,7 +149,6 @@ function MushafLine({ line, ayahStatuses, lineHeight }) {
               isStuckHere && styles.wordStuck,
               isLiveCorrect && styles.wordLiveCorrect,
               isVisiblyWrong && styles.wordWrong,
-              isVisiblyWrong && styles.wordLiveWrong,
             ]}
           >
             {word.text}
@@ -236,9 +214,6 @@ const styles = StyleSheet.create({
   },
   wordLiveCorrect: {
     color: '#2e7d32',
-  },
-  wordLiveWrong: {
-    backgroundColor: 'rgba(198, 40, 40, 0.22)',
   },
   wordCue: {
     color: '#9e9e9e',

@@ -532,6 +532,17 @@ export default function RecitationScreen(props) {
     mistakeMessageTimeoutRef.current = setTimeout(() => setMistakeMessage(''), 3000);
   }, []);
 
+  // Whether this stretch of wrong words has already had its sound. Asked for by
+  // the author: several wrong words in a row are one mistake to hear about,
+  // not one sound per word. Re-armed once a correct word follows.
+  const mistakeAlertedRef = useRef(false);
+  const alertMistake = useCallback(() => {
+    if (mistakeAlertedRef.current || ayahDataRef.current?.isDisconnectedLetters) return;
+    mistakeAlertedRef.current = true;
+    buzzAndTone();
+    showMistakeMessage();
+  }, [buzzAndTone, showMistakeMessage]);
+
   const recreateJudge = useCallback(() => {
     liveJudgeRef.current = createLiveJudge({
       // The one list, not the ayah's text split on spaces. Everything the judge
@@ -544,9 +555,7 @@ export default function RecitationScreen(props) {
         // survives however many times the ayah is started over afterwards.
         stickyWrongIndicesRef.current = new Set(accumulatedWrongIndicesRef.current);
         stickyLetterDiffRef.current = { ...letterDiffRef.current };
-        if (ayahDataRef.current.isDisconnectedLetters) return;
-        buzzAndTone();
-        showMistakeMessage();
+        alertMistake();
       },
       onMarksChange: (entries) => {
         // entries: [{index, status, spoken}] — discard if going-back detected.
@@ -563,7 +572,7 @@ export default function RecitationScreen(props) {
         syncRevealed();
       },
     });
-  }, [applyMarks, buzzAndTone, getExpectedWords, showMistakeMessage, syncRevealed]);
+  }, [alertMistake, applyMarks, getExpectedWords, syncRevealed]);
 
   /**
    * The reciter has gone back to the first word of the ayah they are on.
@@ -633,6 +642,7 @@ export default function RecitationScreen(props) {
           partialFaultsRef.current = new Map();
           revealedWrongRef.current = new Set();
           lostAtRef.current = new Set();
+          mistakeAlertedRef.current = false;
           isGoingBackRef.current = false;
           prevMatchPosRef.current = 0;
           revealedWordCountRef.current = 0;
@@ -1147,10 +1157,7 @@ export default function RecitationScreen(props) {
           const isNewFault = [...commitFaultsRef.current.keys()].some(
             (index) => !before.has(index)
           );
-          if (isNewFault && !ayahDataRef.current?.isDisconnectedLetters) {
-            buzzAndTone();
-            showMistakeMessage();
-          }
+          if (isNewFault) alertMistake();
 
           syncRevealed();
 
@@ -1218,8 +1225,7 @@ export default function RecitationScreen(props) {
     getExpectedWords,
     onAyahComplete,
     handleAyahRestart,
-    buzzAndTone,
-    showMistakeMessage,
+    alertMistake,
     syncRevealed,
   ]);
 
@@ -1379,6 +1385,8 @@ export default function RecitationScreen(props) {
     const wrong = new Set(liveWrongIndices);
     let runStart = revealedWordCount;
     while (runStart > 0 && wrong.has(runStart - 1)) runStart -= 1;
+    // Back on track: the next wrong word is a new mistake and gets its sound.
+    if (revealedWordCount === runStart) mistakeAlertedRef.current = false;
     if (revealedWordCount - runStart < 2) return;
     let changed = false;
     if (!lostAtRef.current.has(runStart)) {
