@@ -241,7 +241,7 @@ const styles = StyleSheet.create({
   // A hidden word keeps its width, so the line sits exactly under where the
   // word will appear.
   wordStuck: {
-    borderBottomWidth: 2,
+    borderBottomWidth: 1,
     borderBottomColor: '#c62828',
   },
 });

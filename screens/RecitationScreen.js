@@ -193,7 +193,6 @@ export default function RecitationScreen(props) {
   // words synchronously (before React flushes the async setState).
   const letterDiffRef = useRef({});
   // Clears the "Mistake in ayah N" message after 3 s (cancelled on advance).
-  const mistakeMessageTimeoutRef = useRef(null);
   // Consecutive commits that did not move matchPos forward. Reset the moment
   // it advances, and on every ayah change. Drives the skip offer.
   const stalledCommitsRef = useRef(0);
@@ -240,7 +239,6 @@ export default function RecitationScreen(props) {
   const [liveLetterDiff, setLiveLetterDiff] = useState({});
   const [liveText, setLiveText] = useState('');
   const [revealedWordCount, setRevealedWordCount] = useState(0);
-  const [mistakeMessage, setMistakeMessage] = useState('');
   // True once the recogniser has stalled long enough to offer a way past.
   const [canSkip, setCanSkip] = useState(false);
   // Ordered list of unique mushaf pages visited this session, for swiping back.
@@ -525,23 +523,19 @@ export default function RecitationScreen(props) {
     return true;
   }, [matchesCurrentAyah]);
 
-  const showMistakeMessage = useCallback(() => {
-    const ayahLabel = currentAyahIndexRef.current + 1;
-    if (mistakeMessageTimeoutRef.current) clearTimeout(mistakeMessageTimeoutRef.current);
-    setMistakeMessage(`Mistake in ayah ${ayahLabel}`);
-    mistakeMessageTimeoutRef.current = setTimeout(() => setMistakeMessage(''), 3000);
-  }, []);
-
   // Whether this stretch of wrong words has already had its sound. Asked for by
   // the author: several wrong words in a row are one mistake to hear about,
   // not one sound per word. Re-armed once a correct word follows.
+  //
+  // The sound is the whole alert. A "Mistake in ayah N" line used to appear
+  // under the page as well; the author asked for it to go, since the page
+  // already shows where the mistake is.
   const mistakeAlertedRef = useRef(false);
   const alertMistake = useCallback(() => {
     if (mistakeAlertedRef.current || ayahDataRef.current?.isDisconnectedLetters) return;
     mistakeAlertedRef.current = true;
     buzzAndTone();
-    showMistakeMessage();
-  }, [buzzAndTone, showMistakeMessage]);
+  }, [buzzAndTone]);
 
   const recreateJudge = useCallback(() => {
     liveJudgeRef.current = createLiveJudge({
@@ -652,10 +646,6 @@ export default function RecitationScreen(props) {
           stickyWrongIndicesRef.current = new Set();
           stickyLetterDiffRef.current = {};
           discardedAttemptsRef.current = '';
-          if (mistakeMessageTimeoutRef.current) {
-            clearTimeout(mistakeMessageTimeoutRef.current);
-            mistakeMessageTimeoutRef.current = null;
-          }
 
           // Synchronous state batch before any await.
           setRevealedWordCount(0);
@@ -663,7 +653,6 @@ export default function RecitationScreen(props) {
           setSkippedWordIndices([]);
           setLiveWrongIndices([]);
           setLiveLetterDiff({});
-          setMistakeMessage('');
           currentAyahIndexRef.current = nextIndex;
           setCurrentAyahIndex(nextIndex);
           setCurrentAyahDisplay('');
@@ -1513,12 +1502,9 @@ export default function RecitationScreen(props) {
           </TouchableOpacity>
         </View>
       ) : !hasStarted
-        || (currentAyahIndex === initialAyahIndex && revealedWordCount === 0)
-        || mistakeMessage ? (
+        || (currentAyahIndex === initialAyahIndex && revealedWordCount === 0) ? (
         <View style={styles.feedbackPanel}>
-          {mistakeMessage ? (
-            <Text style={styles.feedbackMessage}>{mistakeMessage}</Text>
-          ) : !hasStarted ? (
+          {!hasStarted ? (
             <Text style={styles.reciteHint}>Tap the mic to start reciting</Text>
           ) : !micReady ? (
             <Text style={styles.reciteHint}>Opening the microphone, one moment</Text>
@@ -1684,14 +1670,6 @@ const styles = StyleSheet.create({
     fontFamily: fonts.semiBold,
     color: colors.white,
     fontSize: 16,
-  },
-  feedbackMessage: {
-    fontFamily: fonts.medium,
-    color: colors.accent,
-    fontSize: 15,
-    textAlign: 'center',
-    paddingVertical: 10,
-    paddingHorizontal: 16,
   },
   pageNumber: {
     fontFamily: fonts.regular,
