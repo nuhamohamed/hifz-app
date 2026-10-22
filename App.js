@@ -2,7 +2,7 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import * as Notifications from 'expo-notifications';
 import * as WebBrowser from 'expo-web-browser';
 import { StatusBar } from 'expo-status-bar';
-import { SQLiteProvider } from 'expo-sqlite';
+import { SQLiteProvider, deleteDatabaseAsync } from 'expo-sqlite';
 import { useFonts } from 'expo-font';
 import { Outfit_400Regular, Outfit_500Medium, Outfit_600SemiBold } from '@expo-google-fonts/outfit';
 import { ActivityIndicator, Text, View } from 'react-native';
@@ -61,10 +61,31 @@ Notifications.setNotificationHandler({
 // freezing the UI on whatever screen was last committed.
 const MUSHAF_ASSET = {
   assetId: require('./assets/mushaf.db'),
-  // forceOverwrite keeps the device copy in sync with the bundled DB
-  // (it gained the surahs table after the first version shipped)
-  forceOverwrite: true,
 };
+
+// The device copy of the bundled mushaf database, by version. Copied from the
+// bundle only when no file of this name exists, so once per version.
+//
+// It used to be copied on every launch (forceOverwrite), so that phones would
+// pick up the surahs table added after the first release. That put a 5.5 MB
+// copy in front of every launch, and nothing could draw until it finished.
+// A new name does the same job once: when assets/mushaf.db changes, bump it.
+const MUSHAF_DB_NAME = 'mushaf-v2.db';
+
+// Names earlier versions used, deleted so they do not sit on the phone.
+const RETIRED_MUSHAF_DB_NAMES = ['mushaf.db'];
+
+// Module-level for the same reason as MUSHAF_ASSET: SQLiteProvider reopens the
+// database whenever onInit's identity changes.
+async function onMushafDbInit() {
+  for (const name of RETIRED_MUSHAF_DB_NAMES) {
+    try {
+      await deleteDatabaseAsync(name);
+    } catch {
+      // Already gone, which is every launch after the first.
+    }
+  }
+}
 
 const OnboardingStack = createNativeStackNavigator();
 const MainStack = createNativeStackNavigator();
@@ -234,7 +255,11 @@ export default Sentry.wrap(function App() {
     // lands straight back on the screen that just failed.
     <ErrorBoundary>
       <OnboardingProvider value={{ completeOnboarding, restartOnboarding, resumePoint }}>
-        <SQLiteProvider databaseName="mushaf.db" assetSource={MUSHAF_ASSET}>
+        <SQLiteProvider
+          databaseName={MUSHAF_DB_NAME}
+          assetSource={MUSHAF_ASSET}
+          onInit={onMushafDbInit}
+        >
           <NavigationContainer
             ref={navigationRef}
             onReady={() => navigationIntegration.registerNavigationContainer(navigationRef)}
