@@ -258,6 +258,13 @@ async def handle(request):
                 data = json.loads(msg.data)
                 kind = data.get('message')
                 if kind == 'StartRecognition':
+                    # The GPU goes cold when idle: the first pass on the phone
+                    # took 4.5 s against a usual 0.3, so the first words of a
+                    # recitation arrived 5 s late. Warm it before replying, while
+                    # the phone is still opening the microphone.
+                    await asyncio.get_running_loop().run_in_executor(
+                        None, stream.engine.transcribe, np.zeros(SAMPLE_RATE, dtype=np.float32)
+                    )
                     await stream.send('RecognitionStarted', id=str(uuid.uuid4()))
                     worker = asyncio.create_task(stream.loop())
                 elif kind == 'EndOfStream':
