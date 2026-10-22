@@ -11,24 +11,29 @@ import { colors, fonts, radius, spacing } from '../lib/theme';
  * bump. A build with no entry shows nothing. Short, and written for testers:
  * what they will notice, not what was done to the code.
  */
+// Build 12 repeats build 11's notes, so they are shown again to everyone
+// who updates, including anyone who already saw them on 11.
+const BUILD_11_NOTES = [
+  {
+    title: 'Less Delay',
+    body: 'App should load faster, and transcription should also be a bit quicker',
+  },
+  {
+    title: 'Going back is fine.',
+    body: 'Re-reciting earlier words of an ayah, or repeating a word, will not count as a mistake.',
+  },
+  {
+    title: 'New error beep sound'
+  },
+  {
+    title: 'No more quiz after your session.',
+    body: 'Your mistakes come back in the next day’s review instead.',
+  },
+];
+
 const NOTES_BY_BUILD = {
-  11: [
-    {
-      title: 'Less Delay',
-      body: 'App should load faster, and transcription should also be a bit quicker',
-    },
-    {
-      title: 'Going back is fine.',
-      body: 'Re-reciting earlier words of an ayah, or repeating a word, will not count as a mistake.',
-    },
-    {
-      title: 'New error beep sound'
-    },
-    {
-      title: 'No more quiz after your session.',
-      body: 'Your mistakes come back in the next day’s review instead.',
-    },
-  ],
+  11: BUILD_11_NOTES,
+  12: BUILD_11_NOTES,
 };
 
 const SEEN_KEY = 'whatsNew.seenBuild';
