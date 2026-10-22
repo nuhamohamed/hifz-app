@@ -774,6 +774,13 @@ export default function PreSessionQuizScreen(props) {
           }
           liveJudgeRef.current?.update(dedupeConsecutiveWords(text));
         },
+        // The first guess has these words exactly right: show them now rather
+        // than when they are confirmed. Never judged; see onEarlyReveal.
+        onEarlyReveal: (position) => {
+          if (position <= revealedWordCountRef.current) return;
+          revealedWordCountRef.current = position;
+          setRevealedWordCount(position);
+        },
         onCommit: (matchedCount, statuses = []) => {
           const prev = prevMatchPosRef.current;
           prevMatchPosRef.current = matchedCount;

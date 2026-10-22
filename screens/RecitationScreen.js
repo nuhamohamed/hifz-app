@@ -247,6 +247,9 @@ export default function RecitationScreen(props) {
   // restart moves the matcher back to the top, and the page following it took
   // everything already recited off the screen until they caught up again.
   const keptRevealedRef = useRef(0);
+  // How far the recogniser's first guess has the ayah exactly right, ahead of
+  // the confirmed words. Shown, never judged: see onEarlyReveal.
+  const earlyRevealRef = useRef(0);
   // Wrong or skipped words that have already had their mistake sound.
   const alertedIndicesRef = useRef(new Set());
   // Transcript of the attempts a restart threw away, kept only so the logged
@@ -402,7 +405,11 @@ export default function RecitationScreen(props) {
    * ayah over (keptRevealedRef) hold it open.
    */
   const syncRevealed = useCallback(() => {
-    let next = Math.max(prevMatchPosRef.current, keptRevealedRef.current);
+    let next = Math.max(
+      prevMatchPosRef.current,
+      keptRevealedRef.current,
+      earlyRevealRef.current
+    );
     for (const index of accumulatedWrongIndicesRef.current) next = Math.max(next, index + 1);
     for (const index of revealedWrongRef.current) next = Math.max(next, index + 1);
     for (const index of lostAtRef.current) next = Math.max(next, index + 1);
@@ -695,6 +702,9 @@ export default function RecitationScreen(props) {
       }
     }
     keptRevealedRef.current = Math.max(keptRevealedRef.current, shownUpTo);
+    // The matcher is back at the top, and anything shown early is already in
+    // keptRevealed, so the next first guess starts from zero.
+    earlyRevealRef.current = 0;
 
     commitFaultsRef.current = new Map();
     partialFaultsRef.current = new Map();
@@ -741,6 +751,7 @@ export default function RecitationScreen(props) {
           revealedWrongRef.current = new Set();
           lostAtRef.current = new Set();
           keptRevealedRef.current = 0;
+          earlyRevealRef.current = 0;
           alertedIndicesRef.current = new Set();
           skippedRef.current = new Set();
           isGoingBackRef.current = false;
@@ -1220,6 +1231,14 @@ export default function RecitationScreen(props) {
           liveJudgeRef.current?.update(dedupeConsecutiveWords(text));
           liveTextRef.current = text;
           setLiveText(text);
+        },
+        onEarlyReveal: (position) => {
+          // Going back over an ayah already finished is not this ayah moving
+          // on, whatever the guess happens to match.
+          if (isGoingBackRef.current) return;
+          if (position <= earlyRevealRef.current) return;
+          earlyRevealRef.current = position;
+          syncRevealed();
         },
         onCommit: (matchedCount, statuses = [], commitText = '') => {
           const prev = prevMatchPosRef.current;
