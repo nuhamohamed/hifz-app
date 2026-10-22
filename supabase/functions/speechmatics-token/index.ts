@@ -19,9 +19,11 @@ const SPEECHMATICS_KEY_URL = 'https://mp.speechmatics.com/v1/api_keys?type=rt';
 const TOKEN_TTL_SECONDS = 60;
 
 /**
- * Tokens one person may request per day. A session needs a handful, so nobody
- * real will ever see this. It limits how many sessions someone can START, not
- * how long they stay: a token authenticates the connection, not its duration.
+ * Tokens one person may request per day. Every mic start costs one, including
+ * the restart after the silence cutoff, so a real evening of revision runs to
+ * twenty or more. 20 was the original figure and the first tester hit it in two
+ * hours. It limits how many sessions someone can START, not how long they
+ * stay: a token authenticates the connection, not its duration.
  * The 90-second silence cutoff in the app is what caps actual audio minutes,
  * and the spending cap on the Speechmatics account is the backstop under both.
  *
@@ -29,11 +31,11 @@ const TOKEN_TTL_SECONDS = 60;
  * allowance, so this is a speed bump rather than a wall. That is the accepted
  * trade for having no sign-in during beta.
  */
-const DAILY_TOKEN_LIMIT = 20;
+const DAILY_TOKEN_LIMIT = 200;
 
 const cors = {
   'Access-Control-Allow-Origin': '*',
-  'Access-Control-Allow-Headers': 'authorization, content-type',
+  'Access-Control-Allow-Headers': 'authorization, content-type, x-local-date',
 };
 
 function json(body: unknown, status = 200) {
@@ -41,6 +43,20 @@ function json(body: unknown, status = 200) {
     status,
     headers: { ...cors, 'Content-Type': 'application/json' },
   });
+}
+
+/**
+ * The day to count against, as the person's phone sees it, so the allowance
+ * resets at their midnight rather than at UTC midnight (8pm in New York, 4am
+ * in Dubai). The app sends its local `YYYY-MM-DD`; anything malformed, or more
+ * than a day from UTC, which no real time zone is, falls back to the UTC date
+ * so the header cannot be used to mint extra days.
+ */
+function localDay(claimed: string | null): string {
+  const utc = new Date().toISOString().slice(0, 10);
+  if (!claimed || !/^\d{4}-\d{2}-\d{2}$/.test(claimed)) return utc;
+  const offset = Math.abs(Date.parse(claimed) - Date.parse(utc)) / 86400000;
+  return offset <= 1 ? claimed : utc;
 }
 
 Deno.serve(async (req) => {
@@ -72,7 +88,7 @@ Deno.serve(async (req) => {
 
   // Count today's tokens for this person, then record this one. Uses the
   // service role because the app has no business writing its own quota rows.
-  const today = new Date().toISOString().slice(0, 10);
+  const today = localDay(req.headers.get('X-Local-Date'));
   const headers = {
     apikey: serviceKey,
     Authorization: `Bearer ${serviceKey}`,
