@@ -216,6 +216,12 @@ export default function RecitationScreen(props) {
   // reconciliation cannot overturn: they were not a judgement about the
   // recitation, so there is nothing for a later alignment to disagree with.
   const revealedWrongRef = useRef(new Set());
+  // Words where the reciter lost their place: two or more wrong in a row at
+  // the front, shown as a red underline. The first of the run is a mistake
+  // however the ayah ends. Going back and reciting it correctly does not undo
+  // having been stuck on it, so like a revealed word it survives restarts and
+  // the end-of-ayah reconciliation.
+  const lostAtRef = useRef(new Set());
   // Transcript of the attempts a restart threw away, kept only so the logged
   // mistake still shows everything that was actually said.
   const discardedAttemptsRef = useRef('');
@@ -485,7 +491,7 @@ export default function RecitationScreen(props) {
       //
       // Words asked for outright are left alone. Those were never a judgement.
       [...stickyWrongIndicesRef.current].forEach((i) => {
-        if (i >= pos && !revealedWrongRef.current.has(i)) {
+        if (i >= pos && !revealedWrongRef.current.has(i) && !lostAtRef.current.has(i)) {
           stickyWrongIndicesRef.current.delete(i);
           delete stickyLetterDiffRef.current[i];
         }
@@ -607,6 +613,7 @@ export default function RecitationScreen(props) {
           commitFaultsRef.current = new Map();
           partialFaultsRef.current = new Map();
           revealedWrongRef.current = new Set();
+          lostAtRef.current = new Set();
           isGoingBackRef.current = false;
           prevMatchPosRef.current = 0;
           revealedWordCountRef.current = 0;
@@ -752,9 +759,10 @@ export default function RecitationScreen(props) {
         isGoingBackRef.current = false;
         commitFaultsRef.current = new Map();
         partialFaultsRef.current = new Map();
-        stickyWrongIndicesRef.current = new Set(revealedWrongRef.current);
+        const unOverturnable = [...revealedWrongRef.current, ...lostAtRef.current];
+        stickyWrongIndicesRef.current = new Set(unOverturnable);
         stickyLetterDiffRef.current = Object.fromEntries(
-          [...revealedWrongRef.current].map((index) => [index, null])
+          unOverturnable.map((index) => [index, null])
         );
         liveJudgeRef.current?.finalUpdate(dedupeConsecutiveWords(accumulatedText));
 
@@ -1336,6 +1344,40 @@ export default function RecitationScreen(props) {
     skippedWordIndices,
     totalAyahs,
   ]);
+
+  // Remembers where the reciter got lost, so that word stays red after they
+  // recover. Same test as the display rule in ayahStatuses above.
+  //
+  // Only the first word of the run is kept. A slip freezes every wrong mark
+  // standing at that moment (onMistake), which for a lost run would freeze the
+  // words after it too, and they would stay red after a clean recovery. They
+  // are guesses at what was meant, not mistakes, so they are unfrozen and the
+  // judge decides them afresh: green when recited, red when skipped over.
+  useEffect(() => {
+    const wrong = new Set(liveWrongIndices);
+    let runStart = revealedWordCount;
+    while (runStart > 0 && wrong.has(runStart - 1)) runStart -= 1;
+    if (revealedWordCount - runStart < 2) return;
+    let changed = false;
+    if (!lostAtRef.current.has(runStart)) {
+      lostAtRef.current.add(runStart);
+      stickyWrongIndicesRef.current.add(runStart);
+      stickyLetterDiffRef.current[runStart] = null;
+      changed = true;
+    }
+    for (let i = runStart + 1; i < revealedWordCount; i += 1) {
+      if (
+        stickyWrongIndicesRef.current.has(i) &&
+        !revealedWrongRef.current.has(i) &&
+        !lostAtRef.current.has(i)
+      ) {
+        stickyWrongIndicesRef.current.delete(i);
+        delete stickyLetterDiffRef.current[i];
+        changed = true;
+      }
+    }
+    if (changed) applyMarks();
+  }, [revealedWordCount, liveWrongIndices, applyMarks]);
 
   const displayAyahNumber = Math.min(currentAyahIndex + 1, totalAyahs);
   const isListening = hasStarted && micReady && !isLoading && !error && !showTransition && !isRevisionComplete;
