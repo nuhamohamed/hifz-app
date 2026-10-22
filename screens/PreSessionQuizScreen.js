@@ -1000,8 +1000,9 @@ export default function PreSessionQuizScreen(props) {
         <View style={styles.feedbackPanel}>
           {/* Between questions the button is the quiet blue of the paused
               banner, so it does not compete with the solid blue mic under it.
-              The last one is solid navy, the strongest colour in the palette,
-              for the step that leaves the review. */}
+              The last one is solid brown, the warm end of the palette, for the
+              step that leaves the review. Not orange: that means the mic is
+              live. */}
           <TouchableOpacity
             style={[styles.nextBtn, awaitingNextQuestion === 'finish' && styles.finishBtn]}
             onPress={goToNextQuestion}
@@ -1240,8 +1241,8 @@ const styles = StyleSheet.create({
     color: colors.primary,
   },
   finishBtn: {
-    backgroundColor: colors.navy,
-    borderColor: colors.navy,
+    backgroundColor: colors.brown,
+    borderColor: colors.brown,
   },
   finishBtnText: {
     color: colors.white,
@@ -1335,8 +1336,8 @@ const styles = StyleSheet.create({
   transitionText: {
     fontSize: 32,
     fontWeight: '700',
-    // Navy, following on from the navy button that leads here.
-    color: colors.navy,
+    // Brown, following on from the brown button that leads here.
+    color: colors.brown,
     textAlign: 'center',
   },
 });
