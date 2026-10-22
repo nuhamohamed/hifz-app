@@ -34,7 +34,7 @@ import { useSQLiteContext } from 'expo-sqlite';
 import MushafPage from '../components/MushafPage';
 import { getPageForAyah } from '../lib/mushafDb';
 import { reportHandledError } from '../lib/sentry';
-import { colors, fonts } from '../lib/theme';
+import { colors, fonts, radius, spacing } from '../lib/theme';
 
 function dedupeConsecutiveWords(text) {
   if (!text) return text;
@@ -90,6 +90,17 @@ export default function PreSessionQuizScreen(props) {
   // button was pressed. Set only once startListening has resolved, which is
   // after the socket is up, so a start that fails leaves the button blue.
   const [micReady, setMicReady] = useState(false);
+  // Why the microphone closed itself ('silence' or 'ceiling'), the same as the
+  // portion. The review never listened for this, so after two quiet minutes
+  // the mic stayed orange with nothing behind it. Null while listening.
+  const [micClosedReason, setMicClosedReason] = useState(null);
+  // Bumped to reopen the microphone after it closed itself, by re-running the
+  // effect that opened it.
+  const [listenAttempt, setListenAttempt] = useState(0);
+  const resumeAfterAutoStop = useCallback(() => {
+    setMicClosedReason(null);
+    setListenAttempt((n) => n + 1);
+  }, []);
   const [error, setError] = useState('');
   const [showTransition, setShowTransition] = useState(false);
   const [showNextItemTransition, setShowNextItemTransition] = useState(false);
@@ -626,10 +637,15 @@ export default function PreSessionQuizScreen(props) {
     if (!hasStarted || isLoading || error) return;
 
     let mounted = true;
+    // Every run opens the microphone again, so the claim starts false with it.
+    setMicReady(false);
 
     (async () => {
       try {
       await startListening({
+        // Reopened part-way through an ayah after the cutoff: carry on from
+        // the words already on the page rather than starting the ayah again.
+        preserveProgress: revealedWordCountRef.current > 0,
         getExpectedWords: () => {
           if (ayahDataRef.current?.isDisconnectedLetters) return [];
           return expectedWordsFrom(ayahDataRef.current?.words);
@@ -707,6 +723,12 @@ export default function PreSessionQuizScreen(props) {
           reportHandledError('preQuiz.transcription', message);
           if (mounted) setError(message);
         },
+        onAutoStop: (reason) => {
+          if (mounted) {
+            setMicReady(false);
+            setMicClosedReason(reason);
+          }
+        },
       });
       // Resolves only once the microphone is open, the socket is up and the
       // audio held during setup has been sent, so this is the first moment the
@@ -732,7 +754,7 @@ export default function PreSessionQuizScreen(props) {
       setMicReady(false);
       stopListening();
     };
-  }, [hasStarted, isLoading, error, buzzAndTone, handleAyahRestart]);
+  }, [hasStarted, isLoading, error, listenAttempt, buzzAndTone, handleAyahRestart]);
 
   useEffect(() => {
     if (isLoading || error || showTransition || showNextItemTransition) {
@@ -850,6 +872,20 @@ export default function PreSessionQuizScreen(props) {
         </Text>
         <Text style={styles.pageBadge}>{currentPage != null ? `pg ${currentPage}` : ''}</Text>
       </View>
+      {micClosedReason ? (
+        <TouchableOpacity
+          style={styles.micPaused}
+          onPress={resumeAfterAutoStop}
+          activeOpacity={0.85}
+        >
+          <Text style={styles.micPausedTitle}>Listening paused</Text>
+          <Text style={styles.micPausedBody}>
+            {micClosedReason === 'ceiling'
+              ? 'That has been a long sitting. Tap to carry on.'
+              : 'The microphone turned itself off after two quiet minutes. Tap to carry on.'}
+          </Text>
+        </TouchableOpacity>
+      ) : null}
       <View style={styles.progressTrack}>
         <View
           style={[
@@ -888,7 +924,7 @@ export default function PreSessionQuizScreen(props) {
         <View style={styles.feedbackPanel}>
           {hasFeedback ? null : !hasStarted ? (
             <Text style={styles.reciteHint}>Tap the mic to start reciting</Text>
-          ) : !micReady ? (
+          ) : !micReady && !micClosedReason ? (
             // Same as the portion: nothing is transcribing yet, so asking for
             // recitation here would be asking too early.
             <Text style={styles.reciteHint}>Opening the microphone, one moment</Text>
@@ -939,7 +975,7 @@ export default function PreSessionQuizScreen(props) {
           {/* Under the microphone it is labelling, and the slot is held open
               either way so the bar does not change height as it toggles. It
               says Connecting until the microphone is actually open. */}
-          <Text style={[styles.micLabel, (!hasStarted || error) && styles.micLabelOff]}>
+          <Text style={[styles.micLabel, (!hasStarted || error || micClosedReason) && styles.micLabelOff]}>
             {micReady ? 'Listening' : 'Connecting'}
           </Text>
         </View>
@@ -995,6 +1031,28 @@ const styles = StyleSheet.create({
     fontSize: 12,
     color: colors.textMuted,
     marginTop: 2,
+  },
+  micPaused: {
+    marginHorizontal: spacing.lg,
+    marginBottom: spacing.sm,
+    paddingVertical: 14,
+    paddingHorizontal: 16,
+    borderRadius: radius.md,
+    backgroundColor: '#E6EFF9',
+    borderWidth: 1,
+    borderColor: colors.primary,
+  },
+  micPausedTitle: {
+    fontFamily: fonts.semiBold,
+    fontSize: 15,
+    color: colors.primary,
+    marginBottom: 3,
+  },
+  micPausedBody: {
+    fontFamily: fonts.regular,
+    fontSize: 13,
+    lineHeight: 19,
+    color: colors.textMid,
   },
   progressTrack: {
     height: 3,

@@ -242,22 +242,23 @@ export default function SessionSummaryScreen({ route }) {
         // The pass/fail gate is gone. Finishing a juz is finishing a juz; what
         // is worth telling someone is when it comes back, which the spaced
         // repetition schedule has just worked out.
-        let returnsIn = null;
-        if (isJuzComplete && !isQuizOnly) {
-          // Computed rather than read. juz_progress still holds the previous
-          // pass's interval until scoring runs, so reading it would tell
-          // someone the wrong day. Same function the real scoring uses.
-          try {
-            returnsIn = await previewNextInterval(
-              db,
-              userId,
-              resolvedSessionId,
-              sessionData.juz_number
-            );
-          } catch {
-            returnsIn = null;
-          }
-        }
+        //
+        // Computed rather than read. juz_progress still holds the previous
+        // pass's interval until scoring runs, so reading it would tell
+        // someone the wrong day. Same function the real scoring uses.
+        const returnsInPromise = isJuzComplete && !isQuizOnly
+          ? previewNextInterval(db, userId, resolvedSessionId, sessionData.juz_number)
+              .catch(() => null)
+          : Promise.resolve(null);
+
+        // The day after the session, unless that day has already arrived. This
+        // tab keeps showing a session until the next one is finished, so after
+        // midnight the work it used to call tomorrow's is today's, and the card
+        // says so then rather than a day late.
+        const today = getTodayDateString();
+        const nextDate = sessionData.date && sessionData.date < today
+          ? today
+          : getTomorrowDateString();
 
         // Asked of the same engine the agenda asks, rather than queried out of
         // scheduled_portions here. The old query disagreed with the agenda in
@@ -272,36 +273,39 @@ export default function SessionSummaryScreen({ route }) {
         // scored, scoring having been moved after the corrections below. Its
         // rows are still pending, so without this the preview would offer back
         // the portion just recited.
-        let nextTomorrowText = null;
-        try {
-          const tomorrowPortions = await getPortionsForDate(
-            db,
-            userId,
-            getTomorrowDateString(),
-            isQuizOnly
-              ? null
-              : {
-                  juzNumber: sessionData.juz_number,
-                  portionStartAyah: sessionData.portion_start_ayah,
-                  portionEndAyah: sessionData.portion_end_ayah,
-                }
-          );
-
-          nextTomorrowText = tomorrowPortions.length
-            ? tomorrowPortions.map(formatPortionLine).join('\n')
-            : 'Quiz only';
-        } catch {
-          nextTomorrowText = 'Quiz only';
-        }
+        const nextTextPromise = getPortionsForDate(
+          db,
+          userId,
+          nextDate,
+          isQuizOnly
+            ? null
+            : {
+                juzNumber: sessionData.juz_number,
+                portionStartAyah: sessionData.portion_start_ayah,
+                portionEndAyah: sessionData.portion_end_ayah,
+              }
+        )
+          .then((portions) => (portions.length
+            ? portions.map(formatPortionLine).join('\n')
+            : 'Quiz only'))
+          .catch(() => 'Quiz only');
 
         // Only the counts. The ayah text behind each mistake is loaded by the
         // page that shows them, which is the one that needs it: fetching every
         // ayah here made the summary wait on work it then did not display.
-        const { data: mistakesData, error: mistakesError } = await supabase
-          .from('mistakes')
-          .select('source')
-          .eq('session_id', resolvedSessionId)
-          .is('dismissed_at', null);
+        //
+        // All three are independent, so they run side by side. One after the
+        // other, the summary took as long as all of them added up.
+        const [returnsIn, nextTomorrowText, { data: mistakesData, error: mistakesError }] =
+          await Promise.all([
+            returnsInPromise,
+            nextTextPromise,
+            supabase
+              .from('mistakes')
+              .select('source')
+              .eq('session_id', resolvedSessionId)
+              .is('dismissed_at', null),
+          ]);
 
         if (mistakesError) {
           throw new Error(mistakesError.message);
@@ -320,7 +324,7 @@ export default function SessionSummaryScreen({ route }) {
         setSession(sessionData);
         setMistakeCounts(counts);
         setTomorrowText(nextTomorrowText);
-        setNextLabel(upNextLabel(tomorrow?.scheduled_date));
+        setNextLabel(upNextLabel(nextDate));
         setJuzComplete(isJuzComplete);
         setReturnsInDays(returnsIn);
       } catch (err) {

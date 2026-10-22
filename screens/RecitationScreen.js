@@ -1696,8 +1696,8 @@ export default function RecitationScreen(props) {
               either way so the bar does not change height as it toggles. It
               says Connecting rather than Listening until the microphone is
               actually open, which is the only moment the word is true. */}
-          <Text style={[styles.micLabel, !isListening && styles.micLabelOff]}>
-            {hasStarted && !micReady ? 'Connecting' : 'Listening'}
+          <Text style={[styles.micLabel, (!hasStarted || error || micClosedReason) && styles.micLabelOff]}>
+            {micReady ? 'Listening' : 'Connecting'}
           </Text>
         </View>
 
