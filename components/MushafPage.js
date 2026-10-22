@@ -15,9 +15,11 @@ const BASMALLAH = 'بِسۡمِ ٱللَّهِ ٱلرَّحۡمَٰنِ ٱلرَ
  * ayahStatuses: { ['surah:ayah']: status }
  *
  * Status shapes:
- *   { revealedCount: number, liveWrongIndices: number[] }
+ *   { revealedCount: number, liveWrongIndices: number[], stuckAtIndex?: number }
  *     → current live ayah: words 0..revealedCount-1 are visible,
  *       green tint if correct, red tint if in liveWrongIndices.
+ *       stuckAtIndex, when set, is drawn as a blank with a red underline:
+ *       the reciter has lost their place there.
  *   { wrongIndices: number[], letterDiffByIndex?: Record<number, string|null>, cue?: boolean }
  *     → confirmed ayah: all words visible; wrongIndices shown in red;
  *       if letterDiffByIndex present, uses per-letter coloring for those words;
@@ -129,6 +131,7 @@ function MushafLine({ line, ayahStatuses, lineHeight }) {
           !ayahStatus.cue &&
           (ayahStatus.wrongIndices ?? []).includes(wordIndex);
         const isHidden = ayahStatus == null || (isWordReveal && !isRevealed);
+        const isStuckHere = isWordReveal && ayahStatus.stuckAtIndex === wordIndex;
 
         const letterDiffByIndex = ayahStatus?.letterDiffByIndex;
 
@@ -164,6 +167,7 @@ function MushafLine({ line, ayahStatuses, lineHeight }) {
               ayahStatus?.cue && styles.wordCue,
               isConfirmedWrong && styles.wordWrong,
               isHidden && styles.wordHidden,
+              isStuckHere && styles.wordStuck,
               isLiveCorrect && styles.wordLiveCorrect,
               isVisiblyWrong && styles.wordWrong,
               isVisiblyWrong && styles.wordLiveWrong,
@@ -241,5 +245,11 @@ const styles = StyleSheet.create({
   },
   wordHidden: {
     color: 'transparent',
+  },
+  // A hidden word keeps its width, so the line sits exactly under where the
+  // word will appear.
+  wordStuck: {
+    borderBottomWidth: 2,
+    borderBottomColor: '#c62828',
   },
 });

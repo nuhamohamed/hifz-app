@@ -1288,8 +1288,22 @@ export default function RecitationScreen(props) {
     const currentKey = `${cur.surahNumber}:${cur.ayahNumber}`;
     if (!map[currentKey]) {
       if (revealedWordCount > 0) {
+        // Lost, not slipped. One wrong word is shown in red. Two or more in a
+        // row at the front means the reciter has lost their place, and every
+        // word revealed past that point is a guess at what they meant, painted
+        // red. So the run is hidden again and its first word becomes a blank
+        // with a red underline: "you are stuck here". Nothing about the
+        // judging changes. Once a correct word arrives after the run it is no
+        // longer at the front, and the run shows in red with the recovered
+        // words in green after it. Usually both wrong words arrive in one
+        // commit, so the first is never seen in red before it disappears.
+        const wrong = new Set(liveWrongIndices);
+        let runStart = revealedWordCount;
+        while (runStart > 0 && wrong.has(runStart - 1)) runStart -= 1;
+        const lost = revealedWordCount - runStart >= 2;
         map[currentKey] = {
-          revealedCount: revealedWordCount,
+          revealedCount: lost ? runStart : revealedWordCount,
+          stuckAtIndex: lost ? runStart : null,
           liveWrongIndices,
           skippedWordIndices,
           letterDiffByIndex: liveLetterDiff,
