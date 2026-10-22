@@ -153,7 +153,11 @@ export default function PreSessionQuizScreen(props) {
   }, []);
   const [error, setError] = useState('');
   const [showTransition, setShowTransition] = useState(false);
-  const [showNextItemTransition, setShowNextItemTransition] = useState(false);
+  // A question has been finished and the next is waiting on the button. The
+  // review used to move on by itself after four seconds of "Next question",
+  // with the microphone still open, so the next question started listening
+  // before anyone had looked at it.
+  const [awaitingNextQuestion, setAwaitingNextQuestion] = useState(false);
 
   const blockAyahsRef = useRef([]);
   // The runs questions are recited in (see buildRuns), and which one is on.
@@ -516,11 +520,10 @@ export default function PreSessionQuizScreen(props) {
         return;
       }
 
-      setShowNextItemTransition(true);
-      await new Promise((resolve) => setTimeout(resolve, 4000));
-      setShowNextItemTransition(false);
-
-      await loadRun(nextRunIndex, quizItems);
+      // Close the microphone and wait to be asked. goToNextQuestion takes it
+      // from here.
+      setHasStarted(false);
+      setAwaitingNextQuestion(true);
       return;
     }
 
@@ -530,6 +533,17 @@ export default function PreSessionQuizScreen(props) {
     setMistakeMessage('');
     loadBlockAyah(nextIndex);
   }, [quizItems, loadBlockAyah, loadRun, finishAllQuizItems, sessionId, sessionJuzNumber]);
+
+  /**
+   * The Next question button. Loads the next run and opens the microphone
+   * again, so moving on is one tap rather than this and then the mic.
+   */
+  const goToNextQuestion = useCallback(async () => {
+    if (!awaitingNextQuestion) return;
+    setAwaitingNextQuestion(false);
+    await loadRun(currentRunIndexRef.current + 1, quizItems);
+    setHasStarted(true);
+  }, [awaitingNextQuestion, loadRun, quizItems]);
 
   const onAyahComplete = useCallback(
     async (accumulatedText) => {
@@ -840,7 +854,7 @@ export default function PreSessionQuizScreen(props) {
   }, [hasStarted, isLoading, error, listenAttempt, buzzAndTone, handleAyahRestart]);
 
   useEffect(() => {
-    if (isLoading || error || showTransition || showNextItemTransition) {
+    if (isLoading || error || showTransition) {
       pulseAnim.stopAnimation();
       pulseAnim.setValue(1);
       return;
@@ -853,7 +867,7 @@ export default function PreSessionQuizScreen(props) {
     );
     loop.start();
     return () => loop.stop();
-  }, [isLoading, error, showTransition, showNextItemTransition, pulseAnim]);
+  }, [isLoading, error, showTransition, pulseAnim]);
 
   useEffect(() => { currentBlockIndexRef.current = currentBlockIndex; }, [currentBlockIndex]);
   useEffect(() => { currentItemIndexRef.current = currentItemIndex; }, [currentItemIndex]);
@@ -908,7 +922,7 @@ export default function PreSessionQuizScreen(props) {
     return map;
   }, [confirmedAyahs, currentItem, currentBlockIndex, revealedWordCount, liveWrongIndices, liveLetterDiff]);
 
-  const isListening = hasStarted && micReady && !isLoading && !error && !showTransition && !showNextItemTransition;
+  const isListening = hasStarted && micReady && !isLoading && !error && !showTransition;
 
   const handlePauseSession = async () => {
     if (sessionId) {
@@ -923,14 +937,6 @@ export default function PreSessionQuizScreen(props) {
       <Animated.View style={[styles.transitionOverlay, { opacity: fadeAnim }]}>
         <Text style={styles.transitionText}>Time to revise</Text>
       </Animated.View>
-    );
-  }
-
-  if (showNextItemTransition) {
-    return (
-      <View style={styles.transitionOverlay}>
-        <Text style={styles.transitionText}>Next question</Text>
-      </View>
     );
   }
 
@@ -988,7 +994,19 @@ export default function PreSessionQuizScreen(props) {
         ) : null}
       </View>
 
-      {canSkip ? (
+      {awaitingNextQuestion ? (
+        <View style={styles.feedbackPanel}>
+          <TouchableOpacity
+            style={styles.nextBtn}
+            onPress={goToNextQuestion}
+            activeOpacity={0.85}
+            accessibilityRole="button"
+            accessibilityLabel="Go to the next question"
+          >
+            <Text style={styles.nextBtnText}>Next question  →</Text>
+          </TouchableOpacity>
+        </View>
+      ) : canSkip ? (
         <View style={styles.feedbackPanel}>
           <Text style={styles.stuckHint}>
             Not hearing you? You can move on and review this ayah later.
@@ -1035,7 +1053,15 @@ export default function PreSessionQuizScreen(props) {
             <ActivityIndicator size="small" color={colors.accent} />
           ) : (
             <TouchableOpacity
-              onPress={() => setHasStarted((wasStarted) => !wasStarted)}
+              onPress={() => {
+                // Between questions the finished one has nothing left to hear,
+                // so the mic moves on rather than reopening on it.
+                if (awaitingNextQuestion) {
+                  goToNextQuestion();
+                  return;
+                }
+                setHasStarted((wasStarted) => !wasStarted);
+              }}
               activeOpacity={0.7}
               accessibilityRole="button"
               accessibilityState={{ selected: hasStarted }}
@@ -1181,6 +1207,19 @@ const styles = StyleSheet.create({
     color: colors.textMuted,
     textAlign: 'center',
     paddingBottom: 8,
+  },
+  nextBtn: {
+    alignSelf: 'center',
+    backgroundColor: colors.primary,
+    borderRadius: 20,
+    paddingVertical: 9,
+    paddingHorizontal: 18,
+    marginVertical: 8,
+  },
+  nextBtnText: {
+    fontFamily: fonts.semiBold,
+    fontSize: 14,
+    color: colors.white,
   },
   skipBtn: {
     alignSelf: 'center',
