@@ -1694,11 +1694,9 @@ export default function RecitationScreen(props) {
           )}
           {/* Under the microphone it is labelling, and the slot is held open
               either way so the bar does not change height as it toggles. It
-              says Connecting rather than Listening until the microphone is
-              actually open, which is the only moment the word is true. */}
-          <Text style={[styles.micLabel, (!hasStarted || error || micClosedReason) && styles.micLabelOff]}>
-            {micReady ? 'Listening' : 'Connecting'}
-          </Text>
+              appears only once the microphone is actually open; until then the
+              hint above says it is opening. */}
+          <Text style={[styles.micLabel, !isListening && styles.micLabelOff]}>Listening</Text>
         </View>
 
         <TouchableOpacity

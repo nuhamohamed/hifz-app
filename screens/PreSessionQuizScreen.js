@@ -974,10 +974,9 @@ export default function PreSessionQuizScreen(props) {
           )}
           {/* Under the microphone it is labelling, and the slot is held open
               either way so the bar does not change height as it toggles. It
-              says Connecting until the microphone is actually open. */}
-          <Text style={[styles.micLabel, (!hasStarted || error || micClosedReason) && styles.micLabelOff]}>
-            {micReady ? 'Listening' : 'Connecting'}
-          </Text>
+              appears only once the microphone is actually open; until then the
+              hint above says it is opening. */}
+          <Text style={[styles.micLabel, !isListening && styles.micLabelOff]}>Listening</Text>
         </View>
 
         <TouchableOpacity
