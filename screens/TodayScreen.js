@@ -1033,14 +1033,20 @@ export default function TodayScreen() {
               // Developer builds only. A finished day offers nothing to start,
               // which is right for testers and a dead end when testing the app
               // itself, so this reuses the start-early path for the next session.
-              __DEV__ && nextSession ? (
+              //
+              // Resumes a session already waiting rather than starting another:
+              // starting one on every press left six unfinished copies of the
+              // same portion on the author's account.
+              __DEV__ && (pausedSession || nextSession) ? (
                 <TouchableOpacity
                   style={styles.startBtn}
-                  onPress={handleStartEarly}
+                  onPress={pausedSession ? handleStartSession : handleStartEarly}
                   activeOpacity={0.88}
                 >
                   <Text style={styles.startBtnIcon}>▶</Text>
-                  <Text style={styles.startBtnText}>Start next session now (dev)</Text>
+                  <Text style={styles.startBtnText}>
+                    {pausedSession ? 'Resume session (dev)' : 'Start next session now (dev)'}
+                  </Text>
                 </TouchableOpacity>
               ) : null
             ) : showingNext ? (
