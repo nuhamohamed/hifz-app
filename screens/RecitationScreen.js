@@ -1089,23 +1089,12 @@ export default function RecitationScreen(props) {
         // marks did not: words from the old ayah were still aligned against
         // the current one, and what that produced was written into its record.
         isGoingBack: (text) => {
-          const goingBack = isGoingBackRef.current || checkGoingBack(text);
-          if (goingBack) {
-            // A dropped commit never reaches onCommit, so the stall counter
-            // would sit still and the way out would never be offered. That
-            // matters most in the case this is wrong about: someone reciting
-            // the ayah in front of them, misheard as words from an earlier
-            // one, would be stuck with nothing to do but pause the session.
-            //
-            // It costs the offer appearing during a long deliberate look back,
-            // which is only an offer, and it withdraws itself the moment the
-            // ayah moves again.
-            stalledCommitsRef.current += 1;
-            if (stalledCommitsRef.current >= STALLED_COMMITS_BEFORE_SKIP) {
-              setCanSkip(true);
-            }
-          }
-          return goingBack;
+          // Going back into an earlier ayah no longer counts towards "Not
+          // hearing you? Skip this ayah". It used to, so the way out would
+          // still appear if the current ayah were being misheard as an earlier
+          // one; in practice it appeared on every deliberate look back, and
+          // the author asked for it to go. Pause remains the way out.
+          return isGoingBackRef.current || checkGoingBack(text);
         },
         onPartial: (text, partialText) => {
           // Asked about what they are saying now, not the running text.
