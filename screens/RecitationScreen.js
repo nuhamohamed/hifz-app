@@ -517,8 +517,31 @@ export default function RecitationScreen(props) {
     // see them, never complete, and the reciter would be stuck on an ayah they
     // were reciting correctly. So if the words fit the ayah they are on, that
     // is the reading, whatever else they also resemble.
-    if (matchesCurrentAyah(text)) return false;
-    if (!isGoingBack(text, confirmedAyahWordsRef.current)) return false;
+    //
+    // Except before the new ayah has begun. Asked for by the author: having
+    // finished an ayah, going back into it is not a mistake in the next one,
+    // however few words it is. The general test needs three words in a row,
+    // and the tie-break above gives words to the ayah on screen whenever they
+    // occur anywhere in it, which with one or two words (الله, من) is nearly
+    // always. So the first word the reciter said was judged against the new
+    // ayah and marked wrong. Until something of the new ayah has been
+    // recited, a real start of it begins with its first word; words that do
+    // not, and that run in order through the ayah just finished, are going
+    // back into it.
+    const spoken = normalizeArabic(text ?? '').split(/\s+/).filter(Boolean);
+    const justFinished = confirmedAyahWordsRef.current[confirmedAyahWordsRef.current.length - 1];
+    const firstWord = getExpectedWords().flatMap((w) => w.split(' '))[0];
+    const backBeforeStarting =
+      prevMatchPosRef.current === 0 &&
+      !!justFinished &&
+      spoken.length > 0 &&
+      spoken[0] !== firstWord &&
+      runsThrough(spoken, justFinished);
+
+    if (!backBeforeStarting) {
+      if (matchesCurrentAyah(text)) return false;
+      if (!isGoingBack(text, confirmedAyahWordsRef.current)) return false;
+    }
     if (!isGoingBackRef.current) {
       isGoingBackRef.current = true;
       // Scrub indices at or beyond current matchPos — those came from
@@ -552,7 +575,7 @@ export default function RecitationScreen(props) {
       setLiveWrongIndices([...accumulatedWrongIndicesRef.current]);
     }
     return true;
-  }, [matchesCurrentAyah]);
+  }, [getExpectedWords, matchesCurrentAyah]);
 
   // One sound per mistake, asked for by the author. A run of neighbouring
   // wrong or skipped words is one mistake however it arrives: word by word,
