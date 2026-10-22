@@ -448,6 +448,8 @@ export default function TodayScreen() {
       navigation.navigate('Recitation', params);
     } else if (phase === 'post_quiz') {
       // Left at the recap quiz, which no longer exists. Recitation is done.
+      // Returned so the caller awaits it: the write can fail, and the caller's
+      // catch is what shows that on screen.
       return finishRecitedSession(session.id, params);
     } else {
       navigation.navigate('Recitation', params);
@@ -504,6 +506,8 @@ export default function TodayScreen() {
           paused.last_confirmed_ayah >= paused.portion_end_ayah;
 
         if (recitationDone) {
+          // 'post_quiz' is the phase navigateForPausedSession finishes from,
+          // so this reuses that path rather than writing a second one.
           await navigateForPausedSession({ ...paused, date: today, phase: 'post_quiz' });
           return;
         }
@@ -863,6 +867,7 @@ export default function TodayScreen() {
   // against a ninety-ayah portion, which reads as no progress for real work.
   // Only the parts that exist are counted, and the weights are normalised
   // against those, so a day without a review can still fill the ring.
+  // The recap quiz had 10 of these until it was removed; recitation took them.
   const RING_WEIGHT = { review: 25, recite: 75 };
 
   const reciteFraction = sessionDoneToday ? 1 : portionDoneFraction;
